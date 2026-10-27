@@ -1,7 +1,8 @@
 import { useMemo, type Dispatch } from "react";
-import { rowLabel, rowOrdinals, type Finding, type Op, type Row } from "@crochetbuilder/engine";
+import type { Finding, Row } from "@crochetbuilder/engine";
 import type { EditorAction } from "../state/editor.js";
-import { RowCard, isInstructionLike } from "./RowCard.js";
+import { autoRowLabels } from "../state/labels.js";
+import { RowCard } from "./RowCard.js";
 
 export interface FocusRequest {
   rowId: string;
@@ -18,23 +19,16 @@ interface RowListProps {
   onFocusRow: (rowId: string) => void;
   onAddRow: (afterId: string | null, instruction: boolean) => void;
   onDuplicate: (rowId: string) => void;
+  onDelete: (rowId: string) => void;
 }
 
 const NO_FINDINGS: readonly Finding[] = [];
-const PLACEHOLDER_OP: Op = { kind: "stitch", code: "ST", count: 1 };
 
 /** Left side of the editor: all rows/rounds of the part, in order. */
 export function RowList(props: RowListProps) {
-  const { rows, findings, selectedRowId, focusRequest, dispatch, onSelect, onFocusRow, onAddRow, onDuplicate } = props;
-  // Automatic labels via rowOrdinals/rowLabel. A stitch row that is still empty counts as
-  // the next round already ("Runde 9" while typing), so it gets a stand-in op here.
-  const autoLabels = useMemo(() => {
-    const counted = rows.map((r) =>
-      r.ops.length === 0 && !isInstructionLike(r) ? { ...r, ops: [PLACEHOLDER_OP], label: undefined } : { ...r, label: undefined },
-    );
-    const ordinals = rowOrdinals(counted);
-    return counted.map((r, i) => rowLabel(r, ordinals[i] ?? 0, "de"));
-  }, [rows]);
+  const { rows, findings, selectedRowId, focusRequest, dispatch, onSelect, onFocusRow, onAddRow, onDuplicate, onDelete } =
+    props;
+  const autoLabels = useMemo(() => autoRowLabels(rows), [rows]);
   const byRow = useMemo(() => {
     const map = new Map<string, Finding[]>();
     for (const f of findings) map.set(f.rowId, [...(map.get(f.rowId) ?? []), f]);
@@ -68,10 +62,12 @@ export function RowList(props: RowListProps) {
           onEnter={onEnter}
           onAddAfter={(id, instruction) => onAddRow(id, instruction)}
           onDuplicate={onDuplicate}
+          onDelete={onDelete}
+          onFocusRow={onFocusRow}
         />
       ))}
       <div className="row-list-actions">
-        <button type="button" className="btn btn-primary" onClick={() => onAddRow(null, false)}>
+        <button type="button" className="btn btn-primary" data-focus-id="add-row" onClick={() => onAddRow(null, false)}>
           + {lastType === "row" ? "Reihe" : "Runde"}
         </button>
         <button type="button" className="btn" onClick={() => onAddRow(null, true)}>

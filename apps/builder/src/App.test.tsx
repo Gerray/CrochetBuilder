@@ -116,17 +116,18 @@ describe("Builder editor", () => {
   it("builds a round with the structured editor", async () => {
     await renderApp();
     const card = screen.getByRole("article", { name: "Runde 1" });
-    fireEvent.click(within(card).getByRole("button", { name: "+ Masche" }));
-    fireEvent.click(within(card).getByRole("button", { name: "+ Masche" }));
-    const codes = within(card).getAllByLabelText("Masche");
-    fireEvent.change(codes[1]!, { target: { value: "INC" } });
-    fireEvent.click(within(card).getByRole("button", { name: "Alle wiederholen" }));
-    fireEvent.change(within(card).getByLabelText("Wiederholungen"), { target: { value: "6" } });
+    fireEvent.click(within(card).getByRole("button", { name: "Masche hinzufügen in Runde 1" }));
+    fireEvent.click(within(card).getByRole("button", { name: "Masche hinzufügen in Runde 1" }));
+    fireEvent.change(within(card).getByLabelText("Maschenart, Masche 2 von Runde 1"), { target: { value: "INC" } });
+    fireEvent.click(within(card).getByRole("button", { name: "Alle Maschen von Runde 1 wiederholen" }));
+    fireEvent.change(within(card).getByLabelText("Anzahl Wiederholungen, Wiederholung 1 von Runde 1"), {
+      target: { value: "6" },
+    });
     const text = screen.getByLabelText("Maschen von Runde 1 als Text") as HTMLInputElement;
     expect(text.value).toBe("6× (1 fM, 1 Zun)");
     expect(screen.getByLabelText("Ist-Maschenzahl von Runde 1").textContent).toBe("18");
 
-    fireEvent.click(within(card).getAllByRole("button", { name: "hMG", pressed: false })[0]!);
+    fireEvent.click(within(card).getByRole("button", { name: "hMG, Masche 1.1 von Runde 1", pressed: false }));
     expect(text.value).toBe("6× (1 fM (hMG), 1 Zun)");
 
     fireEvent.click(screen.getByRole("button", { name: "Rückgängig" }));

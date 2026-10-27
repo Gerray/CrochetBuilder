@@ -7,6 +7,8 @@ interface NumberFieldProps extends BaseInputProps {
   /** Called with every valid value while typing; `undefined` for an empty field when allowed. */
   onValue: (value: number | undefined) => void;
   min?: number;
+  /** Largest accepted value; larger entries are shown as invalid and not passed on. */
+  max?: number;
   step?: number;
   decimal?: boolean;
   allowEmpty?: boolean;
@@ -26,6 +28,7 @@ export function NumberField({
   value,
   onValue,
   min = 0,
+  max = Number.MAX_SAFE_INTEGER,
   step = 1,
   decimal = false,
   allowEmpty = false,
@@ -36,14 +39,17 @@ export function NumberField({
 }: NumberFieldProps) {
   const [draft, setDraft] = useState<string | null>(null);
 
-  const accept = (n: number) => Number.isFinite(n) && n >= min && (decimal || Number.isInteger(n));
-  const parse = (text: string) => Number(text.trim().replace(",", "."));
+  const accept = (n: number) => Number.isFinite(n) && n >= min && n <= max && (decimal || Number.isInteger(n));
+  // Plain digits only ("1e9", "0x10", "Infinity" are not numbers here).
+  const pattern = decimal ? /^\d+([.,]\d*)?$/ : /^\d+$/;
+  const parse = (text: string) => (pattern.test(text.trim()) ? Number(text.trim().replace(",", ".")) : Number.NaN);
 
   // A draft is shown while it is an unfinished entry ("", "3,") or matches the stored value;
   // when the value changed elsewhere (undo, "Soll übernehmen") the stored value wins.
   const draftNumber = draft === null ? undefined : parse(draft);
   const showDraft =
     draft !== null && (draft.trim() === "" || !accept(draftNumber!) || draftNumber === value);
+  const invalid = draft !== null && draft.trim() !== "" && !accept(draftNumber!);
 
   return (
     <input
@@ -51,6 +57,8 @@ export function NumberField({
       type="text"
       inputMode={decimal ? "decimal" : "numeric"}
       autoComplete="off"
+      aria-invalid={invalid ? true : undefined}
+      title={invalid ? `Erlaubt: ${min} bis ${max.toLocaleString("de-DE")}` : rest.title}
       className={["number-field", className].filter(Boolean).join(" ")}
       value={showDraft ? draft! : formatNumber(value, decimal)}
       onChange={(e) => {

@@ -1,4 +1,4 @@
-import { useRef, useState, type Ref } from "react";
+import { useEffect, useRef, useState, type Ref } from "react";
 import { parseRowText, renderRow, type Op, type Row } from "@crochetbuilder/engine";
 import { parseErrorMessage } from "../state/messages.js";
 
@@ -22,10 +22,21 @@ export function RowTextField({ row, inputRef, onCommit, onEnter, label }: RowTex
   const [error, setError] = useState<string | null>(null);
   // The ref mirrors the draft so blur right after Enter sees the committed state.
   const draftRef = useRef<string | null>(null);
+  // The ops the draft was started from. If they change elsewhere (structured editor, undo),
+  // the draft is stale and is dropped, so a later commit cannot overwrite that change.
+  const baseOps = useRef(row.ops);
   const setDraft = (value: string | null) => {
+    if (draftRef.current === null && value !== null) baseOps.current = row.ops;
     draftRef.current = value;
     setDraftState(value);
   };
+  useEffect(() => {
+    if (draftRef.current !== null && baseOps.current !== row.ops) {
+      draftRef.current = null;
+      setDraftState(null);
+      setError(null);
+    }
+  }, [row.ops]);
   const errorId = `row-text-error-${row.id}`;
 
   /** Returns whether the row has stitches afterwards, or null if the text is invalid. */

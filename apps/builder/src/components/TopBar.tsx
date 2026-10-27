@@ -28,6 +28,7 @@ const STATUS_TEXT: Record<SaveStatus, string> = {
   saving: "Speichert …",
   saved: "Lokal gespeichert",
   error: "Speichern fehlgeschlagen",
+  suspended: "Nicht gespeichert",
 };
 
 interface TopBarProps {

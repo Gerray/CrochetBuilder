@@ -1,8 +1,11 @@
 import { memo, useEffect, useRef, useState, type Dispatch } from "react";
 import { computeRowStitches, type Finding, type Row } from "@crochetbuilder/engine";
 import type { EditorAction } from "../state/editor.js";
+import { isInstructionLike } from "../state/labels.js";
 import { findingMessage } from "../state/messages.js";
+import { MAX_STITCH_COUNT_TARGET } from "@crochetbuilder/engine";
 import { NumberField } from "./fields.js";
+import { focusLater } from "./focus.js";
 import { OpEditor } from "./OpEditor.js";
 import { RowTextField } from "./RowTextField.js";
 
@@ -21,11 +24,8 @@ export interface RowCardProps {
   onEnter: (rowId: string, hasStitches: boolean) => void;
   onAddAfter: (rowId: string, instruction: boolean) => void;
   onDuplicate: (rowId: string) => void;
-}
-
-/** Free instruction rows: no stitches, a note field (see FORMAT.md). */
-export function isInstructionLike(row: Row): boolean {
-  return row.ops.length === 0 && row.note !== undefined;
+  onDelete: (rowId: string) => void;
+  onFocusRow: (rowId: string) => void;
 }
 
 function RowCardImpl(props: RowCardProps) {
@@ -41,6 +41,15 @@ function RowCardImpl(props: RowCardProps) {
     cardRef.current?.scrollIntoView?.({ block: "nearest" });
     mainInput.current?.focus();
   }, [focusToken]);
+
+  // Switching between stitch row and instruction swaps the main input; keep focus in the card.
+  const wasInstruction = useRef(instruction);
+  useEffect(() => {
+    if (wasInstruction.current === instruction) return;
+    wasInstruction.current = instruction;
+    const active = document.activeElement;
+    if (!active || active === document.body) mainInput.current?.focus();
+  }, [instruction]);
 
   const hasError = findings.some((f) => f.severity === "error");
   const className = ["row-card", selected && "is-selected", instruction && "is-instruction", hasError && "has-error"]
@@ -81,15 +90,28 @@ function RowCardImpl(props: RowCardProps) {
       </header>
 
       {instruction ? (
-        <textarea
-          ref={mainInput}
-          className="row-note-input"
-          aria-label={`Hinweistext von ${title}`}
-          placeholder="z. B. Sicherheitsaugen zwischen Runde 8 und 9 einsetzen"
-          rows={2}
-          value={row.note ?? ""}
-          onChange={(e) => dispatch({ type: "updateRow", rowId: row.id, patch: { note: e.target.value } })}
-        />
+        <>
+          <textarea
+            ref={mainInput}
+            className="row-note-input"
+            aria-label={`Hinweistext von ${title}`}
+            placeholder="z. B. Sicherheitsaugen zwischen Runde 8 und 9 einsetzen"
+            rows={2}
+            value={row.note ?? ""}
+            onChange={(e) => dispatch({ type: "updateRow", rowId: row.id, patch: { note: e.target.value } })}
+          />
+          <button
+            type="button"
+            className="btn btn-small btn-quiet row-add-stitches"
+            title="Aus dem Hinweis eine Runde/Reihe mit Maschen machen (der Text bleibt als Notiz)"
+            onClick={() => {
+              dispatch({ type: "insertOp", rowId: row.id, path: [0], op: { kind: "stitch", code: "SC", count: 1 } });
+              props.onFocusRow(row.id);
+            }}
+          >
+            + Maschen hinzufügen
+          </button>
+        </>
       ) : (
         <>
           <RowTextField
@@ -105,7 +127,7 @@ function RowCardImpl(props: RowCardProps) {
             }
             onEnter={(hasStitches) => props.onEnter(row.id, hasStitches)}
           />
-          <OpEditor rowId={row.id} ops={row.ops} dispatch={dispatch} />
+          <OpEditor rowId={row.id} rowTitle={title} ops={row.ops} dispatch={dispatch} />
           <RowNote row={row} title={title} dispatch={dispatch} />
         </>
       )}
@@ -136,6 +158,7 @@ function StitchCount({ row, title, dispatch }: { row: Row; title: string; dispat
           className="narrow"
           aria-label={`Soll-Maschenzahl von ${title}`}
           min={0}
+          max={MAX_STITCH_COUNT_TARGET}
           value={row.stitchCountTarget}
           onValue={(target) => target !== undefined && dispatch({ type: "setTarget", rowId: row.id, target })}
         />
@@ -190,7 +213,16 @@ function RowActions({
   dispatch,
   onAddAfter,
   onDuplicate,
+  onDelete,
 }: RowCardProps & { title: string; isFirst: boolean; isLast: boolean }) {
+  // After moving, keep focus on the moved row: on the same arrow, or the other one if the
+  // row reached the end of the list (a disabled button cannot hold focus).
+  const move = (delta: -1 | 1) => {
+    dispatch({ type: "moveRow", rowId: row.id, delta });
+    const same = `row:${row.id}:${delta < 0 ? "up" : "down"}`;
+    const other = `row:${row.id}:${delta < 0 ? "down" : "up"}`;
+    focusLater(same, other);
+  };
   return (
     <div className="row-actions" role="group" aria-label={`Aktionen für ${title}`}>
       <button
@@ -199,7 +231,8 @@ function RowActions({
         aria-label={`${title} nach oben`}
         title="Nach oben"
         disabled={isFirst}
-        onClick={() => dispatch({ type: "moveRow", rowId: row.id, delta: -1 })}
+        data-focus-id={`row:${row.id}:up`}
+        onClick={() => move(-1)}
       >
         ↑
       </button>
@@ -209,7 +242,8 @@ function RowActions({
         aria-label={`${title} nach unten`}
         title="Nach unten"
         disabled={isLast}
-        onClick={() => dispatch({ type: "moveRow", rowId: row.id, delta: 1 })}
+        data-focus-id={`row:${row.id}:down`}
+        onClick={() => move(1)}
       >
         ↓
       </button>
@@ -236,7 +270,7 @@ function RowActions({
         className="btn btn-icon btn-quiet btn-danger"
         aria-label={`${title} löschen`}
         title="Löschen"
-        onClick={() => dispatch({ type: "deleteRow", rowId: row.id })}
+        onClick={() => onDelete(row.id)}
       >
         ✕
       </button>

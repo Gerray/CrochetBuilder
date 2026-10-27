@@ -2,12 +2,11 @@ import { useMemo } from "react";
 import {
   computeRowStitches,
   resolveGauge,
-  rowLabel,
-  rowOrdinals,
   type Finding,
   type Gauge,
   type PartContent,
 } from "@crochetbuilder/engine";
+import { displayRowLabels } from "../state/labels.js";
 import { findingMessage } from "../state/messages.js";
 
 /**
@@ -47,8 +46,8 @@ export function PreviewPane({ content, gauge, findings, selectedRowId, onSelectR
     };
   }, [content]);
   const labels = useMemo(() => {
-    const ordinals = rowOrdinals(content.rows);
-    return new Map(content.rows.map((r, i) => [r.id, rowLabel(r, ordinals[i] ?? 0, "de")]));
+    const names = displayRowLabels(content.rows);
+    return new Map(content.rows.map((r, i) => [r.id, names[i] ?? ""]));
   }, [content]);
   const rowsById = useMemo(() => new Map(content.rows.map((r) => [r.id, r])), [content]);
   const errors = findings.filter((f) => f.severity === "error").length;

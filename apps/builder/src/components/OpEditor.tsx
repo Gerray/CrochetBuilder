@@ -1,9 +1,12 @@
 import type { Dispatch } from "react";
 import {
+  MAX_COUNT,
+  MAX_TIMES,
   MOD_ABBREVIATIONS,
   MOD_NAMES,
   STITCH_ABBREVIATIONS,
   STITCH_NAMES,
+  modifierAllowed,
   type Mod,
   type Op,
   type RepeatGroup,
@@ -13,6 +16,7 @@ import {
 import type { EditorAction } from "../state/editor.js";
 import type { OpPath } from "../state/op-tree.js";
 import { NumberField } from "./fields.js";
+import { focusLater } from "./focus.js";
 
 /** Picker order: the MVP stitches first, then the rest. */
 const PICKER_CODES: StitchCode[] = ["MR", "CH", "SL_ST", "SC", "HDC", "DC", "INC", "DEC", "INVDEC", "TR", "DTR", "ST"];
@@ -20,57 +24,61 @@ const MODS: Mod[] = ["BLO", "FLO", "TOG"];
 
 interface OpEditorProps {
   rowId: string;
+  /** Display label of the row ("Runde 3") — part of every accessible name below. */
+  rowTitle: string;
   ops: readonly Op[];
   dispatch: Dispatch<EditorAction>;
 }
 
+/** "3" for the third op of the row, "2.1" for the first op inside the second one. */
+const position = (path: OpPath) => path.map((i) => i + 1).join(".");
+const focusId = (rowId: string, path: OpPath, part: string) => `op:${rowId}:${path.join(".")}:${part}`;
+const listAddId = (rowId: string, listPath: OpPath) => `oplist:${rowId}:${listPath.join(".")}:add`;
+
 /** Structured editor for a row's op tree: stitches, counts, modifiers, nested repeats. */
-export function OpEditor({ rowId, ops, dispatch }: OpEditorProps) {
+export function OpEditor(props: OpEditorProps) {
   return (
     <div className="op-editor">
-      <OpList rowId={rowId} ops={ops} path={[]} dispatch={dispatch} />
+      <OpList {...props} path={[]} />
     </div>
   );
 }
 
-function OpList({ rowId, ops, path, dispatch }: OpEditorProps & { path: OpPath }) {
+function OpList({ rowId, rowTitle, ops, path, dispatch }: OpEditorProps & { path: OpPath }) {
   const nested = path.length > 0;
+  const where = nested ? `Wiederholung ${position(path)} von ${rowTitle}` : rowTitle;
   return (
     <>
       {ops.length > 0 && (
         <ol className="op-list">
-          {ops.map((op, i) => (
-            <li key={`${i}-${op.kind}`}>
-              {op.kind === "stitch" ? (
-                <StitchEditor
-                  rowId={rowId}
-                  op={op}
-                  path={[...path, i]}
-                  first={i === 0}
-                  last={i === ops.length - 1}
-                  dispatch={dispatch}
-                />
-              ) : (
-                <RepeatEditor
-                  rowId={rowId}
-                  op={op}
-                  path={[...path, i]}
-                  first={i === 0}
-                  last={i === ops.length - 1}
-                  dispatch={dispatch}
-                />
-              )}
-            </li>
-          ))}
+          {ops.map((op, i) => {
+            const item = {
+              rowId,
+              rowTitle,
+              path: [...path, i],
+              first: i === 0,
+              last: i === ops.length - 1,
+              dispatch,
+            };
+            return (
+              <li key={`${i}-${op.kind}`}>
+                {op.kind === "stitch" ? <StitchEditor {...item} op={op} /> : <RepeatEditor {...item} op={op} />}
+              </li>
+            );
+          })}
         </ol>
       )}
       <div className="op-list-actions">
         <button
           type="button"
           className="btn btn-small"
-          onClick={() =>
-            dispatch({ type: "insertOp", rowId, path: [...path, ops.length], op: { kind: "stitch", code: "SC", count: 1 } })
-          }
+          aria-label={`Masche hinzufügen in ${where}`}
+          data-focus-id={listAddId(rowId, path)}
+          onClick={() => {
+            const at = [...path, ops.length];
+            dispatch({ type: "insertOp", rowId, path: at, op: { kind: "stitch", code: "SC", count: 1 } });
+            focusLater(focusId(rowId, at, "count"));
+          }}
         >
           + Masche{nested ? " in Wiederholung" : ""}
         </button>
@@ -78,8 +86,13 @@ function OpList({ rowId, ops, path, dispatch }: OpEditorProps & { path: OpPath }
           <button
             type="button"
             className="btn btn-small btn-quiet"
+            aria-label={`Alle Maschen von ${where} wiederholen`}
             title="Alle Maschen dieser Liste in eine Wiederholung setzen"
-            onClick={() => dispatch({ type: "wrapInRepeat", rowId, path: [...path, 0], length: ops.length, times: 2 })}
+            onClick={() => {
+              const at = [...path, 0];
+              dispatch({ type: "wrapInRepeat", rowId, path: at, length: ops.length, times: 2 });
+              focusLater(focusId(rowId, at, "times"));
+            }}
           >
             Alle wiederholen
           </button>
@@ -91,6 +104,7 @@ function OpList({ rowId, ops, path, dispatch }: OpEditorProps & { path: OpPath }
 
 interface ItemProps<T> {
   rowId: string;
+  rowTitle: string;
   op: T;
   path: OpPath;
   first: boolean;
@@ -98,35 +112,61 @@ interface ItemProps<T> {
   dispatch: Dispatch<EditorAction>;
 }
 
-function ItemActions({ rowId, path, first, last, dispatch, what }: Omit<ItemProps<unknown>, "op"> & { what: string }) {
+function ItemActions({ rowId, path, first, last, dispatch, name }: Omit<ItemProps<unknown>, "op" | "rowTitle"> & { name: string }) {
+  const index = path[path.length - 1]!;
+  const listPath = path.slice(0, -1);
+  const sibling = (i: number) => [...listPath, i];
+
+  const move = (delta: -1 | 1) => {
+    dispatch({ type: "moveOp", rowId, path, delta });
+    const to = sibling(index + delta);
+    // Same arrow at the new position, or the other one once the end is reached.
+    focusLater(focusId(rowId, to, delta < 0 ? "prev" : "next"), focusId(rowId, to, delta < 0 ? "next" : "prev"));
+  };
+  const remove = () => {
+    dispatch({ type: "removeOp", rowId, path });
+    // The op that slides into this place, else the previous one, else the list's add button
+    // (or the parent list's, when an emptied repeat group disappears with it).
+    focusLater(
+      focusId(rowId, path, "count"),
+      focusId(rowId, path, "times"),
+      focusId(rowId, sibling(index - 1), "count"),
+      focusId(rowId, sibling(index - 1), "times"),
+      listAddId(rowId, listPath),
+      listAddId(rowId, listPath.slice(0, -1)),
+    );
+  };
+
   return (
     <span className="op-actions">
       <button
         type="button"
         className="btn btn-icon btn-quiet"
-        aria-label={`${what} nach vorne`}
+        aria-label={`${name} nach vorne`}
         title="Nach vorne"
         disabled={first}
-        onClick={() => dispatch({ type: "moveOp", rowId, path, delta: -1 })}
+        data-focus-id={focusId(rowId, path, "prev")}
+        onClick={() => move(-1)}
       >
         ←
       </button>
       <button
         type="button"
         className="btn btn-icon btn-quiet"
-        aria-label={`${what} nach hinten`}
+        aria-label={`${name} nach hinten`}
         title="Nach hinten"
         disabled={last}
-        onClick={() => dispatch({ type: "moveOp", rowId, path, delta: 1 })}
+        data-focus-id={focusId(rowId, path, "next")}
+        onClick={() => move(1)}
       >
         →
       </button>
       <button
         type="button"
         className="btn btn-icon btn-quiet"
-        aria-label={`${what} entfernen`}
+        aria-label={`${name} entfernen`}
         title="Entfernen"
-        onClick={() => dispatch({ type: "removeOp", rowId, path })}
+        onClick={remove}
       >
         ✕
       </button>
@@ -134,8 +174,9 @@ function ItemActions({ rowId, path, first, last, dispatch, what }: Omit<ItemProp
   );
 }
 
-function StitchEditor({ rowId, op, path, first, last, dispatch }: ItemProps<StitchOp>) {
+function StitchEditor({ rowId, rowTitle, op, path, first, last, dispatch }: ItemProps<StitchOp>) {
   const mods = op.modifiers ?? [];
+  const name = `Masche ${position(path)} von ${rowTitle}`;
   const toggle = (mod: Mod) => {
     let next = mods.includes(mod) ? mods.filter((m) => m !== mod) : [...mods, mod];
     // Back and front loop exclude each other.
@@ -148,14 +189,16 @@ function StitchEditor({ rowId, op, path, first, last, dispatch }: ItemProps<Stit
     <div className="op op-stitch">
       <NumberField
         className="op-count"
-        aria-label="Anzahl"
+        aria-label={`Anzahl, ${name}`}
+        data-focus-id={focusId(rowId, path, "count")}
         min={1}
+        max={MAX_COUNT}
         value={op.count}
         onValue={(count) => count !== undefined && dispatch({ type: "updateStitch", rowId, path, patch: { count } })}
       />
       <select
         className="op-code"
-        aria-label="Masche"
+        aria-label={`Maschenart, ${name}`}
         value={op.code}
         onChange={(e) => dispatch({ type: "updateStitch", rowId, path, patch: { code: e.target.value as StitchCode } })}
       >
@@ -165,41 +208,53 @@ function StitchEditor({ rowId, op, path, first, last, dispatch }: ItemProps<Stit
           </option>
         ))}
       </select>
-      <span className="op-mods" role="group" aria-label="Besonderheiten">
-        {MODS.map((mod) => (
-          <button
-            key={mod}
-            type="button"
-            className="chip"
-            aria-pressed={mods.includes(mod)}
-            title={MOD_NAMES[mod].de}
-            onClick={() => toggle(mod)}
-          >
-            {MOD_ABBREVIATIONS[mod].de}
-          </button>
-        ))}
+      <span className="op-mods" role="group" aria-label={`Besonderheiten, ${name}`}>
+        {MODS.map((mod) => {
+          const allowed = modifierAllowed(op.code, mod);
+          return (
+            <button
+              key={mod}
+              type="button"
+              className="chip"
+              aria-pressed={mods.includes(mod)}
+              aria-label={`${MOD_ABBREVIATIONS[mod].de}, ${name}`}
+              title={allowed ? MOD_NAMES[mod].de : `${MOD_NAMES[mod].de} – nicht bei dieser Masche`}
+              disabled={!allowed && !mods.includes(mod)}
+              onClick={() => toggle(mod)}
+            >
+              {MOD_ABBREVIATIONS[mod].de}
+            </button>
+          );
+        })}
       </span>
       <button
         type="button"
         className="btn btn-small btn-quiet"
+        aria-label={`${name} in Wiederholung setzen`}
         title="Diese Masche in eine Wiederholung setzen"
-        onClick={() => dispatch({ type: "wrapInRepeat", rowId, path, times: 2 })}
+        onClick={() => {
+          dispatch({ type: "wrapInRepeat", rowId, path, times: 2 });
+          focusLater(focusId(rowId, path, "times"));
+        }}
       >
         ( )×
       </button>
-      <ItemActions rowId={rowId} path={path} first={first} last={last} dispatch={dispatch} what="Masche" />
+      <ItemActions rowId={rowId} path={path} first={first} last={last} dispatch={dispatch} name={name} />
     </div>
   );
 }
 
-function RepeatEditor({ rowId, op, path, first, last, dispatch }: ItemProps<RepeatGroup>) {
+function RepeatEditor({ rowId, rowTitle, op, path, first, last, dispatch }: ItemProps<RepeatGroup>) {
+  const name = `Wiederholung ${position(path)} von ${rowTitle}`;
   return (
-    <div className="op op-repeat" role="group" aria-label={`Wiederholung ${op.times}×`}>
+    <div className="op op-repeat" role="group" aria-label={`${name}, ${op.times}×`}>
       <div className="repeat-head">
         <NumberField
           className="op-count"
-          aria-label="Wiederholungen"
+          aria-label={`Anzahl Wiederholungen, ${name}`}
+          data-focus-id={focusId(rowId, path, "times")}
           min={1}
+          max={MAX_TIMES}
           value={op.times}
           onValue={(times) => times !== undefined && dispatch({ type: "setRepeatTimes", rowId, path, times })}
         />
@@ -209,15 +264,19 @@ function RepeatEditor({ rowId, op, path, first, last, dispatch }: ItemProps<Repe
         <button
           type="button"
           className="btn btn-small btn-quiet"
+          aria-label={`${name} auflösen`}
           title="Wiederholung auflösen (Maschen bleiben, einmal gearbeitet)"
-          onClick={() => dispatch({ type: "unwrapRepeat", rowId, path })}
+          onClick={() => {
+            dispatch({ type: "unwrapRepeat", rowId, path });
+            focusLater(focusId(rowId, path, "count"), focusId(rowId, path, "times"), listAddId(rowId, path.slice(0, -1)));
+          }}
         >
           Auflösen
         </button>
-        <ItemActions rowId={rowId} path={path} first={first} last={last} dispatch={dispatch} what="Wiederholung" />
+        <ItemActions rowId={rowId} path={path} first={first} last={last} dispatch={dispatch} name={name} />
       </div>
       <div className="repeat-body">
-        <OpList rowId={rowId} ops={op.ops} path={path} dispatch={dispatch} />
+        <OpList rowId={rowId} rowTitle={rowTitle} ops={op.ops} path={path} dispatch={dispatch} />
       </div>
     </div>
   );

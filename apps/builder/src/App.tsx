@@ -3,10 +3,12 @@ import { validate } from "@crochetbuilder/engine";
 import { PreviewPane } from "./components/PreviewPane.js";
 import { RowList, type FocusRequest } from "./components/RowList.js";
 import { SplitPane } from "./components/SplitPane.js";
+import { StorageNotice } from "./components/StorageNotice.js";
 import { TopBar } from "./components/TopBar.js";
 import { addRow, duplicateRow, loadDemo, newDocument } from "./state/actions.js";
 import { emptyDocument } from "./state/document.js";
 import { canRedo, canUndo, currentPart, editorReducer, initEditorState } from "./state/editor.js";
+import { shortcutFor } from "./state/shortcuts.js";
 import { usePersistence } from "./state/usePersistence.js";
 
 function isEditable(target: EventTarget | null): boolean {
@@ -17,13 +19,15 @@ function isEditable(target: EventTarget | null): boolean {
 /** The builder: top bar, row editor (left) and preview (right). */
 export function App() {
   const [state, dispatch] = useReducer(editorReducer, undefined, () => initEditorState(emptyDocument()));
-  const status = usePersistence(state, dispatch);
+  const persistence = usePersistence(state, dispatch);
   const [selectedRowId, setSelectedRowId] = useState<string | null>(null);
   const [focusRequest, setFocusRequest] = useState<FocusRequest | null>(null);
   const focusCounter = useRef(0);
 
   const part = currentPart(state.doc);
+  // Validation only reruns when the part content changes (row/op limits keep it cheap).
   const findings = useMemo(() => validate(part), [part]);
+  const rows = part.rows;
 
   const focusRow = useCallback((rowId: string) => {
     setSelectedRowId(rowId);
@@ -48,24 +52,30 @@ export function App() {
     [focusRow],
   );
 
-  // Global shortcuts: Alt+N adds a row after the selected one; Ctrl+Z / Ctrl+Y outside fields.
-  const rows = part.rows;
+  // Deleting a row moves focus to its neighbour (next, else previous), never to <body>.
+  const deleteRow = useCallback(
+    (rowId: string) => {
+      const index = rows.findIndex((r) => r.id === rowId);
+      const neighbour = rows[index + 1] ?? rows[index - 1];
+      dispatch({ type: "deleteRow", rowId });
+      if (neighbour) focusRow(neighbour.id);
+      else setTimeout(() => document.querySelector<HTMLElement>("[data-focus-id='add-row']")?.focus(), 0);
+    },
+    [rows, focusRow],
+  );
+
+  // Global shortcuts (by produced character, see shortcuts.ts).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.altKey && !e.ctrlKey && !e.metaKey && e.code === "KeyN") {
+      const shortcut = shortcutFor(e);
+      if (shortcut === "addRow") {
         e.preventDefault();
         const exists = rows.some((r) => r.id === selectedRowId);
         addRowAfter(exists ? selectedRowId : null, false);
-        return;
-      }
-      if ((e.ctrlKey || e.metaKey) && !e.altKey && !isEditable(e.target)) {
-        if (e.code === "KeyZ") {
-          e.preventDefault();
-          dispatch({ type: e.shiftKey ? "redo" : "undo" });
-        } else if (e.code === "KeyY") {
-          e.preventDefault();
-          dispatch({ type: "redo" });
-        }
+      } else if (shortcut && !isEditable(e.target)) {
+        // Inside text fields the browser's own undo applies.
+        e.preventDefault();
+        dispatch({ type: shortcut });
       }
     };
     window.addEventListener("keydown", onKey);
@@ -76,7 +86,7 @@ export function App() {
     document.title = state.doc.title.trim() ? `${state.doc.title.trim()} – CrochetBuilder` : "CrochetBuilder";
   }, [state.doc.title]);
 
-  if (status === "loading") {
+  if (persistence.status === "loading") {
     return (
       <div className="loading" role="status">
         Lade …
@@ -85,13 +95,17 @@ export function App() {
   }
 
   return (
-    <div className="app">
+    // Leaving a field ends its typing streak: the next edit is a separate undo step.
+    <div className="app" onBlurCapture={() => dispatch({ type: "endTyping" })}>
+      {persistence.invalidStored !== undefined && (
+        <StorageNotice raw={persistence.invalidStored} onStartFresh={persistence.resume} />
+      )}
       <TopBar
         doc={state.doc}
         dispatch={dispatch}
         canUndo={canUndo(state)}
         canRedo={canRedo(state)}
-        status={status}
+        status={persistence.status}
         onNew={() => dispatch(newDocument())}
         onDemo={() => dispatch(loadDemo())}
       />
@@ -108,6 +122,7 @@ export function App() {
               onFocusRow={focusRow}
               onAddRow={addRowAfter}
               onDuplicate={duplicate}
+              onDelete={deleteRow}
             />
           }
           right={

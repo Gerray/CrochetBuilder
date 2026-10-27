@@ -291,6 +291,39 @@ input[aria-invalid="true"] {
   color: var(--accent-text);
 }
 
+/* ---------------------------------------------------------------- storage notice */
+
+.storage-notice {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 24px;
+  padding: 10px 16px;
+  background: var(--warning-soft);
+  color: var(--text);
+  border-bottom: 1px solid var(--border-strong);
+}
+.storage-notice p {
+  margin: 2px 0 0;
+  color: var(--text-muted);
+  font-size: 0.9em;
+}
+.storage-notice-actions {
+  display: flex;
+  gap: 8px;
+}
+.save-suspended {
+  color: var(--warning);
+}
+.row-add-stitches {
+  align-self: flex-start;
+}
+.chip:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
 /* ---------------------------------------------------------------- top bar */
 
 .topbar {

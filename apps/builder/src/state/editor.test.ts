@@ -295,7 +295,8 @@ describe("messages", () => {
 describe("storage", () => {
   it("accepts valid stored documents and rejects anything else", () => {
     const doc = demoDocument();
-    expect(parseStored({ doc, pinned: ["a", 3] })).toEqual({ doc, pinned: ["a"] });
+    expect(parseStored({ doc, pinned: ["a", 3], savedAt: 5 })).toEqual({ doc, pinned: ["a"], savedAt: 5 });
+    expect(parseStored({ doc })).toEqual({ doc, pinned: [], savedAt: 0 });
     expect(parseStored({ doc: { ...doc, parts: [] } })).toBeNull();
     expect(parseStored({ doc: { title: 1 } })).toBeNull();
     expect(parseStored(null)).toBeNull();
