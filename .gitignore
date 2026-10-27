@@ -1,0 +1,12 @@
+node_modules/
+dist/
+coverage/
+*.log
+*.tmp
+.DS_Store
+
+# Lokale Werkzeug-Konfiguration
+.claude/
+
+# Interne Planungsdokumente (Protokoll, Plan, Revisionsplan) — nie veröffentlichen.
+docs/intern/

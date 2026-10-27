@@ -1,0 +1,25 @@
+{
+  "name": "crochetbuilder",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "CrochetBuilder monorepo: pattern engine, builder app, viewer",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "builder:dev": "npm run dev --workspace @crochetbuilder/builder",
+    "builder:build": "npm run build --workspace @crochetbuilder/builder"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.3",
+    "vitest": "^4.1.8"
+  }
+}
