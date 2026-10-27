@@ -82,3 +82,6 @@ export type { Size, RoundMeasure } from "./measure.js";
 
 export { nodeForCursor } from "./cursor.js";
 export type { StitchCursor } from "./cursor.js";
+
+export { toMesh } from "./mesh.js";
+export type { MeshData, MeshOptions, MeshStyle } from "./mesh.js";
