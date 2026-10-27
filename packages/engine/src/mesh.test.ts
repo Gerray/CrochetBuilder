@@ -146,6 +146,37 @@ describe("toMesh — tube", () => {
   });
 });
 
+describe("toMesh — degenerate pieces", () => {
+  it("draws a lone stitch (MR only, one SC) as a yarn-thick bead", () => {
+    for (const ops of [[st("MR")], [st("SC")]]) {
+      const g = relax(buildGraph({ schemaVersion: 1, rows: [row("a", ops, 0)] }));
+      const m = toMesh(g, "tube", { radialSegments: 6 });
+      expectWellFormed(m);
+      expect(m.indices.length).toBeGreaterThan(0);
+      const r = g.gauge.yarnDiameterMm / 2;
+      for (let v = 0; v < m.positions.length / 3; v++) {
+        const d = Math.hypot(
+          m.positions[3 * v]! - g.positions[0]!,
+          m.positions[3 * v + 1]! - g.positions[1]!,
+          m.positions[3 * v + 2]! - g.positions[2]!,
+        );
+        expect(d).toBeCloseTo(r, 4);
+      }
+      expect(windingAgreement(m)).toBeGreaterThan(0.6); // pole triangles are degenerate
+    }
+  });
+
+  it("gives turning chains (in no triangle) the normal of their neighbour on the path", () => {
+    const flat = relax(buildGraph(FLAT));
+    const m = toMesh(flat, "surface");
+    const turn = flat.nodes.find((n) => n.lift)!;
+    const neighbour = turn.id - 1; // last stitch of the previous row
+    for (let k = 0; k < 3; k++) expect(m.normals[3 * turn.id + k]).toBeCloseTo(m.normals[3 * neighbour + k]!, 6);
+    // Facing +Z like the fabric, not "away from the centroid" sideways.
+    expect(m.normals[3 * turn.id + 2]!).toBeGreaterThan(0.8);
+  });
+});
+
 describe("toMesh — empty graph", () => {
   it("returns empty arrays for every style", () => {
     const empty = buildGraph({ schemaVersion: 1, rows: [] });

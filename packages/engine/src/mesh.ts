@@ -4,7 +4,8 @@
  *
  * Styles:
  *   - `tube`: the yarn as a tube along the working path (the `prev` chain), radius = half the
- *     yarn diameter, smoothed with a Catmull–Rom spline. Ends are left open.
+ *     yarn diameter, smoothed with a Catmull–Rom spline. Ends are left open. A path of a
+ *     single stitch (a lone MR or SC) becomes a small yarn-thick sphere so it stays visible.
  *   - `points`: one vertex per stitch (for `gl.POINTS` / sprites; cheap on mobile).
  *   - `surface`: the fabric as a triangle mesh — one vertex per stitch, triangles between
  *     each row and the stitches it is worked into. Closed pieces are wound outwards.
@@ -49,7 +50,7 @@ export function toMesh(graph: StitchGraph, style: MeshStyle, opts: MeshOptions =
   const nodeIndex = new Uint32Array(n);
   for (let i = 0; i < n; i++) nodeIndex[i] = i;
   const tris = outwardTriangles(graph);
-  const normals = vertexNormals(graph.positions, n, tris);
+  const normals = vertexNormals(graph, tris);
   if (style === "points") {
     return { style, primitive: "points", positions, normals, indices: nodeIndex.slice(), nodeIndex };
   }
@@ -76,8 +77,14 @@ function outwardTriangles(graph: StitchGraph): Uint32Array {
   return tris;
 }
 
-/** Area-weighted vertex normals; vertices outside every triangle point away from the centroid. */
-function vertexNormals(pos: Float64Array, n: number, tris: Uint32Array): Float32Array {
+/**
+ * Area-weighted vertex normals. A vertex outside every triangle (a turning chain, a lone
+ * chain) takes the normal of its nearest neighbour along the working path that has one, else
+ * it points away from the centroid.
+ */
+function vertexNormals(graph: StitchGraph, tris: Uint32Array): Float32Array {
+  const pos = graph.positions;
+  const n = graph.nodes.length;
   const acc = new Float64Array(3 * n);
   for (let t = 0; t < tris.length; t += 3) {
     const a = 3 * tris[t]!, b = 3 * tris[t + 1]!, c = 3 * tris[t + 2]!;
@@ -96,9 +103,17 @@ function vertexNormals(pos: Float64Array, n: number, tris: Uint32Array): Float32
     cy += pos[3 * i + 1]! / n;
     cz += pos[3 * i + 2]! / n;
   }
+  // Nearest node with a normal on either side along the working path (two linear passes).
+  const has = (i: number) => Math.hypot(acc[3 * i]!, acc[3 * i + 1]!, acc[3 * i + 2]!) >= 1e-12;
+  const left = new Int32Array(n);
+  const right = new Int32Array(n);
+  for (let i = 0, last = -1; i < n; i++) left[i] = last = has(i) ? i : last;
+  for (let i = n - 1, last = -1; i >= 0; i--) right[i] = last = has(i) ? i : last;
   const out = new Float32Array(3 * n);
   for (let i = 0; i < n; i++) {
-    let x = acc[3 * i]!, y = acc[3 * i + 1]!, z = acc[3 * i + 2]!;
+    const l = left[i]!, r = right[i]!;
+    const src = l < 0 ? (r < 0 ? i : r) : r < 0 || i - l <= r - i ? l : r;
+    let x = acc[3 * src]!, y = acc[3 * src + 1]!, z = acc[3 * src + 2]!;
     let len = Math.hypot(x, y, z);
     if (len < 1e-12) {
       x = pos[3 * i]! - cx;
@@ -148,7 +163,10 @@ function tubeMesh(graph: StitchGraph, opts: MeshOptions): MeshData {
   const nodeIndex: number[] = [];
 
   for (const path of paths) {
-    if (path.length < 2) continue;
+    if (path.length < 2) {
+      yarnBead(path[0]!, pos, radius, seg, positions, normals, indices, nodeIndex);
+      continue;
+    }
     // Spline samples along the path.
     const pts: number[] = [];
     const owner: number[] = [];
@@ -235,6 +253,38 @@ function tubeMesh(graph: StitchGraph, opts: MeshOptions): MeshData {
     indices: Uint32Array.from(indices),
     nodeIndex: Uint32Array.from(nodeIndex),
   };
+}
+
+/** A small UV sphere of yarn radius around one node (for single-stitch paths). */
+function yarnBead(
+  node: number,
+  pos: Float64Array,
+  radius: number,
+  seg: number,
+  positions: number[],
+  normals: number[],
+  indices: number[],
+  nodeIndex: number[],
+): void {
+  const base = positions.length / 3;
+  const lat = Math.max(2, Math.floor(seg / 2));
+  for (let i = 0; i <= lat; i++) {
+    const th = (Math.PI * i) / lat;
+    for (let j = 0; j < seg; j++) {
+      const ph = (2 * Math.PI * j) / seg;
+      const nx = Math.sin(th) * Math.cos(ph), ny = Math.cos(th), nz = Math.sin(th) * Math.sin(ph);
+      positions.push(pos[3 * node]! + radius * nx, pos[3 * node + 1]! + radius * ny, pos[3 * node + 2]! + radius * nz);
+      normals.push(nx, ny, nz);
+      nodeIndex.push(node);
+    }
+  }
+  for (let i = 0; i < lat; i++) {
+    for (let j = 0; j < seg; j++) {
+      const a = base + i * seg + j;
+      const b = base + i * seg + ((j + 1) % seg);
+      indices.push(a, b, a + seg, b, b + seg, a + seg);
+    }
+  }
 }
 
 /** Uniform Catmull–Rom interpolation between p1 and p2 at t ∈ [0, 1]. */
