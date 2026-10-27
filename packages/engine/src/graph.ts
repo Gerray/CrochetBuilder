@@ -54,6 +54,13 @@ export interface StitchNode {
   prev: NodeId | null;
   /** Distinct nodes of the previous stitch row this stitch is worked into, in working order. */
   parents: NodeId[];
+  /**
+   * The anchor slots this stitch consumed, in consumption order: the parent node and the
+   * index of the slot among the slots that parent offers (0 … producesStitches − 1, in the
+   * parent's own working order). An `INC` parent offers slots 0 and 1. Finer-grained than
+   * `parents`; the relaxation uses it to model each fabric stitch of an `INC` on its own.
+   */
+  parentSlots?: AnchorSlot[];
   /** Width of the stitch top along its row, in stitch widths (INC 2, MR 0, otherwise 1). */
   span: number;
   /** Vertical rest length in mm: `stitchHeightMm × STITCH_HEIGHT_FACTOR[code]`. */
@@ -64,6 +71,13 @@ export interface StitchNode {
    * the yarn to the next stitch's height instead of adding width.
    */
   lift: boolean;
+}
+
+/** One anchor slot consumed by a stitch (see `StitchNode.parentSlots`). */
+export interface AnchorSlot {
+  node: NodeId;
+  /** Index of the slot among the slots `node` offers to the next row. */
+  slot: number;
 }
 
 export type EdgeKind = "prev" | "parent";
@@ -130,9 +144,21 @@ export interface BuildGraphOptions {
 /** One anchor slot offered to the next row, in the consumer's frame. */
 interface Slot {
   node: NodeId;
+  /** Index of the slot among its node's slots, in the node's own working order. */
+  index: number;
   /** Horizontal offset of the slot from its node's centre, in mm, along the consumer's direction. */
   offset: number;
 }
+
+/**
+ * How far a slanted leg leans, as a fraction of the half-stitch offset it would need. The two
+ * stitches of an increase splay out of one loop and the two legs of a decrease meet in one
+ * top; such a leg's rest length is `√(h² + (LEG_LEAN · w/2)²)`. 1 would keep the full row
+ * height on the slant, 0 the leg length of an upright stitch; real legs do some of both.
+ * 0.7 keeps stacked increases and decreases from bulging into hexagon corners while a disc
+ * of six increases per round still lies flat.
+ */
+export const LEG_LEAN = 0.7;
 
 function spanOf(code: StitchCode): number {
   if (code === "MR") return 0;
@@ -233,12 +259,13 @@ export function buildGraph(content: PartContent, gauge?: Gauge, opts: BuildGraph
       for (let id = firstNode; id < firstNode + nodeCount; id++) {
         if (consumes[id]! > 0) {
           nodes[id]!.parents.push(mr.id);
+          nodes[id]!.parentSlots = [{ node: mr.id, slot: 0 }];
           parentDx[id]!.push(0);
         }
       }
     } else if (kind === "stitch" && prevSlots.length > 0) {
       const slots = reversed
-        ? prevSlots.map((s) => ({ node: s.node, offset: -s.offset })).reverse()
+        ? prevSlots.map((s) => ({ node: s.node, index: s.index, offset: -s.offset })).reverse()
         : prevSlots;
       let total = 0;
       for (let id = firstNode; id < firstNode + nodeCount; id++) total += consumes[id]!;
@@ -249,10 +276,12 @@ export function buildGraph(content: PartContent, gauge?: Gauge, opts: BuildGraph
         if (c === 0) continue;
         const sums = new Map<NodeId, { dx: number; n: number }>();
         const order: NodeId[] = [];
+        const used: AnchorSlot[] = [];
         for (let j = 0; j < c; j++) {
           const slot = slots[Math.min(cursor, slots.length - 1)]!;
           cursor++;
-          const dx = slot.offset - (j - (c - 1) / 2) * w;
+          used.push({ node: slot.node, slot: slot.index });
+          const dx = slot.offset - LEG_LEAN * (j - (c - 1) / 2) * w;
           const acc = sums.get(slot.node);
           if (acc) {
             acc.dx += dx;
@@ -267,6 +296,7 @@ export function buildGraph(content: PartContent, gauge?: Gauge, opts: BuildGraph
           nodes[id]!.parents.push(p);
           parentDx[id]!.push(acc.dx / acc.n);
         }
+        nodes[id]!.parentSlots = used;
       }
     }
 
@@ -275,7 +305,7 @@ export function buildGraph(content: PartContent, gauge?: Gauge, opts: BuildGraph
     for (let id = firstNode; id < firstNode + nodeCount; id++) {
       const n = nodes[id]!;
       const p = kind === "chain" ? 1 : STITCH_PROPERTIES[n.code].producesStitches;
-      for (let k = 0; k < p; k++) slots.push({ node: id, offset: (k - (p - 1) / 2) * w });
+      for (let k = 0; k < p; k++) slots.push({ node: id, index: k, offset: (k - (p - 1) / 2) * w });
     }
 
     const direction: 1 | -1 = prevRow === null ? 1 : reversed ? (-prevRow.direction as 1 | -1) : prevRow.direction;

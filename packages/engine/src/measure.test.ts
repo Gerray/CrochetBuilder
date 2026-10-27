@@ -6,22 +6,23 @@
  * start and has faded out long before the end — the final shape comes from the springs, the
  * stuffing and the repulsion (radial: 0 gives the same sizes, see relax.test.ts).
  *
- * Two gauges:
- *   - DEFAULT: engine default (DK, 4 mm) — w = 5 mm, h = 100/24 ≈ 4.17 mm (h ≈ 0.83·w), yarn
- *     2.5 mm.
- *   - SQUARE: w = h = 5 mm. The flat-circle rule "6 increases per round lie flat" holds for
- *     2π·h/w ≈ 6, i.e. square stitches; that is where the ideal shapes are checked tightly.
+ * Gauges:
+ *   - DEFAULT: engine default (DK, 4 mm) — w = 5 mm, h = 100/21 ≈ 4.76 mm (h ≈ 0.95·w, E15),
+ *     yarn 2.5 mm. 2π·h ≈ 6·w: six increases per round lie flat.
+ *   - DEMO: the builder's ball demo (DK, 3 mm hook) — the same proportions at w = 3.75 mm.
+ *   - SQUARE: w = h = 5 mm. 2π·h > 6·w: increase rounds are a little short, a disc cups.
  *
  * Tolerance bands, and why:
  *   - Per round, the diameter (2 × mean distance from the round's centroid) over the analytic
- *     C/π (C = stitches × w) must stay within 0.75–1.35 (DEFAULT) / 0.85–1.30 (SQUARE). This is
- *     the topology-sensitive check: a round worked into the wrong anchors cannot open up to its
- *     circumference (the negative test drops to ≈ 0.3).
- *   - DEFAULT increase rounds are slightly too dense for h < w (2π·h/w ≈ 5.2 < 6), so they
- *     ruffle a little: the disc is wavy (thickness ≈ 0.35 × width) and the FORMAT.md sphere —
- *     one even round, pole-to-pole path barely longer than its equator radius — is a flattened
- *     ball (≈ 36 × 23 mm, height/width ≈ 0.64). With SQUARE stitches the disc is flat
- *     (≈ 0.17) and the classic four-even-rounds ball is round (height/width ≈ 0.94).
+ *     C/π (C = stitches × w) must stay within 0.75–1.35. This is the topology-sensitive check:
+ *     a round worked into the wrong anchors cannot open up to its circumference (the negative
+ *     test drops to ≈ 0.3).
+ *   - Smoothness: every round's circularity (std / mean of the distances from its centroid)
+ *     < 5 % — six double-wide increase nodes or a pillowed stuffing show up as 7–11 %.
+ *   - The classic ball (four even rounds) is round: height / width 0.85–1.1, widest round
+ *     ±12 % of C/π, no stitch further than 15 % of the radius from the best-fit sphere.
+ *     The FORMAT.md sphere (one even round) is a flattened pebble — its pole-to-pole path is
+ *     barely longer than its equator radius — and is only checked for size and smoothness.
  *   - Outer width (yarn envelope) ±15 % of C/π + yarn; circumference ±10 % of C.
  *   - Flat pieces: width ±15 % of stitches × w + yarn, height ±20 % of rows × h + yarn.
  */
@@ -59,7 +60,7 @@ const DECREASES = [
 ];
 /** docs/FORMAT.md: 8 rounds, 24 stitches at the equator. */
 const SPHERE = part([...INCREASES, sc24("r5"), ...DECREASES]);
-/** The classic amigurumi ball: four even rounds. */
+/** The classic amigurumi ball: four even rounds (the builder's "Ball" demo). */
 const BALL = part([...INCREASES, sc24("r5"), sc24("e2"), sc24("e3"), sc24("e4"), ...DECREASES]);
 const DISC = part(INCREASES);
 const TUBE = part([...INCREASES, ...["t1", "t2", "t3", "t4", "t5", "t6"].map(sc24)]);
@@ -81,6 +82,8 @@ const WRONG = part([
   row("r6", [st("SC", 6)], 6),
 ]);
 const SQUARE = { stitchesPer10cm: 20, rowsPer10cm: 20 };
+/** The builder's ball demo: DK yarn with a 3 mm hook. */
+const DEMO: Gauge = { yarnWeight: "dk", hookMm: 3 };
 
 const model = (c: PartContent, gauge?: Gauge) => relax(buildGraph(c, gauge));
 /** Per closed round: diameter / (C/π). */
@@ -89,6 +92,7 @@ const roundRatios = (g: StitchGraph) =>
     const row = g.rows.find((x) => x.rowId === r.rowId)!;
     return r.diameter / ((row.widthStitches * g.gauge.stitchWidthMm) / Math.PI);
   });
+const maxCircularity = (g: StitchGraph) => Math.max(...measureRounds(g).map((r) => r.circularity));
 /** Mean relative deviation of parent (vertical) edges from their rest length. */
 const parentStrain = (g: StitchGraph) => {
   const p = g.positions;
@@ -102,10 +106,50 @@ const parentStrain = (g: StitchGraph) => {
   }
   return sum / n;
 };
+/**
+ * Least-squares sphere through the stitches (MR and turning chains left out) and the largest
+ * distance of a stitch from it, relative to its radius.
+ */
+const sphereFit = (g: StitchGraph) => {
+  const p = g.positions;
+  const ids = g.nodes.filter((n) => n.code !== "MR" && !n.lift).map((n) => n.id);
+  // x² + y² + z² = 2ax + 2by + 2cz + d — linear in (a, b, c, d).
+  const A = Array.from({ length: 4 }, () => [0, 0, 0, 0]);
+  const b = [0, 0, 0, 0];
+  for (const id of ids) {
+    const x = p[3 * id]!, y = p[3 * id + 1]!, z = p[3 * id + 2]!;
+    const r = [2 * x, 2 * y, 2 * z, 1];
+    for (let i = 0; i < 4; i++) {
+      b[i] = b[i]! + r[i]! * (x * x + y * y + z * z);
+      for (let j = 0; j < 4; j++) A[i]![j] = A[i]![j]! + r[i]! * r[j]!;
+    }
+  }
+  for (let i = 0; i < 4; i++) {
+    for (let k = i + 1; k < 4; k++) {
+      const f = A[k]![i]! / A[i]![i]!;
+      for (let j = i; j < 4; j++) A[k]![j] = A[k]![j]! - f * A[i]![j]!;
+      b[k] = b[k]! - f * b[i]!;
+    }
+  }
+  const s = [0, 0, 0, 0];
+  for (let i = 3; i >= 0; i--) {
+    let v = b[i]!;
+    for (let j = i + 1; j < 4; j++) v -= A[i]![j]! * s[j]!;
+    s[i] = v / A[i]![i]!;
+  }
+  const radius = Math.sqrt(s[3]! + s[0]! ** 2 + s[1]! ** 2 + s[2]! ** 2);
+  let maxDev = 0;
+  for (const id of ids) {
+    const d = Math.hypot(p[3 * id]! - s[0]!, p[3 * id + 1]! - s[1]!, p[3 * id + 2]! - s[2]!);
+    maxDev = Math.max(maxDev, Math.abs(d - radius) / radius);
+  }
+  return { radius, maxDev };
+};
 const within = (actual: number, expected: number, tol: number) => {
   expect(actual).toBeGreaterThanOrEqual(expected * (1 - tol));
   expect(actual).toBeLessThanOrEqual(expected * (1 + tol));
 };
+const median = (xs: number[]) => [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)]!;
 
 describe("measure", () => {
   it("is the bounding box of the node centres grown by one yarn diameter", () => {
@@ -128,18 +172,60 @@ describe("measure", () => {
     const w = g.gauge.stitchWidthMm;
     expect(rounds[4]!.diameter).toBeCloseTo((24 * w) / Math.PI, 6);
     expect(rounds[4]!.circumference).toBeCloseTo(24 * 2 * ((24 * w) / (2 * Math.PI)) * Math.sin(Math.PI / 24), 6);
+    expect(rounds[4]!.circularity).toBeCloseTo(0, 9);
     expect(measureRounds(buildGraph(RECT))).toEqual([]);
+  });
+
+  it("measures circularity as std / mean of the distances from the centroid", () => {
+    const g = buildGraph(part([row("r1", [st("MR"), st("SC", 4)], 4)]));
+    // Four stitches at distances 1, 3, 1, 3 around the origin: mean 2, std 1.
+    const pos = Float64Array.from([0, 0, 0, 1, 0, 0, 0, 0, 3, -1, 0, 0, 0, 0, -3]);
+    const [r] = measureRounds({ ...g, positions: pos });
+    expect(r!.diameter).toBeCloseTo(4);
+    expect(r!.circularity).toBeCloseTo(0.5);
   });
 });
 
 describe("golden shapes", () => {
-  it("sphere (FORMAT.md, default gauge): flattened ball of the right size, closed at both ends", () => {
+  for (const [name, gauge] of [
+    ["the builder demo gauge", DEMO],
+    ["the default gauge", undefined],
+    ["square stitches", SQUARE],
+  ] as const) {
+    it(`classic ball (four even rounds) is a smooth, round ball with ${name}`, () => {
+      const g = model(BALL, gauge);
+      const w = g.gauge.stitchWidthMm;
+      const d = g.gauge.yarnDiameterMm;
+      const size = measure(g);
+      // Round: as tall as wide (0.93 with the default proportions, 1.0 with square stitches).
+      expect(size.height / size.width).toBeGreaterThan(0.85);
+      expect(size.height / size.width).toBeLessThan(1.1);
+      within(maxRoundDiameter(g), (24 * w) / Math.PI, 0.12);
+      // Smooth: every round nearly a circle (≤ 3.2 %), every stitch near one sphere (≤ 9.3 %).
+      expect(maxCircularity(g)).toBeLessThan(0.05);
+      expect(sphereFit(g).maxDev).toBeLessThan(0.15);
+      for (const ratio of roundRatios(g)) {
+        expect(ratio).toBeGreaterThan(0.75);
+        expect(ratio).toBeLessThan(1.35);
+      }
+      // Both poles closed: the magic ring at the bottom, the last round pulled small on top.
+      const rounds = measureRounds(g);
+      const span = size.height - d;
+      expect(g.positions[1]!).toBeLessThan(0.1 * span);
+      expect(rounds[0]!.diameter).toBeLessThan(0.3 * size.width);
+      const top = rounds[rounds.length - 1]!;
+      expect(top.diameter).toBeLessThan(0.3 * size.width);
+      expect(top.center[1]).toBeGreaterThan(0.85 * span);
+    });
+  }
+
+  it("sphere (FORMAT.md, default gauge): smooth flattened ball of the right size, closed at both ends", () => {
     const g = model(SPHERE);
     const w = g.gauge.stitchWidthMm;
     const d = g.gauge.yarnDiameterMm;
     const expected = (24 * w) / Math.PI; // 38.2 mm
     const size = measure(g);
-    within(size.width, expected + d, 0.15); // 36.2 mm
+    within(size.width, expected + d, 0.15); // 39.8 mm
     within(size.depth, expected + d, 0.15);
     const rounds = measureRounds(g);
     within(rounds.find((r) => r.rowId === "r5")!.circumference, 24 * w, 0.1);
@@ -147,10 +233,13 @@ describe("golden shapes", () => {
       expect(ratio).toBeGreaterThan(0.75);
       expect(ratio).toBeLessThan(1.35);
     }
-    expect(parentStrain(g)).toBeLessThan(0.1);
+    expect(maxCircularity(g)).toBeLessThan(0.05); // 4.4 %: stacked increases, a hint of hexagon
+    // Firm stuffing stretches the fabric, the vertical links of a pebble most (≈ 12 %).
+    expect(parentStrain(g)).toBeLessThan(0.15);
+    expect(parentStrain(relax(buildGraph(SPHERE), { stuffing: 0 }))).toBeLessThan(0.05);
     // Not a flat disc, not a tall tube.
-    expect(size.height / size.width).toBeGreaterThan(0.45); // 0.64
-    expect(size.height / size.width).toBeLessThan(1.1);
+    expect(size.height / size.width).toBeGreaterThan(0.5); // 0.65
+    expect(size.height / size.width).toBeLessThan(0.9);
 
     // Closed at both ends: starts at the magic ring at the bottom, ends in a small round on top.
     const top = rounds[rounds.length - 1]!;
@@ -165,11 +254,12 @@ describe("golden shapes", () => {
 
   it("sphere with square stitches: every round within 0.85–1.30 of C/π, equator ±10 %", () => {
     const g = model(SPHERE, SQUARE);
-    within(maxRoundDiameter(g), (24 * g.gauge.stitchWidthMm) / Math.PI, 0.1); // 35.6 vs 38.2
+    within(maxRoundDiameter(g), (24 * g.gauge.stitchWidthMm) / Math.PI, 0.1);
     for (const ratio of roundRatios(g)) {
       expect(ratio).toBeGreaterThan(0.85);
       expect(ratio).toBeLessThan(1.3);
     }
+    expect(maxCircularity(g)).toBeLessThan(0.05);
   });
 
   it("a wrong topology does not pass: 24 stitches on a round of 6 cannot open up", () => {
@@ -179,31 +269,31 @@ describe("golden shapes", () => {
     }
   });
 
-  it("classic ball (four even rounds) is round with square stitches and rounder than the sphere", () => {
+  it("the classic ball is rounder than the one-even-round sphere", () => {
     const ratio = (g: StitchGraph) => measure(g).height / measure(g).width;
-    const square = model(BALL, SQUARE);
-    within(maxRoundDiameter(square), (24 * square.gauge.stitchWidthMm) / Math.PI, 0.1);
-    expect(ratio(square)).toBeGreaterThan(0.85); // 0.94
-    expect(ratio(square)).toBeLessThan(1.15);
-    expect(ratio(model(BALL))).toBeGreaterThan(ratio(model(SPHERE)) + 0.05); // 0.74 vs 0.64
+    expect(ratio(model(BALL))).toBeGreaterThan(ratio(model(SPHERE)) + 0.15); // 0.93 vs 0.65
   });
 
-  it("increase-only rounds make a flat disc with square stitches: thickness ≪ diameter", () => {
+  it("increase-only rounds make a flat, round disc", () => {
+    for (const gauge of [undefined, DEMO]) {
+      const g = model(DISC, gauge);
+      const diameter = maxRoundDiameter(g);
+      within(diameter, (24 * g.gauge.stitchWidthMm) / Math.PI, 0.1);
+      const size = measure(g);
+      expect(size.height).toBeLessThan(0.3 * diameter); // ≈ 0.25, yarn included
+      expect(size.width).toBeGreaterThan(0.95 * diameter);
+      expect(size.depth).toBeGreaterThan(0.95 * diameter);
+      expect(maxCircularity(g)).toBeLessThan(0.05);
+    }
+  });
+
+  it("increase-only rounds with square stitches: a shallow bowl (2π·h > 6·w)", () => {
     const g = model(DISC, SQUARE);
     const diameter = maxRoundDiameter(g);
     within(diameter, (24 * g.gauge.stitchWidthMm) / Math.PI, 0.1);
     const size = measure(g);
-    expect(size.height).toBeLessThan(0.25 * diameter); // 6.8 vs 37.9
-    expect(size.width).toBeGreaterThan(0.95 * diameter);
-    expect(size.depth).toBeGreaterThan(0.95 * diameter);
-  });
-
-  it("increase-only rounds with the default gauge: a slightly ruffled disc", () => {
-    const g = model(DISC);
-    const size = measure(g);
-    for (const ratio of roundRatios(g)) expect(ratio).toBeGreaterThan(0.75);
-    expect(size.height).toBeLessThan(0.45 * size.width); // 11.7 vs 33.9
-    expect(size.height).toBeGreaterThan(0.15 * size.width); // it does ruffle: 6 > 2π·h/w
+    expect(size.height).toBeLessThan(0.35 * diameter); // 10.5 vs 37.9
+    expect(maxCircularity(g)).toBeLessThan(0.05);
   });
 
   it("even rounds after a disc make a tube of constant circumference", () => {
@@ -217,6 +307,7 @@ describe("golden shapes", () => {
       for (const r of tube.slice(1)) within(r.diameter, (24 * w) / Math.PI, 0.03);
       const ds = tube.slice(1).map((r) => r.diameter);
       expect(Math.max(...ds) / Math.min(...ds)).toBeLessThan(1.02);
+      expect(maxCircularity(g)).toBeLessThan(0.05);
       // Five round heights between the first and the last tube round, along the axis.
       within(tube[5]!.center[1] - tube[0]!.center[1], 5 * h, 0.2);
     }
@@ -229,7 +320,7 @@ describe("golden shapes", () => {
     const d = g.gauge.yarnDiameterMm;
     const size = measure(g);
     within(size.width, 6 * w + d, 0.15); // 32.5
-    within(size.height, 3 * h + d, 0.2); // 15.0
+    within(size.height, 3 * h + d, 0.2); // 16.8
     expect(size.depth).toBeLessThan(2 * d);
   });
 
@@ -253,12 +344,19 @@ describe("performance", () => {
     for (let k = 9; k >= 1; k--) rows.push(row("d" + k, [rep(6, [st("SC", k - 1), st("DEC")])], 6 * k));
     const content = part(rows);
     buildModel(content, undefined, { iterations: 10 }); // warm-up (JIT)
-    const t0 = performance.now();
-    const m = buildModel(content);
-    const ms = performance.now() - t0; // ≈ 300 ms on the reference machine
+    // Median of three runs, so one hiccup of a loaded machine does not decide.
+    const times: number[] = [];
+    let m = buildModel(content, undefined, { iterations: 0 });
+    for (let k = 0; k < 3; k++) {
+      const t0 = performance.now();
+      m = buildModel(content);
+      times.push(performance.now() - t0); // ≈ 400 ms on the reference machine
+    }
     expect(m.graph.nodes.length).toBeGreaterThanOrEqual(2900);
     expect(isClosedPiece(m.graph)).toBe(true);
-    expect(ms).toBeLessThan(1000);
+    expect(median(times)).toBeLessThan(1000);
     within(m.maxDiameter, (60 * m.graph.gauge.stitchWidthMm) / Math.PI, 0.15);
+    // Firm, not blown up: a long piece is stuffed as firmly as a ball.
+    expect(maxCircularity(m.graph)).toBeLessThan(0.05);
   });
 });

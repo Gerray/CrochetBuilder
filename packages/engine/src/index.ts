@@ -71,7 +71,7 @@ export {
 } from "./validate.js";
 export type { Finding, FindingCode, ValidateOptions } from "./validate.js";
 
-export { buildGraph, nodesOfRow } from "./graph.js";
+export { buildGraph, nodesOfRow, LEG_LEAN } from "./graph.js";
 export type {
   StitchGraph,
   StitchNode,
@@ -81,6 +81,7 @@ export type {
   GraphRowKind,
   NodeId,
   BuildGraphOptions,
+  AnchorSlot,
 } from "./graph.js";
 
 export { relax, isClosedPiece, canonicalPose } from "./relax.js";

@@ -1,19 +1,39 @@
 /**
  * Relaxation — settles the procedural layout of a stitch graph into a plausible shape.
  *
- * Position-based Verlet integration: each step carries the nodes' momentum forward
+ * The solver works on a particle model of the fabric, finer than the graph:
+ *
+ *   - one particle per fabric stitch: an `INC` node (two stitches on one parent) becomes two
+ *     particles a stitch width apart, each worked into the same parent; the node's output
+ *     position is their midpoint. Every other node is one particle. So every round is a ring
+ *     of evenly sized stitches instead of a ring with six double-wide lumps;
+ *   - a pole particle that closes the last round of a closed piece (the hole pulled shut when
+ *     finishing), mirroring the magic ring at the other end. It is not part of the output.
+ *
+ * Position-based Verlet integration: each step carries the particles' momentum forward
  * (damped), then projects constraints in a fixed order:
  *
- *   1. springs — every edge is pulled towards its rest length (Gauss–Seidel sweeps,
- *      alternating forward and backward so neither end of the work is favoured);
- *   2. radial start-up stabiliser — the nodes of every closed round are nudged towards the
- *      radius their circumference implies (C / 2π), around the round's own centroid. It
+ *   1. springs — Gauss–Seidel sweeps, alternating forward and backward so neither end of the
+ *      work is favoured:
+ *        - the yarn path (`prev`), the vertical links to the parent stitches (to the very
+ *          slot of `parentSlots`, slanted legs leaning by `LEG_LEAN`), and the seam of every
+ *          closed round (its last stitch sits next to its first — the spiral's yarn path
+ *          alone leaves that seam open);
+ *        - bending: springs between second neighbours along each row whose rest length is
+ *          the chord of the row's own circle (2·w·cos(π/S) for a round of S stitches, 2·w for
+ *          a flat row). Real fabric resists sharp kinks; without this a stuffed piece pillows
+ *          between its stitches and its flat increase discs stay flat;
+ *   2. radial start-up stabiliser — the particles of every closed round are nudged towards
+ *      the radius their circumference implies (C / 2π), around the round's own centroid. It
  *      fades out linearly over the first half of the iterations, so the final shape is
  *      decided by the springs, the stuffing and the repulsion alone;
  *   3. stuffing — closed pieces (opened with a magic ring, ending in a small round) are
- *      inflated towards the volume of a sphere with the fabric's surface area, like a
- *      stuffed amigurumi. Unilateral: it only ever pushes outwards;
- *   4. repulsion — nodes closer than ~¾ stitch that are not directly linked push apart
+ *      inflated like a stuffed amigurumi: a uniform pressure moves every particle along the
+ *      volume gradient (the area-weighted surface normal). The pressure is integral-
+ *      controlled on the fabric's mean stretch — it rises until the stitches are stretched
+ *      by `STUFFED_STRAIN` on average — so a ball and a long sausage end up equally firm
+ *      instead of the sausage being blown up. Unilateral: it only ever pushes outwards;
+ *   4. repulsion — particles closer than ~¾ stitch that are not directly linked push apart
  *      (spatial hash, O(n)), which keeps folded fabric from passing through itself.
  *
  * Deterministic: the only randomness is a small seeded jitter on the start positions (it
@@ -24,14 +44,14 @@
  * The piece is centred on the Y axis and rests on y = 0. Units are millimetres.
  *
  * What the shape depends on: the gauge's stitch height relative to its width. The classic
- * flat-circle rule (6 increases per round lie flat) holds for h ≈ w (2π·h/w ≈ 6). The engine's
- * default yarn table has h ≈ 0.83·w, so with defaults increase rounds ruffle slightly and the
- * 8-round sphere of docs/FORMAT.md (one even round) comes out as a flattened ball — its
- * pole-to-pole path is barely longer than its equator radius. That is the fabric's geometry,
- * not a solver artefact; with square stitches the same pattern is clearly rounder.
+ * flat-circle rule (6 increases per round lie flat) holds for 2π·h ≈ 6·w; the engine's
+ * default yarn table has h ≈ 0.95·w for exactly that reason. The 8-round sphere of
+ * docs/FORMAT.md (one even round) still comes out as a flattened ball — its pole-to-pole path
+ * is barely longer than its equator radius. That is the fabric's geometry, not a solver
+ * artefact; the classic ball with four even rounds is round.
  */
 
-import type { StitchGraph } from "./graph.js";
+import { LEG_LEAN, type StitchGraph } from "./graph.js";
 import { createRandom } from "./random.js";
 
 export interface RelaxOptions {
@@ -51,9 +71,14 @@ export interface RelaxOptions {
   /** Strength of node–node repulsion, 0–1. Default 0.3. */
   repulsion?: number;
   /**
-   * Stuffing, 0–1: how hard the piece is pushed towards the volume of a sphere with the
-   * fabric's surface area (0 = none, 1 = firm). `"auto"` (default) uses 1 for closed pieces
-   * (see `isClosedPiece`) and 0 otherwise — open pieces would only balloon.
+   * Bending stiffness of the fabric along its rows, 0–1 (relative to the stretch springs).
+   * Default 1. 0 gives a limp net that pillows between stitches when stuffed.
+   */
+  bending?: number;
+  /**
+   * Stuffing, 0–1: how firmly the piece is stuffed (0 = none, 1 = firm: the stitches end up
+   * stretched by about 8 % on average). `"auto"` (default) uses 1 for closed pieces (see
+   * `isClosedPiece`) and 0 otherwise — open pieces would only balloon.
    */
   stuffing?: number | "auto";
   /** Start jitter as a fraction of the stitch width. Default 0.02. */
@@ -61,7 +86,8 @@ export interface RelaxOptions {
   /** Rotate/translate the result into the canonical pose (see module doc). Default true. */
   pose?: boolean;
   /**
-   * Override whether the piece is closed (capped and stuffed). Default: `isClosedPiece`.
+   * Override whether the piece is closed (last round pulled shut, stuffed). Default:
+   * `isClosedPiece`.
    * Use it for a piece the heuristic gets wrong, e.g. an open tube that narrows at the end.
    */
   closed?: boolean;
@@ -94,90 +120,56 @@ export function relax(graph: StitchGraph, opts: RelaxOptions = {}): StitchGraph 
   const keep = 1 - clamp01(num(opts.damping, 0.2));
   const radialK = clamp01(num(opts.radial, 0.3));
   const repulsionK = clamp01(num(opts.repulsion, 0.3));
+  const bendingK = clamp01(num(opts.bending, 1));
   const closed = typeof opts.closed === "boolean" ? opts.closed : isClosedPiece(graph);
   const stuffing =
     opts.stuffing === undefined || opts.stuffing === "auto" ? (closed ? 1 : 0) : clamp01(num(opts.stuffing, 0));
   const w = graph.gauge.stitchWidthMm;
   const h = graph.gauge.stitchHeightMm;
 
-  // Start positions with seeded jitter.
+  const model = buildParticles(graph, closed, bendingK);
+  const P = model.count;
+
+  // Start positions with seeded jitter (graph nodes first, so a seed jitters them as before).
   const rand = createRandom(num(opts.seed, 1));
   const amp = Math.max(0, num(opts.jitter, 0.02)) * w;
-  const pos = Float64Array.from(graph.positions);
+  const pos = model.pos;
   for (let i = 0; i < pos.length; i++) pos[i] = pos[i]! + (rand() * 2 - 1) * amp;
   const old = Float64Array.from(pos);
 
-  // Springs as typed arrays.
-  const m = graph.edges.length;
-  const ea = new Uint32Array(m);
-  const eb = new Uint32Array(m);
-  const er = new Float64Array(m);
-  graph.edges.forEach((e, i) => {
-    ea[i] = e.a;
-    eb[i] = e.b;
-    er[i] = e.restLength;
-  });
+  const { ea, eb, er, ek, es } = model;
+  const m = er.length;
   const half = 0.5 * stiffness;
 
-  // Adjacency (CSR) so repulsion skips directly linked nodes.
-  const deg = new Uint32Array(n + 1);
+  // Adjacency (CSR) so repulsion skips directly linked particles.
+  const deg = new Uint32Array(P + 1);
   for (let i = 0; i < m; i++) {
     deg[ea[i]! + 1]!++;
     deg[eb[i]! + 1]!++;
   }
-  for (let i = 0; i < n; i++) deg[i + 1] = deg[i + 1]! + deg[i]!;
-  const adj = new Uint32Array(deg[n]!);
-  const fill = deg.slice(0, n);
+  for (let i = 0; i < P; i++) deg[i + 1] = deg[i + 1]! + deg[i]!;
+  const adj = new Uint32Array(deg[P]!);
+  const fill = deg.slice(0, P);
   for (let i = 0; i < m; i++) {
     adj[fill[ea[i]!]!++] = eb[i]!;
     adj[fill[eb[i]!]!++] = ea[i]!;
   }
 
-  // Rounds for the radial stabiliser: ring nodes (no MR, no lift chains) and target radius.
-  const rings = graph.rows
-    .filter((r) => r.closed)
-    .map((r) => {
-      const ids: number[] = [];
-      for (let id = r.firstNode; id < r.firstNode + r.nodeCount; id++) {
-        const node = graph.nodes[id]!;
-        if (!node.lift && node.code !== "MR") ids.push(id);
-      }
-      return { ids: Uint32Array.from(ids), radius: (r.widthStitches * w) / (2 * Math.PI) };
-    })
-    .filter((r) => r.ids.length >= 3);
+  const rings = model.rings;
 
-  // Surface for stuffing: fabric triangles plus a fan over the last round's hole.
-  let tris = graph.triangles;
-  let targetVolume = 0;
-  let volumeSign = 1;
-  if (stuffing > 0) {
-    // Cap the last round's hole only on a closed piece; a stuffed open piece stays open.
-    const last = closed ? rings[rings.length - 1] : undefined;
-    if (last && last.ids.length >= 3) {
-      const cap: number[] = [];
-      const flip = graph.rows[graph.rows.length - 1]!.direction === -1;
-      for (let i = 1; i + 1 < last.ids.length; i++) {
-        const a = last.ids[0]!;
-        const b = last.ids[i]!;
-        const c = last.ids[i + 1]!;
-        if (flip) cap.push(a, c, b);
-        else cap.push(a, b, c);
-      }
-      const merged = new Uint32Array(tris.length + cap.length);
-      merged.set(tris);
-      merged.set(cap, tris.length);
-      tris = merged;
-    }
-    let area = 0;
-    for (const node of graph.nodes) if (node.parents.length > 0) area += node.span * w * (node.height || h);
-    targetVolume = stuffing * (area ** 1.5 / (6 * Math.sqrt(Math.PI)));
-    volumeSign = signedVolume(pos, tris) < 0 ? -1 : 1;
-  }
-  const grad = stuffing > 0 ? new Float64Array(3 * n) : null;
+  // Stuffing: a pressure on the surface (fabric triangles plus the pole's cap) that rises
+  // until the fabric is stretched by the target strain on average.
+  const tris = model.tris;
+  const grad = stuffing > 0 && tris.length > 0 ? new Float64Array(3 * P) : null;
+  const volumeSign = grad && signedVolume(pos, tris) < 0 ? -1 : 1;
+  const targetStrain = stuffing * STUFFED_STRAIN;
+  let pressure = 0; // outward step per iteration, in stitch widths
+  let strainSum = 0;
+  let strainCount = 0;
 
   // Repulsion grid.
   const r0 = 0.75 * Math.min(w, h);
-  const hash = new SpatialHash(n, r0);
+  const hash = new SpatialHash(P, r0);
 
   for (let it = 0; it < iterations; it++) {
     // 1. Verlet step (no external forces: motion comes from constraint corrections).
@@ -200,7 +192,11 @@ export function relax(graph: StitchGraph, opts: RelaxOptions = {}): StitchGraph 
         const dz = pos[b + 2]! - pos[a + 2]!;
         const len = Math.sqrt(dx * dx + dy * dy + dz * dz);
         if (len < 1e-9) continue;
-        const s = (half * (len - er[e]!)) / len;
+        if (!forward && es[e] === 1) {
+          strainSum += (len - er[e]!) / er[e]!;
+          strainCount++;
+        }
+        const s = (half * ek[e]! * (len - er[e]!)) / len;
         pos[a] = pos[a]! + dx * s;
         pos[a + 1] = pos[a + 1]! + dy * s;
         pos[a + 2] = pos[a + 2]! + dz * s;
@@ -240,16 +236,28 @@ export function relax(graph: StitchGraph, opts: RelaxOptions = {}): StitchGraph 
       }
     }
 
-    // 4. Stuffing (unilateral volume constraint).
-    if (grad && tris.length > 0) {
-      const volume = volumeSign * volumeGradient(pos, tris, grad);
-      const deficit = targetVolume - volume;
-      if (deficit > 0) {
-        let denom = 0;
-        for (let i = 0; i < grad.length; i++) denom += grad[i]! * grad[i]!;
-        if (denom > 1e-12) {
-          const lambda = (STUFFING_STEP * stuffing * deficit * volumeSign) / denom;
-          for (let i = 0; i < grad.length; i++) pos[i] = pos[i]! + lambda * grad[i]!;
+    // 4. Stuffing: integral control of the pressure on the mean stretch of the fabric, so a
+    //    ball and a long sausage end up equally firm. Unilateral: it only ever pushes out.
+    const meanStrain = strainCount > 0 ? strainSum / strainCount : 0;
+    strainSum = 0;
+    strainCount = 0;
+    if (grad) {
+      pressure = Math.min(MAX_PRESSURE, Math.max(0, pressure + PRESSURE_GAIN * (targetStrain - meanStrain)));
+      if (pressure > 0) {
+        // The volume gradient is the area-weighted outward normal: a uniform pressure.
+        volumeGradient(pos, tris, grad);
+        let sum = 0;
+        let count = 0;
+        for (let i = 0; i < P; i++) {
+          const g = Math.hypot(grad[3 * i]!, grad[3 * i + 1]!, grad[3 * i + 2]!);
+          if (g > 0) {
+            sum += g;
+            count++;
+          }
+        }
+        if (sum > 1e-12) {
+          const scale = (pressure * w * volumeSign * count) / sum;
+          for (let i = 0; i < grad.length; i++) pos[i] = pos[i]! + scale * grad[i]!;
         }
       }
     }
@@ -270,13 +278,303 @@ export function relax(graph: StitchGraph, opts: RelaxOptions = {}): StitchGraph 
     }
   }
 
-  const relaxed = { ...graph, positions: pos, relaxed: true };
+  // Back to one position per node: the mean of its particles.
+  const out = new Float64Array(3 * n);
+  for (let i = 0; i < n; i++) {
+    const first = model.extraStart[i]!;
+    const extra = model.extraCount[i]!;
+    for (let k = 0; k < 3; k++) {
+      let s = pos[3 * i + k]!;
+      for (let e = 0; e < extra; e++) s += pos[3 * (first + e) + k]!;
+      out[3 * i + k] = s / (extra + 1);
+    }
+  }
+
+  const relaxed = { ...graph, positions: out, relaxed: true };
   if (opts.pose ?? true) canonicalPose(relaxed);
   return relaxed;
 }
 
-/** Fraction of the volume deficit the stuffing step corrects per iteration at stuffing 1. */
-const STUFFING_STEP = 0.3;
+/**
+ * Mean stretch of the fabric's stitches in a piece stuffed firmly (stuffing 1). Firm
+ * amigurumi stuffing visibly stretches the fabric; 8 % rounds the flat increase and decrease
+ * discs of a ball into a sphere without blowing a long piece up.
+ */
+const STUFFED_STRAIN = 0.08;
+/** How fast the stuffing pressure follows the stretch error (stitch widths per step per 100 %). */
+const PRESSURE_GAIN = 0.05;
+/** Upper bound of the stuffing pressure (stitch widths per step), against runaway inflation. */
+const MAX_PRESSURE = 0.5;
+
+// ---------------------------------------------------------------------------
+// Particle model
+// ---------------------------------------------------------------------------
+
+interface Particles {
+  /** Number of particles: graph nodes first (particle i = node i), then extras, then the pole. */
+  count: number;
+  /** Start positions (procedural layout), 3 per particle. */
+  pos: Float64Array;
+  /** Per node: index of its first extra particle (an INC's second stitch). */
+  extraStart: Int32Array;
+  /** Per node: number of extra particles (0 for all but multi-stitch nodes). */
+  extraCount: Int32Array;
+  /** Springs: endpoints, rest length (mm), relative stiffness (0–1), fabric flag. */
+  ea: Uint32Array;
+  eb: Uint32Array;
+  er: Float64Array;
+  ek: Float64Array;
+  /** 1 for the fabric's own links (yarn path, vertical links, seams), 0 for bending and pole. */
+  es: Uint8Array;
+  /** Closed rounds: their fabric particles in working order and the radius C / 2π. */
+  rings: Array<{ ids: Uint32Array; radius: number }>;
+  /** Surface triangles over particles (closed pieces include the pole's cap). */
+  tris: Uint32Array;
+}
+
+/** Relative stiffness of the pole springs that pull the last round shut. */
+const POLE_STIFFNESS = 0.5;
+
+/**
+ * Build the particle model of a graph: particles, springs, closed rings and the surface.
+ * See the module doc for what it models and why.
+ */
+function buildParticles(graph: StitchGraph, closed: boolean, bendingK: number): Particles {
+  const nodes = graph.nodes;
+  const n = nodes.length;
+  const w = graph.gauge.stitchWidthMm;
+  const h = graph.gauge.stitchHeightMm;
+  const src = graph.positions;
+
+  // Particles per node: a multi-stitch node (INC) gets one particle per fabric stitch.
+  const extraStart = new Int32Array(n);
+  const extraCount = new Int32Array(n);
+  let count = n;
+  for (let i = 0; i < n; i++) {
+    const node = nodes[i]!;
+    const parts = !node.lift && node.code !== "MR" && node.span > 1 ? Math.round(node.span) : 1;
+    extraStart[i] = count;
+    extraCount[i] = parts - 1;
+    count += parts - 1;
+  }
+  /** Particle `k` (0-based, clamped) of node `i`. */
+  const part = (i: number, k: number): number => {
+    const e = extraCount[i]!;
+    const kk = Math.min(e, Math.max(0, Math.floor(k)));
+    return kk === 0 ? i : extraStart[i]! + kk - 1;
+  };
+  const partsOf = (i: number): number[] => {
+    const out = [i];
+    for (let k = 0; k < extraCount[i]!; k++) out.push(extraStart[i]! + k);
+    return out;
+  };
+
+  // Fabric particles of every row (no lifts, no MR), in working order.
+  const fabric = graph.rows.map((r) => {
+    const ids: number[] = [];
+    for (let id = r.firstNode; id < r.firstNode + r.nodeCount; id++) {
+      const node = nodes[id]!;
+      if (!node.lift && node.code !== "MR") ids.push(...partsOf(id));
+    }
+    return ids;
+  });
+  const lastRing = closed ? fabric[fabric.length - 1] : undefined;
+  const pole = lastRing && lastRing.length >= 3 && graph.rows[graph.rows.length - 1]!.closed ? count++ : -1;
+
+  // Start positions: nodes as laid out; the stitches of a multi-stitch node spread along the
+  // row around the node's position; the pole just beyond the last round's centre.
+  const pos = new Float64Array(3 * count);
+  pos.set(src.subarray(0, 3 * n));
+  for (let i = 0; i < n; i++) {
+    const e = extraCount[i]!;
+    if (e === 0) continue;
+    const a = i > 0 && nodes[i - 1]!.rowIndex === nodes[i]!.rowIndex ? i - 1 : i;
+    const b = i + 1 < n && nodes[i + 1]!.rowIndex === nodes[i]!.rowIndex ? i + 1 : i;
+    let tx = src[3 * b]! - src[3 * a]!;
+    let ty = src[3 * b + 1]! - src[3 * a + 1]!;
+    let tz = src[3 * b + 2]! - src[3 * a + 2]!;
+    const tl = Math.hypot(tx, ty, tz);
+    if (tl < 1e-9) {
+      tx = 1;
+      ty = 0;
+      tz = 0;
+    } else {
+      tx /= tl;
+      ty /= tl;
+      tz /= tl;
+    }
+    for (let k = 0; k <= e; k++) {
+      const p = part(i, k);
+      const o = (k - e / 2) * w;
+      pos[3 * p] = src[3 * i]! + o * tx;
+      pos[3 * p + 1] = src[3 * i + 1]! + o * ty;
+      pos[3 * p + 2] = src[3 * i + 2]! + o * tz;
+    }
+  }
+
+  // Springs.
+  const ea: number[] = [];
+  const eb: number[] = [];
+  const er: number[] = [];
+  const ek: number[] = [];
+  const es: number[] = [];
+  const seen = new Set<number>();
+  /** `fabric`: a stitch-to-stitch link of the fabric itself (its stretch is the stuffing's gauge). */
+  const spring = (a: number, b: number, rest: number, k: number, fabric = true) => {
+    if (a === b) return;
+    const key = a < b ? a * count + b : b * count + a;
+    if (seen.has(key)) return;
+    seen.add(key);
+    ea.push(a);
+    eb.push(b);
+    er.push(rest);
+    ek.push(k);
+    es.push(fabric ? 1 : 0);
+  };
+
+  // The stitches of a multi-stitch node sit side by side.
+  for (let i = 0; i < n; i++) for (let k = 0; k < extraCount[i]!; k++) spring(part(i, k), part(i, k + 1), w, 1);
+
+  // Vertical links (dominate the shape, so they come first). With `parentSlots` each fabric
+  // stitch is linked to the very slot particle(s) it was worked into.
+  const parentsOfPart = new Map<number, number[]>();
+  for (const node of nodes) {
+    const slots = node.parentSlots;
+    const hc = node.height > 0 ? node.height : h;
+    if (slots && slots.length > 0) {
+      const mine = partsOf(node.id);
+      const m = slots.length;
+      mine.forEach((c, i) => {
+        const list: number[] = [];
+        slots.forEach((s, j) => {
+          const q = part(s.node, s.slot);
+          const dx = LEG_LEAN * (i - (mine.length - 1) / 2 - (j - (m - 1) / 2)) * w;
+          spring(q, c, Math.sqrt(hc * hc + dx * dx), 1);
+          if (!list.includes(q)) list.push(q);
+        });
+        parentsOfPart.set(c, list);
+      });
+    }
+  }
+  for (const e of graph.edges) {
+    if (e.kind !== "parent" || nodes[e.b]!.parentSlots) continue;
+    // A graph without slot information: link the first particles, as the graph does.
+    spring(e.a, e.b, e.restLength, 1);
+    const list = parentsOfPart.get(e.b) ?? [];
+    list.push(e.a);
+    parentsOfPart.set(e.b, list);
+  }
+
+  // Yarn path: from the last stitch of a node to the first stitch of the next.
+  for (const e of graph.edges) {
+    if (e.kind !== "prev") continue;
+    const A = nodes[e.a]!;
+    const B = nodes[e.b]!;
+    let rest = e.restLength;
+    if (!A.lift && !B.lift && A.rowIndex === B.rowIndex) {
+      // Span-based rest length: each of A's and B's particles is one stitch wide.
+      rest -= ((extraCount[e.a]! > 0 ? A.span - 1 : 0) + (extraCount[e.b]! > 0 ? B.span - 1 : 0)) * (w / 2);
+    }
+    spring(part(e.a, Infinity), e.b, rest, 1);
+  }
+
+  // Seam of every closed round: its last stitch sits next to its first.
+  graph.rows.forEach((r, ri) => {
+    const f = fabric[ri]!;
+    if (r.closed && f.length >= 3) spring(f[f.length - 1]!, f[0]!, w, 1);
+  });
+
+  // Bending along the rows: second neighbours at the chord of the row's own circle.
+  if (bendingK > 0) {
+    graph.rows.forEach((r, ri) => {
+      const f = fabric[ri]!;
+      const S = f.length;
+      const ring = r.closed && S >= 4;
+      // Closed rounds bend to their own circle, flat rows stay straight; a round that is
+      // not closed (worked around a foundation chain) turns where it must, so it is left out.
+      if (!ring && (r.type !== "row" || r.kind === "ring")) return;
+      const rest = ring ? 2 * w * Math.cos(Math.PI / S) : 2 * w;
+      const last = ring ? S : S - 2;
+      for (let k = 0; k < last; k++) spring(f[k]!, f[(k + 2) % S]!, rest, bendingK, false);
+    });
+  }
+
+  // The pole pulls the last round shut, like the magic ring at the start.
+  if (pole >= 0) {
+    const f = lastRing!;
+    let cx = 0, cy = 0, cz = 0;
+    for (const id of f) {
+      cx += pos[3 * id]! / f.length;
+      cy += pos[3 * id + 1]! / f.length;
+      cz += pos[3 * id + 2]! / f.length;
+    }
+    pos[3 * pole] = cx;
+    pos[3 * pole + 1] = cy + 0.5 * h;
+    pos[3 * pole + 2] = cz;
+    const rest = Math.min(h, w / (2 * Math.sin(Math.PI / f.length)));
+    for (const id of f) spring(pole, id, rest, POLE_STIFFNESS, false);
+  }
+
+  // Closed rounds for the radial stabiliser.
+  const rings = graph.rows
+    .map((r, ri) => ({ r, ids: fabric[ri]! }))
+    .filter(({ r, ids }) => r.closed && ids.length >= 3)
+    .map(({ r, ids }) => ({ ids: Uint32Array.from(ids), radius: (r.widthStitches * w) / (2 * Math.PI) }));
+
+  // Surface: zip every row's stitches to the stitches they are worked into (as the graph's
+  // triangulation, per particle), plus the pole's cap.
+  const tris: number[] = [];
+  graph.rows.forEach((r, ri) => {
+    const children = fabric[ri]!.filter((c) => (parentsOfPart.get(c)?.length ?? 0) > 0);
+    if (children.length === 0) return;
+    const flip = r.direction === -1;
+    const tri = (a: number, b: number, c: number) => {
+      if (a === b || b === c || a === c) return;
+      if (flip) tris.push(a, c, b);
+      else tris.push(a, b, c);
+    };
+    const zip = (c1: number, c2: number) => {
+      const p1 = parentsOfPart.get(c1)!;
+      const p2 = parentsOfPart.get(c2)!;
+      const lastP = p1[p1.length - 1]!;
+      const firstP = p2[0]!;
+      tri(c1, lastP, c2);
+      if (firstP !== lastP) tri(c2, lastP, firstP);
+    };
+    for (let i = 0; i < children.length; i++) {
+      const c = children[i]!;
+      const ps = parentsOfPart.get(c)!;
+      for (let k = 0; k + 1 < ps.length; k++) tri(c, ps[k]!, ps[k + 1]!);
+      if (i + 1 < children.length) zip(c, children[i + 1]!);
+    }
+    const ringOk = r.kind === "ring" || new Set(children.flatMap((c) => parentsOfPart.get(c)!)).size > 2;
+    if (r.closed && children.length > 2 && ringOk) zip(children[children.length - 1]!, children[0]!);
+  });
+  if (pole >= 0) {
+    const f = lastRing!;
+    const flip = graph.rows[graph.rows.length - 1]!.direction === -1;
+    for (let k = 0; k < f.length; k++) {
+      const a = f[k]!;
+      const b = f[(k + 1) % f.length]!;
+      if (flip) tris.push(pole, b, a);
+      else tris.push(pole, a, b);
+    }
+  }
+
+  return {
+    count,
+    pos,
+    extraStart,
+    extraCount,
+    ea: Uint32Array.from(ea),
+    eb: Uint32Array.from(eb),
+    er: Float64Array.from(er),
+    ek: Float64Array.from(ek),
+    es: Uint8Array.from(es),
+    rings,
+    tris: Uint32Array.from(tris),
+  };
+}
 
 /** A finite number, else the default (NaN / ±Infinity / undefined options fall back). */
 function num(x: number | undefined, fallback: number): number {

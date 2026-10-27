@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { buildGraph, nodesOfRow, type StitchGraph } from "./graph.js";
+import { buildGraph, LEG_LEAN, nodesOfRow, type StitchGraph } from "./graph.js";
 import { expandPart } from "./expand.js";
 import { resolveGauge } from "./gauge.js";
 import { createRandom } from "./random.js";
@@ -182,12 +182,52 @@ describe("buildGraph — chains", () => {
   });
 });
 
+describe("buildGraph — anchor slots", () => {
+  it("records which slot of each parent a stitch consumed", () => {
+    const g = buildGraph(SPHERE);
+    const mr = nodesIn(g, "r1")[0]!;
+    for (const n of nodesIn(g, "r1").slice(1)) expect(n.parentSlots).toEqual([{ node: mr.id, slot: 0 }]);
+    // r3 = 6 × (SC, INC) on the 6 INC of r2: the SC takes slot 0 of an INC, the INC slot 1.
+    const r2 = nodesIn(g, "r2");
+    const r3 = nodesIn(g, "r3");
+    expect(r3.map((n) => n.parentSlots)).toEqual(
+      r2.flatMap((p) => [[{ node: p.id, slot: 0 }], [{ node: p.id, slot: 1 }]]),
+    );
+    // A DEC consumes two slots, in working order; parents stay the distinct nodes.
+    const dec = nodesIn(g, "r8")[0]!;
+    expect(dec.parentSlots!.map((s) => s.node)).toEqual(dec.parents);
+    expect(dec.parentSlots!.every((s) => s.slot === 0)).toBe(true);
+    // Every stitch with parents has one slot per consumed anchor, only from those parents.
+    for (const n of g.nodes) {
+      const consumed = n.parents.length === 0 ? 0 : n.code === "DEC" ? 2 : 1;
+      expect(n.parentSlots ?? []).toHaveLength(consumed);
+      for (const s of n.parentSlots ?? []) expect(n.parents).toContain(s.node);
+    }
+  });
+
+  it("keeps the parent's own slot order when a turned row consumes it in reverse", () => {
+    const g = buildGraph(
+      part([
+        row("f", [st("CH", 3)], 0, { type: "row" }),
+        row("1", [st("SC"), st("INC"), st("SC")], 4, { type: "row" }),
+        row("2", [st("CH"), st("SC", 4)], 4, { type: "row" }),
+      ]),
+    );
+    const inc = nodesIn(g, "1")[1]!;
+    const onInc = nodesIn(g, "2").filter((n) => n.parents[0] === inc.id);
+    // Worked back across the row: the INC's second slot comes first.
+    expect(onInc.map((n) => n.parentSlots![0]!.slot)).toEqual([1, 0]);
+  });
+});
+
 describe("buildGraph — stitch budget", () => {
   it("builds nothing above the budget and reports the stitch count, quickly", () => {
     const content = part([row("a", [rep(1000, [st("SC", 1000)])], 1_000_000, { type: "row" })]);
     const t0 = performance.now();
     const g = buildGraph(content);
-    expect(performance.now() - t0).toBeLessThan(200);
+    // Guards against expanding a million stitches (seconds), not a benchmark: the bound is
+    // generous so a loaded machine running tests in parallel cannot make it flaky.
+    expect(performance.now() - t0).toBeLessThan(1000);
     expect(g.overBudget).toBe(true);
     expect(g.stitchCount).toBe(1_000_000);
     expect(g.nodes).toEqual([]);
@@ -256,6 +296,13 @@ describe("buildGraph — rest lengths and gauge", () => {
     expect(edge(g, a[1]!.id, b[0]!.id)!.restLength).toBeCloseTo(h); // INC centred over its parent
     // A DC on one half of an INC: twice as tall, offset by half a stitch.
     expect(edge(g, b[0]!.id, c[0]!.id)!.restLength).toBeCloseTo(Math.hypot(2 * h, w / 2));
+  });
+
+  it("lets the legs of a decrease lean by LEG_LEAN of half a stitch", () => {
+    const gauge = { stitchesPer10cm: 20, rowsPer10cm: 25 };
+    const g = buildGraph(part([row("a", [st("MR"), st("SC", 6)], 6), row("b", [st("DEC", 3)], 3)]), gauge);
+    const dec = nodesIn(g, "b")[0]!;
+    for (const p of dec.parents) expect(edge(g, p, dec.id)!.restLength).toBeCloseTo(Math.hypot(4, (LEG_LEAN * 5) / 2));
   });
 
   it("splits a turning chain's climb over its chains", () => {

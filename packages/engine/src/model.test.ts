@@ -48,7 +48,9 @@ describe("buildModel", () => {
     };
     const t0 = performance.now();
     const m = buildModel(huge);
-    expect(performance.now() - t0).toBeLessThan(200);
+    // Guards against building 100 million stitches, not a benchmark: generous so a loaded
+    // machine running tests in parallel cannot make it flaky.
+    expect(performance.now() - t0).toBeLessThan(1000);
     expect(m.graph.overBudget).toBe(true);
     expect(m.graph.nodes).toHaveLength(0);
     expect(m.size).toEqual({ width: 0, height: 0, depth: 0 });

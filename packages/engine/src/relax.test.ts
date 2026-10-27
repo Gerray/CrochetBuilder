@@ -29,6 +29,14 @@ const SPHERE = part([
   row("r8", [st("DEC", 6)], 6),
 ]);
 const DISC = part(INCREASES);
+/** The classic amigurumi ball: four even rounds. */
+const BALL = part([
+  ...INCREASES,
+  ...["r5", "e2", "e3", "e4"].map((id) => row(id, [st("SC", 24)], 24)),
+  row("r6", [rep(6, [st("SC", 2), st("DEC")])], 18),
+  row("r7", [rep(6, [st("SC"), st("DEC")])], 12),
+  row("r8", [st("DEC", 6)], 6),
+]);
 /** An arm: magic ring, then 12 even rounds of 6 — narrow but open. */
 const ARM = part([
   row("r1", [st("MR"), st("SC", 6)], 6),
@@ -144,11 +152,13 @@ describe("relax", () => {
       radial: -Infinity,
       repulsion: NaN,
       stuffing: NaN,
+      bending: NaN,
       jitter: NaN,
     });
     expect(Array.from(bad.positions).every(Number.isFinite)).toBe(true);
     // radial and stuffing clamp (−∞ → 0, NaN → 0), the rest are exactly the defaults.
-    expect(Array.from(relax(g, { iterations: NaN, seed: NaN, stiffness: NaN, damping: NaN, jitter: NaN }).positions)).toEqual(ref);
+    const fallback = { iterations: NaN, seed: NaN, stiffness: NaN, damping: NaN, bending: NaN, jitter: NaN };
+    expect(Array.from(relax(g, fallback).positions)).toEqual(ref);
   });
 
   it("uses the radial force only to start: the springs decide the final shape", () => {
@@ -200,6 +210,67 @@ describe("relax", () => {
       return hi - lo;
     };
     expect(height(relax(g))).toBeGreaterThan(height(relax(g, { stuffing: 0 })) + 2);
+  });
+
+  it("models an increase as two stitches: its node sits on the ring like its neighbours", () => {
+    // One node with double width used to stick out by ≈ 10 % (hexagonal rings).
+    const g = relax(buildGraph(BALL));
+    for (const rowId of ["r3", "r4"]) {
+      const r = measureRounds(g).find((x) => x.rowId === rowId)!;
+      const dist = (code: string) => {
+        const ns = g.nodes.filter((n) => n.rowId === rowId && n.code === code);
+        const p = g.positions;
+        return ns.reduce((s, n) => s + Math.hypot(p[3 * n.id]! - r.center[0], p[3 * n.id + 1]! - r.center[1], p[3 * n.id + 2]! - r.center[2]), 0) / ns.length;
+      };
+      expect(Math.abs(dist("INC") / dist("SC") - 1)).toBeLessThan(0.05); // ≈ 1.5 % / 3 %
+    }
+  });
+
+  it("bends the fabric smoothly: without bending a stuffed ball pillows into a pebble", () => {
+    const ball = buildGraph(BALL);
+    const ratio = (x: StitchGraph) => measure(x).height / measure(x).width;
+    expect(ratio(relax(ball))).toBeGreaterThan(ratio(relax(ball, { bending: 0 })) + 0.05); // 0.93 vs 0.83
+  });
+
+  it("stuffs a long piece as firmly as a ball, without blowing it up", () => {
+    const sausage = part([
+      ...BALL.rows.slice(0, 4),
+      ...Array.from({ length: 16 }, (_, i) => row(`s${i}`, [st("SC", 24)], 24)),
+      ...BALL.rows.slice(-3),
+    ]);
+    const stretch = (x: StitchGraph) => {
+      const p = x.positions;
+      let sum = 0;
+      for (const e of x.edges) {
+        const d = Math.hypot(p[3 * e.b]! - p[3 * e.a]!, p[3 * e.b + 1]! - p[3 * e.a + 1]!, p[3 * e.b + 2]! - p[3 * e.a + 2]!);
+        sum += (d - e.restLength) / e.restLength;
+      }
+      return sum / x.edges.length;
+    };
+    const ball = stretch(relax(buildGraph(BALL)));
+    const long = relax(buildGraph(sausage));
+    expect(ball).toBeGreaterThan(0.02);
+    expect(stretch(long)).toBeGreaterThan(0.5 * ball);
+    expect(stretch(long)).toBeLessThan(1.5 * ball);
+    const w = long.gauge.stitchWidthMm;
+    for (const r of measureRounds(long).filter((x) => x.rowId.startsWith("s"))) {
+      expect(r.diameter).toBeLessThan(1.12 * ((24 * w) / Math.PI));
+    }
+  });
+
+  it("stays finite on invalid patterns", () => {
+    const broken = [
+      part([row("r1", [st("MR"), st("SC", 6)], 6), row("r2", [st("SC", 24)], 24), row("r3", [st("DEC", 12)], 12)]),
+      part([row("r1", [st("MR"), st("SC", 6)], 6), row("r2", [st("DEC", 9)], 9), row("r3", [st("INC", 2)], 4)]),
+      part([row("r1", [st("INC", 4)], 8), row("r2", [st("SC", 3)], 3)]),
+      part([row("f", [st("CH", 3)], 0, "row"), row("1", [st("INC", 5)], 10, "row"), row("2", [st("DEC", 2)], 2, "row")]),
+    ];
+    for (const content of broken) {
+      for (const closed of [undefined, true]) {
+        const g = relax(buildGraph(content), { closed });
+        expect(Array.from(g.positions).every(Number.isFinite)).toBe(true);
+      }
+    }
   });
 });
 
