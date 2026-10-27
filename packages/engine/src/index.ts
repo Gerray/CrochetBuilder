@@ -76,3 +76,9 @@ export type {
 
 export { relax, isClosedPiece, canonicalPose } from "./relax.js";
 export type { RelaxOptions } from "./relax.js";
+
+export { measure, measureRounds, maxRoundDiameter } from "./measure.js";
+export type { Size, RoundMeasure } from "./measure.js";
+
+export { nodeForCursor } from "./cursor.js";
+export type { StitchCursor } from "./cursor.js";
