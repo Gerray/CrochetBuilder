@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { jsPDF } from "jspdf";
 import { demoDocument } from "../state/document.js";
-import { contentBox, pdfInput, renderPdf, savePdf } from "./pdf.js";
+import { PreviewComputer } from "../preview/protocol.js";
+import { contentBox, pdfInput, renderPdf, savePdf, SNAPSHOT_BACKING, SNAPSHOT_STYLE } from "./pdf.js";
 import { FOOTER_TEXT, IMAGE_MAX, layoutPdf, PAGE, toWinAnsi, wrapText, type PdfCommand, type PdfInput } from "./pdfLayout.js";
 import { prepareExport } from "./prepare.js";
 
@@ -222,5 +223,17 @@ describe("savePdf", () => {
     });
     expect(snapshotCalled).toBe(false);
     expect(size).toBeGreaterThan(1000);
+  });
+});
+
+describe("PDF model image", () => {
+  it("shows the stitch lattice with its faint backing, not the closed surface", () => {
+    expect(SNAPSHOT_STYLE).toBe("stitches");
+    expect(SNAPSHOT_BACKING).toBeGreaterThan(0);
+    expect(SNAPSHOT_BACKING).toBeLessThan(1);
+    const exp = prepareExport(demoDocument(undefined, "ball"));
+    const r = new PreviewComputer().compute({ id: 1, content: exp.parts[0]!.content, gauge: exp.overview.gauge, style: SNAPSHOT_STYLE });
+    expect(r.kind).toBe("model");
+    if (r.kind === "model") expect(r.model.backing?.indices.length).toBeGreaterThan(0);
   });
 });

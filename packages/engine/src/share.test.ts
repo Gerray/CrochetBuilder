@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { renderedRows, type BuilderExport, type Material } from "./export.js";
 import type { Gauge } from "./gauge.js";
 import { createRandom } from "./random.js";
@@ -6,14 +6,22 @@ import type { Op, Row, StitchCode } from "./schema.js";
 import {
   buildTmcImportUrl,
   buildViewerUrl,
+  canonicalSharePayload,
   decodeShare,
   encodeShare,
+  exceedsJsonDepth,
+  INFLATE_SLICE_BYTES,
+  MAX_JSON_DEPTH,
   MAX_SHARE_CHARS,
   MAX_SHARE_JSON_BYTES,
   readShareFragment,
   ShareDecodeError,
   type ShareDecodeErrorCode,
 } from "./share.js";
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 const sc = (count: number): Op => ({ kind: "stitch", code: "SC", count });
 const inc = (count: number): Op => ({ kind: "stitch", code: "INC", count });
@@ -270,5 +278,185 @@ describe("share URLs", () => {
     const parsed = new URL(url);
     expect(parsed.searchParams.get("embed")).toBe("1");
     expect(await decodeShare(readShareFragment(parsed.hash)!)).toEqual(sphere());
+  });
+
+  it("returns the canonical payload: trimmed (also %-encoded and Unicode whitespace), without padding", async () => {
+    const payload = await encodeShare(sphere());
+    for (const wrap of ["%20", "%0A", "\u00a0", "\ufeff", "\u2028", " "]) {
+      expect(readShareFragment(`#data=${wrap}${payload}${wrap}`), JSON.stringify(wrap)).toBe(payload);
+    }
+    expect(readShareFragment("#data=v1.abc==")).toBe("v1.abc");
+    expect(readShareFragment("#data=%20%20")).toBeNull();
+    // What the viewer forwards into TellmeCrochet / builder links is that canonical form.
+    expect(buildTmcImportUrl(readShareFragment(`#data=%20${payload}%0A`)!)).toBe(`${buildTmcImportUrl(payload)}`);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Review fixes: bounded decompression, nesting depth, padding, trailing bytes, support
+// ---------------------------------------------------------------------------
+
+function base64UrlBytes(payload: string): Uint8Array<ArrayBuffer> {
+  const body = payload.slice(3).replace(/-/g, "+").replace(/_/g, "/");
+  const binary = atob(body + "=".repeat((4 - (body.length % 4)) % 4));
+  return Uint8Array.from(binary, (c) => c.charCodeAt(0));
+}
+
+function payloadOf(bytes: Uint8Array): string {
+  let binary = "";
+  for (const b of bytes) binary += String.fromCharCode(b);
+  return "v1." + btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+/** A minimal export whose first row holds `depth` repeat groups nested in each other. */
+function nestedExportJson(depth: number): string {
+  const ops = '{"kind":"repeat","times":1,"ops":['.repeat(depth) + '{"kind":"stitch","code":"SC","count":1}' + "]}".repeat(depth);
+  return (
+    '{"schemaVersion":1,"title":"T","overview":{},"parts":[{"name":"A","quantity":1,"content":{"schemaVersion":1,' +
+    `"rows":[{"id":"r1","type":"round","ops":[${ops}],"stitchCountTarget":1}]}}]}`
+  );
+}
+
+describe("decodeShare: bounded decompression", () => {
+  it("feeds the input in slices and writes nothing more once the output is over the limit", async () => {
+    // Like Chromium: every written chunk is inflated completely and enqueued at once,
+    // regardless of the reader's backpressure.
+    const PER_WRITE = 512 * 1024;
+    const calls: Array<{ bytes: number; enqueuedBefore: number }> = [];
+    let enqueued = 0;
+    class EagerDecompressionStream {
+      readonly writable: WritableStream<BufferSource>;
+      readonly readable: ReadableStream<Uint8Array>;
+      constructor(format: string) {
+        expect(format).toBe("deflate-raw");
+        const t = new TransformStream<Uint8Array, Uint8Array>({
+          transform(chunk, controller) {
+            calls.push({ bytes: chunk.byteLength, enqueuedBefore: enqueued });
+            for (let i = 0; i < 8; i++) controller.enqueue(new Uint8Array(PER_WRITE / 8));
+            enqueued += PER_WRITE;
+          },
+        });
+        this.writable = t.writable as WritableStream<BufferSource>;
+        this.readable = t.readable;
+      }
+    }
+    vi.stubGlobal("DecompressionStream", EagerDecompressionStream);
+
+    const input = new Uint8Array(64 * 1024).map((_, i) => (i * 31) & 0xff);
+    const started = performance.now();
+    expect(await decodeError(payloadOf(input))).toBe("too-large");
+    expect(performance.now() - started).toBeLessThan(2000);
+
+    expect(calls.every((c) => c.bytes <= INFLATE_SLICE_BYTES)).toBe(true);
+    // No slice is written after the output went over the limit …
+    expect(calls.every((c) => c.enqueuedBefore <= MAX_SHARE_JSON_BYTES)).toBe(true);
+    // … so only a few of the 32 slices were ever inflated.
+    expect(calls.length).toBe(MAX_SHARE_JSON_BYTES / PER_WRITE + 1);
+    expect(calls.length).toBeLessThan(input.byteLength / INFLATE_SLICE_BYTES);
+  });
+
+  it("a real zip bomb (50 MB of spaces) is refused quickly", async () => {
+    const payload = await pack(new Uint8Array(50 * 1024 * 1024).fill(0x20));
+    expect(payload.length).toBeLessThan(MAX_SHARE_CHARS);
+    const started = performance.now();
+    expect(await decodeError(payload)).toBe("too-large");
+    expect(performance.now() - started).toBeLessThan(2000);
+  }, 20_000);
+
+  it("refuses a payload beyond MAX_SHARE_CHARS (256 Ki characters) before decoding", async () => {
+    expect(MAX_SHARE_CHARS).toBe(256 * 1024);
+    expect(await decodeError("v1." + "A".repeat(MAX_SHARE_CHARS))).toBe("too-large");
+  });
+
+  it("encodeShare refuses an export whose payload would exceed MAX_SHARE_CHARS", async () => {
+    const exp = sphere();
+    const rnd = createRandom(3);
+    const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    // Incompressible text: well below the JSON limit, but too long as a link.
+    exp.overview.notes = Array.from({ length: 400_000 }, () => alphabet[Math.floor(rnd() * 64)]).join("");
+    await expect(encodeShare(exp)).rejects.toThrow(RangeError);
+  });
+});
+
+describe("decodeShare: nesting depth", () => {
+  it("exceedsJsonDepth counts objects and arrays, not brackets in strings", () => {
+    expect(exceedsJsonDepth("[[[]]]", 3)).toBe(false);
+    expect(exceedsJsonDepth("[[[[]]]]", 3)).toBe(true);
+    expect(exceedsJsonDepth('{"a":{"b":[1]}}', 3)).toBe(false);
+    expect(exceedsJsonDepth('["[[[[[", "\\"[[[[", {}]', 2)).toBe(false);
+    expect(exceedsJsonDepth("", 0)).toBe(false);
+  });
+
+  it("~1000 nested repeats (a short link) → typed `invalid`, no stack overflow", async () => {
+    const payload = await pack(new TextEncoder().encode(nestedExportJson(1000)));
+    expect(payload.length).toBeLessThan(1000);
+    expect(await decodeError(payload)).toBe("invalid");
+    const deeper = await pack(new TextEncoder().encode(nestedExportJson(20_000)));
+    expect(await decodeError(deeper)).toBe("invalid");
+  });
+
+  it("nesting within MAX_JSON_DEPTH still decodes", async () => {
+    const depth = Math.floor((MAX_JSON_DEPTH - 8) / 2);
+    const exp = await decodeShare(await pack(new TextEncoder().encode(nestedExportJson(depth))));
+    expect(exp.parts[0]!.content.rows[0]!.ops[0]!.kind).toBe("repeat");
+    expect(await decodeError(await pack(new TextEncoder().encode(nestedExportJson(depth + 1))))).toBe("invalid");
+  });
+
+  it("encodeShare refuses an export nested deeper than MAX_JSON_DEPTH", async () => {
+    const exp = JSON.parse(nestedExportJson(MAX_JSON_DEPTH)) as BuilderExport;
+    await expect(encodeShare(exp)).rejects.toThrow(RangeError);
+  });
+});
+
+describe("decodeShare: padding and trailing bytes", () => {
+  it("canonicalSharePayload trims and drops base64 padding", () => {
+    expect(canonicalSharePayload("  v1.abc==\n")).toBe("v1.abc");
+    expect(canonicalSharePayload("v1.abcd")).toBe("v1.abcd");
+  });
+
+  it("tolerates RFC 4648 padding", async () => {
+    let tested = 0;
+    for (let seed = 1; seed <= 12; seed++) {
+      const payload = await encodeShare(generator(seed)());
+      const pad = (4 - ((payload.length - 3) % 4)) % 4;
+      if (pad === 0) continue;
+      tested++;
+      expect(await decodeShare(payload + "=".repeat(pad))).toEqual(await decodeShare(payload));
+    }
+    expect(tested).toBeGreaterThan(0);
+    expect(await decodeError((await encodeShare(sphere())) + "===")).toBe("malformed");
+  });
+
+  it("rejects bytes after the end of the deflate stream (as browsers do)", async () => {
+    const bytes = base64UrlBytes(await encodeShare(sphere()));
+    for (const junk of [[0], [0x4a, 0x55, 0x4e, 0x4b], Array.from({ length: 300 }, (_, i) => i & 0xff)]) {
+      expect(await decodeError(payloadOf(new Uint8Array([...bytes, ...junk])))).toBe("malformed");
+    }
+    // The untouched stream still decodes.
+    expect(await decodeShare(payloadOf(bytes))).toEqual(sphere());
+  });
+});
+
+describe("decodeShare / encodeShare without stream support", () => {
+  it("no DecompressionStream at all → `unsupported`", async () => {
+    const payload = await encodeShare(sphere());
+    vi.stubGlobal("DecompressionStream", undefined);
+    expect(await decodeError(payload)).toBe("unsupported");
+  });
+
+  it("no 'deflate-raw' format (older browsers) → `unsupported`", async () => {
+    const payload = await encodeShare(sphere());
+    class OldDecompressionStream {
+      constructor(format: string) {
+        if (format !== "gzip" && format !== "deflate") throw new TypeError(`Unsupported format ${format}`);
+      }
+    }
+    vi.stubGlobal("DecompressionStream", OldDecompressionStream);
+    expect(await decodeError(payload)).toBe("unsupported");
+  });
+
+  it("encodeShare without CompressionStream → ShareDecodeError `unsupported`", async () => {
+    vi.stubGlobal("CompressionStream", undefined);
+    await expect(encodeShare(sphere())).rejects.toMatchObject({ name: "ShareDecodeError", code: "unsupported" });
   });
 });

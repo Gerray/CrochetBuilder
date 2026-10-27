@@ -90,6 +90,30 @@ describe("ViewerApp", () => {
     expect(localStorage.length).toBe(0);
   });
 
+  it("forwards the canonical payload: whitespace and padding of the received link are not passed on", async () => {
+    const payload = await encodeShare(ballExport());
+    const pad = "=".repeat((4 - ((payload.length - 3) % 4)) % 4);
+    render(<ViewerApp location={at("", `#data=%20${payload}${pad}%0A`)} />);
+    await screen.findByRole("heading", { level: 1 });
+    const tmc = screen.getByRole("link", { name: "In TellmeCrochet öffnen" }) as HTMLAnchorElement;
+    expect(tmc.href).toBe(`https://tellmecrochet.de/import#data=${payload}`);
+    const edit = screen.getByRole("link", { name: "Im Builder bearbeiten" }) as HTMLAnchorElement;
+    expect(edit.href).toBe(`https://gerray.github.io/CrochetBuilder/#data=${payload}`);
+  });
+
+  it("an old browser without DecompressionStream gets a German hint, not „beschädigt“", async () => {
+    const payload = await encodeShare(ballExport());
+    vi.stubGlobal("DecompressionStream", undefined);
+    try {
+      expect(await loadViewerData(`#data=${payload}`)).toEqual({
+        status: "error",
+        message: expect.stringMatching(/^Dein Browser ist zu alt für Teilen-Links/),
+      });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("embed mode: model, title and a small TellmeCrochet link — no rows, no toolbar", async () => {
     const payload = await encodeShare(ballExport());
     render(<ViewerApp location={at("?embed=1", `#data=${payload}`)} />);

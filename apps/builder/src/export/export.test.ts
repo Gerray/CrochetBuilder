@@ -2,13 +2,21 @@ import { describe, expect, it } from "vitest";
 import {
   BuilderExportSchema,
   decodeShare,
+  ShareDecodeError,
   readShareFragment,
   renderedRows,
   type BuilderExport,
   type PartContent,
 } from "@crochetbuilder/engine";
 import { demoDocument, emptyDocument, type BuilderDoc } from "../state/document.js";
-import { documentFromExport, importFile, MAX_IMPORT_FILE_BYTES, parseImportText } from "./import.js";
+import {
+  documentFromExport,
+  importFile,
+  MAX_IMPORT_FILE_BYTES,
+  multiPartNotice,
+  parseImportText,
+  shareErrorMessage,
+} from "./import.js";
 import { exportFileName, ExportValidationError, isDocumentEmpty, prepareExport, renderedLines } from "./prepare.js";
 import { builderBaseUrl, embedSnippet, shareLinks, viewerBaseUrl } from "./share.js";
 
@@ -182,5 +190,93 @@ describe("share links", () => {
     expect(html).toBe(
       '<iframe src="https://x.test/viewer/?embed=1#data=v1.a" title="Bär &quot;Bruno&quot; &lt;3 – 3D-Modell" width="480" height="420" style="border:0;max-width:100%" loading="lazy" allowfullscreen></iframe>',
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Review fixes
+// ---------------------------------------------------------------------------
+
+/** Ops JSON with `depth` repeat groups nested in each other. */
+function nestedOps(depth: number): string {
+  return '{"kind":"repeat","times":1,"ops":['.repeat(depth) + '{"kind":"stitch","code":"SC","count":1}' + "]}".repeat(depth);
+}
+
+describe("import: deep nesting", () => {
+  it("absurdly nested repeats give a German message instead of throwing", () => {
+    for (const depth of [1000, 20_000]) {
+      const asExport =
+        '{"schemaVersion":1,"title":"T","overview":{},"parts":[{"name":"A","quantity":1,"content":{"schemaVersion":1,' +
+        `"rows":[{"id":"r1","type":"round","ops":[${nestedOps(depth)}],"stitchCountTarget":1}]}}]}`;
+      const asPart = `{"schemaVersion":1,"rows":[{"id":"r1","type":"round","ops":[${nestedOps(depth)}],"stitchCountTarget":1}]}`;
+      for (const text of [asExport, asPart]) {
+        let result: ReturnType<typeof parseImportText> | undefined;
+        expect(() => (result = parseImportText(text))).not.toThrow();
+        expect(result).toEqual({ ok: false, message: expect.stringMatching(/zu tief verschachtelt/) });
+      }
+    }
+  });
+
+  it("ordinary nesting (a few repeat levels) still imports", () => {
+    const text = `{"schemaVersion":1,"rows":[{"id":"r1","type":"round","ops":[${nestedOps(5)}],"stitchCountTarget":1}]}`;
+    expect(parseImportText(text).ok).toBe(true);
+  });
+});
+
+describe("import: several parts", () => {
+  const twoParts = () => {
+    const doc = ball();
+    doc.parts.push({ name: "Ohr", quantity: 2, content: structuredClone(doc.parts[0]!.content) });
+    // Distinct row ids, so nothing is renamed.
+    doc.parts[1]!.content.rows = doc.parts[1]!.content.rows.map((r, i) => ({ ...r, id: `ohr-${i}` }));
+    return doc;
+  };
+
+  it("keeps every part and says that only the first one is edited", () => {
+    const result = parseImportText(JSON.stringify(prepareExport(twoParts())), "teile.json");
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.doc.parts).toHaveLength(2);
+    expect(result.doc.parts[1]!.name).toBe("Ohr");
+    expect(result.notice).toBe(
+      "Diese Datei enthält 2 Teile; der Builder bearbeitet bisher nur das erste. Die übrigen bleiben erhalten und werden mit exportiert.",
+    );
+    // The hidden part is exported again.
+    expect(prepareExport(result.doc).parts).toEqual(prepareExport(twoParts()).parts);
+  });
+
+  it("links get the same notice, worded for a link; one part has none", () => {
+    const fromLink = documentFromExport(prepareExport(twoParts()), ids("x"), "link");
+    expect(fromLink.ok && fromLink.notice).toBe(multiPartNotice(2, "link"));
+    expect(multiPartNotice(3, "link")).toMatch(/^Dieser Link enthält 3 Teile;/);
+    const single = documentFromExport(prepareExport(ball()), ids("y"), "link");
+    expect(single.ok && single.notice).toBeUndefined();
+  });
+});
+
+describe("isDocumentEmpty: size basis", () => {
+  it("gauge, yarn weight or hook size alone make a document worth keeping", () => {
+    const gauges = [{ hookMm: 4 }, { yarnWeight: "dk" as const }, { stitchesPer10cm: 20 }, { rowsPer10cm: 22 }];
+    for (const gauge of gauges) {
+      const doc = emptyDocument("r1");
+      doc.overview.gauge = gauge;
+      expect(isDocumentEmpty(doc), JSON.stringify(gauge)).toBe(false);
+    }
+    const blank = emptyDocument("r1");
+    blank.overview.gauge = {};
+    expect(isDocumentEmpty(blank)).toBe(true);
+  });
+
+  it("a hidden further part makes it non-empty", () => {
+    const doc = emptyDocument("r1");
+    doc.parts.push({ name: "Ohr", quantity: 1, content: { schemaVersion: 1, rows: [] } });
+    expect(isDocumentEmpty(doc)).toBe(false);
+  });
+});
+
+describe("shareErrorMessage", () => {
+  it("an old browser gets its own German message, not „beschädigt“", () => {
+    expect(shareErrorMessage(new ShareDecodeError("unsupported", "x"))).toMatch(/^Dein Browser ist zu alt für Teilen-Links/);
+    expect(shareErrorMessage(new ShareDecodeError("malformed", "x"))).toMatch(/beschädigt/);
   });
 });

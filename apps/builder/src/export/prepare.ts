@@ -45,10 +45,15 @@ export function prepareExport(doc: BuilderDoc): BuilderExport {
   return parsed.data;
 }
 
-/** A document with nothing worth keeping: no title, notes, named materials or row content. */
+/**
+ * A document with nothing worth keeping: no title, notes, named materials, size basis
+ * (gauge, yarn weight, hook) or row content — and no further parts.
+ */
 export function isDocumentEmpty(doc: BuilderDoc): boolean {
   if (doc.title.trim() || doc.overview.notes?.trim()) return false;
   if ((doc.overview.materials ?? []).some((m) => m.label.trim())) return false;
+  if (Object.values(doc.overview.gauge ?? {}).some((value) => value !== undefined)) return false;
+  if (doc.parts.length > 1) return false;
   return doc.parts.every((part) =>
     part.content.rows.every((r) => r.ops.length === 0 && !r.note?.trim() && !r.label?.trim()),
   );

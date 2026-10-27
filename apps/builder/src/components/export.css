@@ -106,3 +106,7 @@ a.btn-primary {
   color: var(--text);
   border-bottom: 1px solid var(--border-strong);
 }
+
+.link-notice-info {
+  background: var(--warning-soft);
+}

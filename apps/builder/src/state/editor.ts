@@ -8,6 +8,7 @@
  */
 
 import {
+  GaugeSchema,
   MAX_STITCH_COUNT_TARGET,
   computeRowStitches,
   modifierAllowed,
@@ -141,12 +142,16 @@ function setOptionalText<T extends object, K extends keyof T>(obj: T, key: K, va
   return next;
 }
 
-/** Remove undefined / non-finite fields so the gauge stays schema-clean. */
+/**
+ * Remove undefined fields and fields the schema rejects (non-finite, ≤ 0, too thick a yarn,
+ * unknown keys) so the gauge stays schema-clean.
+ */
 function cleanGauge(gauge: Gauge): Gauge | undefined {
   const out: Gauge = {};
-  for (const [k, v] of Object.entries(gauge) as Array<[keyof Gauge, Gauge[keyof Gauge]]>) {
+  const shape: Record<string, { safeParse(v: unknown): { success: boolean } } | undefined> = GaugeSchema.shape;
+  for (const [k, v] of Object.entries(gauge)) {
     if (v === undefined) continue;
-    if (typeof v === "number" && !(Number.isFinite(v) && v > 0)) continue;
+    if (!shape[k]?.safeParse(v).success) continue;
     (out as Record<string, unknown>)[k] = v;
   }
   return Object.keys(out).length > 0 ? out : undefined;

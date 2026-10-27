@@ -49,9 +49,12 @@ export {
   YARN_WEIGHT_DEFAULTS,
   DEFAULT_YARN_WEIGHT,
   STITCH_HEIGHT_FACTOR,
+  MAX_YARN_DIAMETER_MM,
+  YARN_DIAMETER_EXTRAPOLATION,
   resolveGauge,
+  yarnDefaultsForDiameter,
 } from "./gauge.js";
-export type { Gauge, YarnWeight, ResolvedGauge } from "./gauge.js";
+export type { Gauge, YarnWeight, ResolvedGauge, YarnSizeDefaults } from "./gauge.js";
 
 export {
   validate,
@@ -92,6 +95,8 @@ export type { StitchCursor } from "./cursor.js";
 
 export { toMesh } from "./mesh.js";
 export type { MeshData, MeshOptions, MeshStyle } from "./mesh.js";
+export { STITCH_YARN_MAX_WIDTH, STITCH_YARN_SCALE, stitchDetail, stitchYarn, stitchYarnRadius } from "./stitch-mesh.js";
+export type { YarnArc, YarnLoop, YarnPiece, YarnPost } from "./stitch-mesh.js";
 
 export { buildModel } from "./model.js";
 export type { Model, ModelOptions } from "./model.js";
@@ -144,12 +149,15 @@ export {
   encodeShare,
   decodeShare,
   readShareFragment,
+  canonicalSharePayload,
+  exceedsJsonDepth,
   buildTmcImportUrl,
   buildViewerUrl,
   ShareDecodeError,
   SHARE_VERSION,
   MAX_SHARE_JSON_BYTES,
   MAX_SHARE_CHARS,
+  MAX_JSON_DEPTH,
   TMC_IMPORT_URL,
 } from "./share.js";
 export type { ShareDecodeErrorCode } from "./share.js";

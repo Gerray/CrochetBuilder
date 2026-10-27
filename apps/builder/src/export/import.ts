@@ -6,6 +6,7 @@
 
 import {
   BuilderExportSchema,
+  exceedsJsonDepth,
   MAX_STITCH_COUNT_TARGET,
   opsWithinLimits,
   PartContentSchema,
@@ -24,8 +25,24 @@ export type ImportResult =
       doc: BuilderDoc;
       /** Row ids whose Soll is author-declared (all imported rows). */
       pinned: string[];
+      /** Something the person should know about the opened document (German), if anything. */
+      notice?: string;
     }
   | { ok: false; message: string };
+
+/** Where an imported document comes from (for the wording of notices). */
+export type ImportSource = "file" | "link";
+
+/**
+ * The builder edits only the first part (MVP); the others are kept untouched and appear
+ * again in every export, PDF and the viewer. Opening such a document says so.
+ */
+export function multiPartNotice(parts: number, source: ImportSource): string {
+  const where = source === "file" ? "Diese Datei" : "Dieser Link";
+  return `${where} enthält ${parts} Teile; der Builder bearbeitet bisher nur das erste. Die übrigen bleiben erhalten und werden mit exportiert.`;
+}
+
+const TOO_DEEP_MESSAGE = "Die Anleitung in der Datei ist zu tief verschachtelt (zu viele Wiederholungen ineinander).";
 
 /** Where the first schema problem sits: ` (bei „parts.0.content.rows.3.ops“)` — or nothing. */
 function issueText(issue: { path: ReadonlyArray<PropertyKey> } | undefined): string {
@@ -69,7 +86,11 @@ function uniqueRowIds(doc: BuilderDoc, makeId: () => string): BuilderDoc {
  * A validated export as an editor document: `rendered` is dropped (it is regenerated on
  * every export), duplicate row ids are replaced, the editor limits are checked.
  */
-export function documentFromExport(exp: BuilderExport, makeId: () => string = newId): ImportResult {
+export function documentFromExport(
+  exp: BuilderExport,
+  makeId: () => string = newId,
+  source: ImportSource = "file",
+): ImportResult {
   if (exp.parts.length === 0) return { ok: false, message: "Die Anleitung enthält keine Teile." };
   if (!exp.parts.every((p) => withinLimits(p.content))) {
     return {
@@ -79,7 +100,10 @@ export function documentFromExport(exp: BuilderExport, makeId: () => string = ne
   }
   const { rendered: _rendered, ...rest } = exp;
   const doc = uniqueRowIds(rest, makeId);
-  return { ok: true, doc, pinned: doc.parts.flatMap((p) => p.content.rows.map((r) => r.id)) };
+  const pinned = doc.parts.flatMap((p) => p.content.rows.map((r) => r.id));
+  return doc.parts.length > 1
+    ? { ok: true, doc, pinned, notice: multiPartNotice(doc.parts.length, source) }
+    : { ok: true, doc, pinned };
 }
 
 /** A bare part content becomes a one-part document (title from the file name). */
@@ -95,7 +119,16 @@ export function titleFromFileName(fileName: string | undefined): string {
   return (fileName ?? "").replace(/\.[^.]*$/, "").trim();
 }
 
-/** Parse the text of an imported file. */
+/** Schema validation that never throws (a stack overflow becomes `null`). */
+function safely<T>(validate: () => T): T | null {
+  try {
+    return validate();
+  } catch {
+    return null;
+  }
+}
+
+/** Parse the text of an imported file; never throws. */
 export function parseImportText(text: string, fileName?: string, makeId: () => string = newId): ImportResult {
   let data: unknown;
   try {
@@ -103,13 +136,16 @@ export function parseImportText(text: string, fileName?: string, makeId: () => s
   } catch {
     return { ok: false, message: "Die Datei ist kein lesbares JSON." };
   }
+  // Schema validation recurses per nesting level; absurd nesting must not overflow the stack.
+  if (exceedsJsonDepth(text)) return { ok: false, message: TOO_DEEP_MESSAGE };
 
   if (hasKey(data, "parts")) {
     const version = (data as { schemaVersion?: unknown }).schemaVersion;
     if (version !== 1) {
       return { ok: false, message: `Die Datei hat ein unbekanntes Format (schemaVersion ${JSON.stringify(version ?? null)}).` };
     }
-    const parsed = BuilderExportSchema.safeParse(data);
+    const parsed = safely(() => BuilderExportSchema.safeParse(data));
+    if (!parsed) return { ok: false, message: TOO_DEEP_MESSAGE };
     if (!parsed.success) {
       return { ok: false, message: `Die Anleitung in der Datei ist fehlerhaft${issueText(parsed.error.issues[0])}.` };
     }
@@ -117,7 +153,8 @@ export function parseImportText(text: string, fileName?: string, makeId: () => s
   }
 
   if (hasKey(data, "rows")) {
-    const parsed = PartContentSchema.safeParse(data);
+    const parsed = safely(() => PartContentSchema.safeParse(data));
+    if (!parsed) return { ok: false, message: TOO_DEEP_MESSAGE };
     if (!parsed.success) {
       return { ok: false, message: `Die Reihen in der Datei sind fehlerhaft${issueText(parsed.error.issues[0])}.` };
     }
@@ -142,6 +179,10 @@ export async function importFile(file: File, makeId: () => string = newId): Prom
   return parseImportText(text, file.name, makeId);
 }
 
+/** Shown when the browser has no `DecompressionStream` / `CompressionStream` with "deflate-raw". */
+export const UNSUPPORTED_BROWSER_MESSAGE =
+  "Dein Browser ist zu alt für Teilen-Links – aktualisiere ihn oder öffne den Link in einem aktuellen Browser.";
+
 /** German message for a share link that could not be decoded. */
 export function shareErrorMessage(err: unknown): string {
   if (err instanceof ShareDecodeError) {
@@ -152,6 +193,8 @@ export function shareErrorMessage(err: unknown): string {
         return "Die Anleitung im Link ist zu groß.";
       case "invalid":
         return "Der Link enthält keine gültige Anleitung.";
+      case "unsupported":
+        return UNSUPPORTED_BROWSER_MESSAGE;
     }
   }
   return "Der Link konnte nicht gelesen werden.";

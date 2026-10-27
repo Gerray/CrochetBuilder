@@ -25,6 +25,22 @@ export interface ViewMesh {
   rowIds: readonly string[];
   /** Stitch width in mm — the size of a point in `"points"` style. Default 5. */
   stitchWidthMm?: number;
+  /** Yarn diameter in mm (picking tolerance against the backing). Default 2.5. */
+  yarnDiameterMm?: number;
+  /**
+   * The fabric as a closed surface behind an open style (the `"stitches"` lattice): one
+   * vertex per graph node (vertex index = node). Drawn faintly behind the yarn when the view
+   * asks for it, and always used for picking so a click into a hole selects the stitch
+   * around it rather than one on the far side of the piece.
+   */
+  backing?: MeshBacking;
+}
+
+/** Surface arrays of a `ViewMesh.backing`. */
+export interface MeshBacking {
+  positions: Float32Array;
+  normals: Float32Array;
+  indices: Uint32Array;
 }
 
 export type Vec3 = [number, number, number];
@@ -121,6 +137,30 @@ export function pickFromHit(mesh: ViewMesh, hit: HitLike): PickResult | null {
   if (node === undefined) return null;
   const rowId = mesh.rowIds[mesh.nodeRow[node] ?? -1];
   return rowId === undefined ? null : { rowId, node };
+}
+
+/** Hit on the backing surface → nearest node → row. */
+export function pickFromBacking(mesh: Pick<ViewMesh, "backing" | "nodeRow" | "rowIds">, hit: HitLike): PickResult | null {
+  if (!mesh.backing) return null;
+  const node = vertexForHit({ positions: mesh.backing.positions, primitive: "triangles" }, hit);
+  if (node === null) return null;
+  const rowId = mesh.rowIds[mesh.nodeRow[node] ?? -1];
+  return rowId === undefined ? null : { rowId, node };
+}
+
+/**
+ * Which of two raycast results to trust: the yarn hit, unless the backing surface was hit
+ * clearly nearer (by more than `slack` mm) — then the ray went through a hole in the
+ * lattice, and the stitch around the hole is what the user pointed at.
+ */
+export function choosePick(
+  yarn: { pick: PickResult; distance: number } | null,
+  backing: { pick: PickResult; distance: number } | null,
+  slack: number,
+): PickResult | null {
+  if (!backing) return yarn?.pick ?? null;
+  if (!yarn) return backing.pick;
+  return backing.distance + slack < yarn.distance ? backing.pick : yarn.pick;
 }
 
 /**

@@ -73,12 +73,38 @@ type Gauge = {
   rowsPer10cm?: number;
   yarnWeight?: "lace" | "fingering" | "sport" | "dk" | "worsted" | "aran" | "bulky" | "jumbo";
   hookMm?: number;
+  yarnDiameterMm?: number;   // yarn thickness in mm, 0 < x ≤ 30 (since engine 0.2.0)
 };
 ```
 
-Resolution order: an explicit swatch (`stitchesPer10cm`/`rowsPer10cm`) wins; otherwise
-defaults from `yarnWeight` + `hookMm`; otherwise the engine default (DK, 4 mm) and the result
-is flagged as estimated.
+Resolution order for the stitch size:
+
+1. an explicit swatch (`stitchesPer10cm`/`rowsPer10cm`) wins;
+2. otherwise `yarnDiameterMm` + `hookMm`: the thickness is interpolated over the yarn weight
+   table (stitch width, row height and standard hook, piecewise linear between the two
+   neighbouring weights; proportional below the thinnest and above the thickest weight,
+   constant below 0.5 mm and above 12 mm), then scaled by `hookMm` relative to that
+   standard hook. It wins over `yarnWeight` when both are given;
+3. otherwise defaults from `yarnWeight` + `hookMm`;
+4. otherwise the engine default (DK, 4 mm).
+
+Without a swatch the result is flagged as estimated (`source: "yarn-weight"` for cases 2
+and 3, `"default"` for case 4). The rendered yarn thickness is `yarnDiameterMm` whenever it
+is given — also with a swatch — and otherwise the table value of the yarn weight.
+
+| `yarnWeight` | thickness | stitches / 10 cm | rows / 10 cm | standard hook |
+| ------------ | --------: | ---------------: | -----------: | ------------: |
+| `lace`       |    1.0 mm |               32 |           34 |        2.0 mm |
+| `fingering`  |    1.5 mm |               28 |           29 |        2.5 mm |
+| `sport`      |    2.0 mm |               24 |           25 |        3.0 mm |
+| `dk`         |    2.5 mm |               20 |           21 |        4.0 mm |
+| `worsted`    |    3.0 mm |               16 |           17 |        5.0 mm |
+| `aran`       |    3.5 mm |               14 |           15 |        5.5 mm |
+| `bulky`      |    5.0 mm |               11 |           12 |        7.0 mm |
+| `jumbo`      |    8.0 mm |                7 |            7 |       10.0 mm |
+
+Parsers older than engine 0.2.0 reject a gauge with `yarnDiameterMm` (the gauge object is
+strict).
 
 ## Builder export
 
@@ -96,6 +122,69 @@ type Material = { kind: "yarn" | "hook" | "accessory"; label: string; colors?: s
 
 `rendered` is redundant with `parts` and exists so that consumers which only display text
 can do so without understanding the op tree.
+
+## Share links
+
+A share link carries a complete `BuilderExport` in the URL **fragment**, so it works without
+any server — browsers never send the fragment to the host. Source:
+`packages/engine/src/share.ts` (`encodeShare`, `decodeShare`, `readShareFragment`).
+
+### Payload
+
+```
+payload = "v1." + base64url( deflate-raw( UTF-8( JSON.stringify(BuilderExport) ) ) )
+```
+
+- **`v1.`** — format version. Decoders refuse any other prefix (`v2.` …) instead of guessing.
+- **base64url** — RFC 4648 §5 alphabet (`A–Z a–z 0–9 - _`). Encoders write no padding;
+  decoders accept up to two trailing `=` and ignore them.
+- **deflate-raw** — raw DEFLATE (RFC 1951) without zlib or gzip header, as produced by
+  `new CompressionStream("deflate-raw")`. The stream must end exactly at the last byte;
+  trailing bytes make the payload invalid.
+- **JSON** — the UTF-8 encoded `BuilderExport` described above (`rendered` included when
+  the producer has it).
+
+### Limits
+
+| Limit | Value | When exceeded |
+|---|---|---|
+| Encoded payload | 262,144 characters (256 Ki) | refused before decoding |
+| Decompressed JSON | 2,097,152 bytes (2 MiB) | decompression stops; refused |
+| JSON nesting (objects and arrays) | 200 levels | refused before schema validation |
+
+Decoders must enforce the decompressed limit **while** inflating (feed the input in small
+slices and stop at the limit), not after — a few KiB of DEFLATE can expand to gigabytes.
+Encoders must not produce payloads beyond these limits.
+
+### Decoding
+
+1. Take the value of the `data` parameter of the fragment (`#data=…`; it may also follow
+   other `&`-separated parameters), and URL-decode it.
+2. Trim surrounding whitespace (including Unicode whitespace such as no-break space, the
+   byte order mark or line separators) and drop trailing `=` padding. This is the
+   **canonical payload**; links passed on to other pages carry it in this form.
+3. Check the length limit and the `v1.` prefix, decode base64url, inflate within the limit.
+4. Decode UTF-8 strictly, parse JSON, check the nesting depth, then validate against
+   `BuilderExport` (`schemaVersion: 1`). Anything that fails is rejected — never partially
+   shown.
+
+The reference decoder reports failures as `ShareDecodeError` with a `code`: `malformed`
+(prefix, characters, compression, UTF-8 or JSON), `too-large`, `invalid` (not a valid
+`BuilderExport`, or nested too deeply) or `unsupported` (the runtime lacks
+`DecompressionStream` with `deflate-raw`).
+
+### URLs
+
+| Purpose | URL |
+|---|---|
+| Viewer (read-only page with 3D model and rows) | `<builder>/viewer/#data=<payload>` |
+| Embed (compact viewer for an `<iframe>`) | `<builder>/viewer/?embed=1#data=<payload>` |
+| Open in the builder for editing | `<builder>/#data=<payload>` |
+| Import into TellmeCrochet | `https://tellmecrochet.de/import#data=<payload>` |
+
+`<builder>` is wherever the builder is deployed, e.g. `https://gerray.github.io/CrochetBuilder`.
+The builder removes the fragment from the address bar after reading it and asks before it
+replaces a document that is not empty.
 
 ## Example: an amigurumi sphere
 
