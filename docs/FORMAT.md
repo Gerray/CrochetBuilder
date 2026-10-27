@@ -97,6 +97,69 @@ type Material = { kind: "yarn" | "hook" | "accessory"; label: string; colors?: s
 `rendered` is redundant with `parts` and exists so that consumers which only display text
 can do so without understanding the op tree.
 
+## Share links
+
+A share link carries a complete `BuilderExport` in the URL **fragment**, so it works without
+any server — browsers never send the fragment to the host. Source:
+`packages/engine/src/share.ts` (`encodeShare`, `decodeShare`, `readShareFragment`).
+
+### Payload
+
+```
+payload = "v1." + base64url( deflate-raw( UTF-8( JSON.stringify(BuilderExport) ) ) )
+```
+
+- **`v1.`** — format version. Decoders refuse any other prefix (`v2.` …) instead of guessing.
+- **base64url** — RFC 4648 §5 alphabet (`A–Z a–z 0–9 - _`). Encoders write no padding;
+  decoders accept up to two trailing `=` and ignore them.
+- **deflate-raw** — raw DEFLATE (RFC 1951) without zlib or gzip header, as produced by
+  `new CompressionStream("deflate-raw")`. The stream must end exactly at the last byte;
+  trailing bytes make the payload invalid.
+- **JSON** — the UTF-8 encoded `BuilderExport` described above (`rendered` included when
+  the producer has it).
+
+### Limits
+
+| Limit | Value | When exceeded |
+|---|---|---|
+| Encoded payload | 262,144 characters (256 Ki) | refused before decoding |
+| Decompressed JSON | 2,097,152 bytes (2 MiB) | decompression stops; refused |
+| JSON nesting (objects and arrays) | 200 levels | refused before schema validation |
+
+Decoders must enforce the decompressed limit **while** inflating (feed the input in small
+slices and stop at the limit), not after — a few KiB of DEFLATE can expand to gigabytes.
+Encoders must not produce payloads beyond these limits.
+
+### Decoding
+
+1. Take the value of the `data` parameter of the fragment (`#data=…`; it may also follow
+   other `&`-separated parameters), and URL-decode it.
+2. Trim surrounding whitespace (including Unicode whitespace such as no-break space, the
+   byte order mark or line separators) and drop trailing `=` padding. This is the
+   **canonical payload**; links passed on to other pages carry it in this form.
+3. Check the length limit and the `v1.` prefix, decode base64url, inflate within the limit.
+4. Decode UTF-8 strictly, parse JSON, check the nesting depth, then validate against
+   `BuilderExport` (`schemaVersion: 1`). Anything that fails is rejected — never partially
+   shown.
+
+The reference decoder reports failures as `ShareDecodeError` with a `code`: `malformed`
+(prefix, characters, compression, UTF-8 or JSON), `too-large`, `invalid` (not a valid
+`BuilderExport`, or nested too deeply) or `unsupported` (the runtime lacks
+`DecompressionStream` with `deflate-raw`).
+
+### URLs
+
+| Purpose | URL |
+|---|---|
+| Viewer (read-only page with 3D model and rows) | `<builder>/viewer/#data=<payload>` |
+| Embed (compact viewer for an `<iframe>`) | `<builder>/viewer/?embed=1#data=<payload>` |
+| Open in the builder for editing | `<builder>/#data=<payload>` |
+| Import into TellmeCrochet | `https://tellmecrochet.de/import#data=<payload>` |
+
+`<builder>` is wherever the builder is deployed, e.g. `https://gerray.github.io/CrochetBuilder`.
+The builder removes the fragment from the address bar after reading it and asks before it
+replaces a document that is not empty.
+
 ## Example: an amigurumi sphere
 
 ```json
