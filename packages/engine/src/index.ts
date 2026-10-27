@@ -73,3 +73,6 @@ export type {
   GraphRowKind,
   NodeId,
 } from "./graph.js";
+
+export { relax, isClosedPiece, canonicalPose } from "./relax.js";
+export type { RelaxOptions } from "./relax.js";
