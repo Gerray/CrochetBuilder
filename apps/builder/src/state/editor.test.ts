@@ -215,6 +215,32 @@ describe("overview", () => {
     expect(s.doc.overview).toEqual({ materials: [{ kind: "yarn", label: "Baumwolle", colors: ["Rot"] }] });
     expect(BuilderExportSchema.safeParse(s.doc).success).toBe(true);
   });
+
+  it("stores the yarn thickness in mm next to the weight and drops invalid values", () => {
+    let s = run(fresh(), { type: "setGauge", gauge: { yarnDiameterMm: 2.5, hookMm: 3 } });
+    expect(s.doc.overview.gauge).toEqual({ yarnDiameterMm: 2.5, hookMm: 3 });
+
+    // Choosing a weight keeps the typed thickness.
+    s = run(s, { type: "setGauge", gauge: { ...s.doc.overview.gauge, yarnWeight: "bulky" } });
+    expect(s.doc.overview.gauge).toEqual({ yarnDiameterMm: 2.5, hookMm: 3, yarnWeight: "bulky" });
+    expect(BuilderExportSchema.safeParse(s.doc).success).toBe(true);
+
+    // Out of range or not a number: the field is dropped, the rest stays.
+    for (const yarnDiameterMm of [0, -1, 31, Number.NaN, Number.POSITIVE_INFINITY]) {
+      const t = run(s, { type: "setGauge", gauge: { ...s.doc.overview.gauge, yarnDiameterMm } });
+      expect(t.doc.overview.gauge).toEqual({ hookMm: 3, yarnWeight: "bulky" });
+      expect(BuilderExportSchema.safeParse(t.doc).success).toBe(true);
+    }
+
+    // Clearing the field (empty input → undefined) removes it.
+    const cleared = run(s, { type: "setGauge", gauge: { ...s.doc.overview.gauge, yarnDiameterMm: undefined } });
+    expect(cleared.doc.overview.gauge).toEqual({ hookMm: 3, yarnWeight: "bulky" });
+  });
+
+  it("drops unknown gauge keys so the document stays exportable", () => {
+    const s = run(fresh(), { type: "setGauge", gauge: { hookMm: 3, tension: 4 } as never });
+    expect(s.doc.overview.gauge).toEqual({ hookMm: 3 });
+  });
 });
 
 describe("undo / redo", () => {

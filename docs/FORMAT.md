@@ -73,12 +73,38 @@ type Gauge = {
   rowsPer10cm?: number;
   yarnWeight?: "lace" | "fingering" | "sport" | "dk" | "worsted" | "aran" | "bulky" | "jumbo";
   hookMm?: number;
+  yarnDiameterMm?: number;   // yarn thickness in mm, 0 < x ≤ 30 (since engine 0.2.0)
 };
 ```
 
-Resolution order: an explicit swatch (`stitchesPer10cm`/`rowsPer10cm`) wins; otherwise
-defaults from `yarnWeight` + `hookMm`; otherwise the engine default (DK, 4 mm) and the result
-is flagged as estimated.
+Resolution order for the stitch size:
+
+1. an explicit swatch (`stitchesPer10cm`/`rowsPer10cm`) wins;
+2. otherwise `yarnDiameterMm` + `hookMm`: the thickness is interpolated over the yarn weight
+   table (stitch width, row height and standard hook, piecewise linear between the two
+   neighbouring weights; proportional below the thinnest and above the thickest weight,
+   constant below 0.5 mm and above 12 mm), then scaled by `hookMm` relative to that
+   standard hook. It wins over `yarnWeight` when both are given;
+3. otherwise defaults from `yarnWeight` + `hookMm`;
+4. otherwise the engine default (DK, 4 mm).
+
+Without a swatch the result is flagged as estimated (`source: "yarn-weight"` for cases 2
+and 3, `"default"` for case 4). The rendered yarn thickness is `yarnDiameterMm` whenever it
+is given — also with a swatch — and otherwise the table value of the yarn weight.
+
+| `yarnWeight` | thickness | stitches / 10 cm | rows / 10 cm | standard hook |
+| ------------ | --------: | ---------------: | -----------: | ------------: |
+| `lace`       |    1.0 mm |               32 |           34 |        2.0 mm |
+| `fingering`  |    1.5 mm |               28 |           29 |        2.5 mm |
+| `sport`      |    2.0 mm |               24 |           25 |        3.0 mm |
+| `dk`         |    2.5 mm |               20 |           21 |        4.0 mm |
+| `worsted`    |    3.0 mm |               16 |           17 |        5.0 mm |
+| `aran`       |    3.5 mm |               14 |           15 |        5.5 mm |
+| `bulky`      |    5.0 mm |               11 |           12 |        7.0 mm |
+| `jumbo`      |    8.0 mm |                7 |            7 |       10.0 mm |
+
+Parsers older than engine 0.2.0 reject a gauge with `yarnDiameterMm` (the gauge object is
+strict).
 
 ## Builder export
 
