@@ -148,12 +148,15 @@ export {
   encodeShare,
   decodeShare,
   readShareFragment,
+  canonicalSharePayload,
+  exceedsJsonDepth,
   buildTmcImportUrl,
   buildViewerUrl,
   ShareDecodeError,
   SHARE_VERSION,
   MAX_SHARE_JSON_BYTES,
   MAX_SHARE_CHARS,
+  MAX_JSON_DEPTH,
   TMC_IMPORT_URL,
 } from "./share.js";
 export type { ShareDecodeErrorCode } from "./share.js";

@@ -144,6 +144,19 @@ describe("Export menu", () => {
     expect(await within(panel).findAllByText(/Der Link ist sehr lang \([\d.]+ Zeichen\)/)).not.toHaveLength(0);
   });
 
+  it("a browser without CompressionStream is told it is too old for share links", async () => {
+    await renderApp(fakeActions().actions);
+    vi.stubGlobal("CompressionStream", undefined);
+    try {
+      fireEvent.click(screen.getByRole("button", { name: /Exportieren/ }));
+      const panel = screen.getByRole("dialog", { name: "Exportieren" });
+      const alert = await within(panel).findByRole("alert");
+      expect(alert.textContent).toMatch(/^Dein Browser ist zu alt für Teilen-Links/);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("closes with Escape", async () => {
     await renderApp(fakeActions().actions);
     const panel = await openExport();
@@ -190,6 +203,18 @@ describe("JSON öffnen…", () => {
     await within(panel).findByText("„topflappen.json“ geöffnet.");
     expect(title()).toBe("topflappen");
     await screen.findByLabelText("Maschen von Reihe 21 als Text");
+  });
+
+  it("a file with several parts: opened with a notice that only the first part is edited", async () => {
+    const { actions } = fakeActions();
+    await renderApp(actions);
+    const exported = prepareExport(demoDocument(ids("ball"), "ball"));
+    exported.parts.push({ name: "Ohr", quantity: 2, content: { schemaVersion: 1, rows: [] } });
+    const panel = await openExport();
+    choose("teile.json", JSON.stringify(exported));
+    const status = await within(panel).findByText(/^„teile\.json“ geöffnet\. Diese Datei enthält 2 Teile;/);
+    expect(status.getAttribute("role")).toBe("status");
+    expect(title()).toBe("Amigurumi-Ball");
   });
 
   it("shows a German error for an invalid file and keeps the document", async () => {
@@ -239,6 +264,21 @@ describe("Opening a document from the builder URL (#data=)", () => {
     fireEvent.click(screen.getByRole("button", { name: "Rückgängig" }));
     expect(title()).toBe("Amigurumi-Kugel");
     confirm.mockRestore();
+  });
+
+  it("a link with several parts opens them all and says that only the first is edited", async () => {
+    const exp = prepareExport(demoDocument(ids("b"), "ball"));
+    exp.parts.push({ name: "Ohr", quantity: 2, content: { schemaVersion: 1, rows: [] } });
+    await linkTo(exp);
+    const { actions, rec } = fakeActions();
+    await renderApp(actions);
+    const notice = await screen.findByText(/^Dieser Link enthält 2 Teile; der Builder bearbeitet bisher nur das erste\./);
+    expect(notice.closest("[role=status]")).not.toBeNull();
+    expect(title()).toBe("Amigurumi-Ball");
+    // The hidden part is still exported.
+    const panel = await openExport();
+    fireEvent.click(within(panel).getByRole("button", { name: "JSON herunterladen" }));
+    expect(rec.json[0]!.parts.map((p) => p.name)).toEqual(["Ball", "Ohr"]);
   });
 
   it("a broken link shows a German notice and changes nothing", async () => {

@@ -33,24 +33,42 @@ const REPLACEMENTS: Record<string, string> = {
   "✓": "x",
   "✗": "x",
   "✕": "x",
+  "ẞ": "SS", // capital sharp s
 };
+
+/**
+ * Invisible formatting characters, dropped: soft hyphen, zero-width space/joiners, direction
+ * marks and isolates, word joiner, variation selectors (e.g. the emoji selector U+FE0F),
+ * byte order mark, tag characters.
+ */
+const INVISIBLE =
+  /^(?:[\u00ad\u034f\u061c\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u206f\ufe00-\ufe0f\ufeff]|[\u{e0000}-\u{e007f}\u{e0100}-\u{e01ef}])$/u;
+const COMBINING_MARKS = /\p{M}/gu;
+
+function isWinAnsi(ch: string): boolean {
+  const code = ch.codePointAt(0)!;
+  return (code >= 0x20 && code < 0x7f) || (code >= 0xa0 && code < 0x100) || CP1252_EXTRA.includes(ch);
+}
 
 /**
  * Text that jsPDF's standard fonts can show: Latin-1 and the cp1252 extras (umlauts, ß, ×,
  * –, „ “, €, …) pass unchanged; a few symbols get ASCII stand-ins, accented letters lose
- * their accent, anything else (emoji, CJK) becomes "?". Control characters become spaces.
+ * their accent, compatibility characters are decomposed ("ﬁ" → "fi"), invisible formatting
+ * characters are dropped, anything else (emoji, CJK) becomes "?". Control characters become
+ * spaces. Decomposed input ("Gro\u0308ße") is composed first, so umlauts survive.
  */
 export function toWinAnsi(text: string): string {
   let out = "";
-  for (const ch of text) {
+  for (const ch of text.normalize("NFC")) {
     const code = ch.codePointAt(0)!;
-    if (code === 0x09 || code === 0x0a || code === 0x0d) out += " ";
-    else if (code < 0x20 || (code >= 0x7f && code < 0xa0)) out += " ";
-    else if (code < 0x100 || CP1252_EXTRA.includes(ch)) out += ch;
+    if (code < 0x20 || (code >= 0x7f && code < 0xa0)) out += " ";
+    else if (INVISIBLE.test(ch)) continue;
+    else if (isWinAnsi(ch)) out += ch;
     else if (REPLACEMENTS[ch] !== undefined) out += REPLACEMENTS[ch];
     else {
-      const base = ch.normalize("NFD").replace(/[̀-ͯ]/g, "");
-      out += base.length > 0 && [...base].every((c) => c.codePointAt(0)! < 0x100) ? base : "?";
+      // Accented letters lose the accent; a combining mark without a base disappears.
+      const base = ch.normalize("NFKD").replace(COMBINING_MARKS, "");
+      out += [...base].every(isWinAnsi) ? base : "?";
     }
   }
   return out;
@@ -106,6 +124,34 @@ const lineHeight = (size: number) => size * PT * 1.4;
 export const FOOTER_TEXT = "Erstellt mit CrochetBuilder";
 
 /**
+ * End of the longest piece `word.slice(start, end)` that fits `width` — at least one
+ * character. Exponential then binary search, so only O(log n) pieces of about a line's
+ * length are measured (widths grow with the length of the piece).
+ */
+function fittingEnd(word: string, start: number, width: number, measure: (t: string) => number): number {
+  const fits = (end: number) => measure(word.slice(start, end)) <= width;
+  let lo = start + 1; // fits, or is the one-character minimum
+  let step = 1;
+  let hi = start + 2;
+  while (hi <= word.length && fits(hi)) {
+    lo = hi;
+    step *= 2;
+    hi = start + 2 * step;
+  }
+  if (hi > word.length) {
+    if (fits(word.length)) return word.length;
+    hi = word.length;
+  }
+  // `lo` fits (or is the minimum), `hi` does not.
+  while (hi - lo > 1) {
+    const mid = (lo + hi) >> 1;
+    if (fits(mid)) lo = mid;
+    else hi = mid;
+  }
+  return lo;
+}
+
+/**
  * Greedy word wrap. Words longer than the width are broken by characters. Returns at least
  * one (possibly empty) line.
  */
@@ -121,15 +167,15 @@ export function wrapText(text: string, width: number, measure: (t: string) => nu
     }
     if (line) lines.push(line);
     line = "";
-    // A word wider than a line: break it.
-    let rest = word;
-    while (measure(rest) > width && rest.length > 1) {
-      let cut = rest.length - 1;
-      while (cut > 1 && measure(rest.slice(0, cut)) > width) cut--;
-      lines.push(rest.slice(0, cut));
-      rest = rest.slice(cut);
+    // A word wider than a line: break it into pieces that fit.
+    let start = 0;
+    for (;;) {
+      const end = fittingEnd(word, start, width, measure);
+      if (end >= word.length) break;
+      lines.push(word.slice(start, end));
+      start = end;
     }
-    line = rest;
+    line = word.slice(start);
   };
   for (const word of words) pushWord(word);
   lines.push(line);

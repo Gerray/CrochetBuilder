@@ -6,8 +6,8 @@
  */
 
 import { useEffect, useRef } from "react";
-import { decodeShare, readShareFragment } from "@crochetbuilder/engine";
-import type { BuilderDoc } from "../state/document.js";
+import { decodeShare, readShareFragment, type BuilderExport } from "@crochetbuilder/engine";
+import { newId, type BuilderDoc } from "../state/document.js";
 import { documentFromExport, shareErrorMessage } from "./import.js";
 import { isDocumentEmpty } from "./prepare.js";
 
@@ -18,10 +18,13 @@ export interface FragmentImportOptions {
   /** The stored document has been restored (imports wait for it). */
   ready: boolean;
   doc: BuilderDoc;
-  onImport: (doc: BuilderDoc, pinned: string[]) => void;
+  /** `notice`: something to tell the person about the opened document (German), if anything. */
+  onImport: (doc: BuilderDoc, pinned: string[], notice?: string) => void;
   onError: (message: string) => void;
   /** Ask the person (default `window.confirm`). */
   confirm?: (question: string) => boolean;
+  /** Decode a payload (default `decodeShare`; tests control the timing). */
+  decode?: (payload: string) => Promise<BuilderExport>;
 }
 
 function clearFragment() {
@@ -33,11 +36,14 @@ function clearFragment() {
   }
 }
 
-export function useFragmentImport({ ready, doc, onImport, onError, confirm }: FragmentImportOptions): void {
-  const latest = useRef({ doc, onImport, onError, confirm });
-  latest.current = { doc, onImport, onError, confirm };
+export function useFragmentImport({ ready, doc, onImport, onError, confirm, decode }: FragmentImportOptions): void {
+  const latest = useRef({ doc, onImport, onError, confirm, decode });
+  latest.current = { doc, onImport, onError, confirm, decode };
   // The payload being handled: a fragment event during the decode does not start it twice.
   const handled = useRef<string | null>(null);
+  // Only the latest link counts: a decode that finishes after a newer link arrived is dropped
+  // (no second question, no older document winning the race).
+  const latestRun = useRef(0);
 
   useEffect(() => {
     if (!ready) return;
@@ -45,27 +51,37 @@ export function useFragmentImport({ ready, doc, onImport, onError, confirm }: Fr
       const payload = readShareFragment(globalThis.location.hash);
       if (!payload || payload === handled.current) return;
       handled.current = payload;
+      const id = ++latestRun.current;
+      const current = () => id === latestRun.current;
       clearFragment();
-      decodeShare(payload).then(
-        (exp) => {
-          const { doc: current, onImport: apply, onError: fail, confirm: ask } = latest.current;
-          const result = documentFromExport(exp);
-          if (!result.ok) {
-            fail(result.message);
-            return;
-          }
-          const question = ask ?? ((q: string) => globalThis.confirm(q));
-          if (!isDocumentEmpty(current) && !question(REPLACE_FROM_LINK_QUESTION)) return;
-          apply(result.doc, result.pinned);
-        },
-        (err: unknown) => latest.current.onError(shareErrorMessage(err)),
-      ).finally(() => {
-        // The same link may be opened again later.
-        if (handled.current === payload) handled.current = null;
-      });
+      const decodePayload = latest.current.decode ?? decodeShare;
+      decodePayload(payload)
+        .then(
+          (exp) => {
+            if (!current()) return;
+            const { doc: present, onImport: apply, onError: fail, confirm: ask } = latest.current;
+            const result = documentFromExport(exp, newId, "link");
+            if (!result.ok) {
+              fail(result.message);
+              return;
+            }
+            const question = ask ?? ((q: string) => globalThis.confirm(q));
+            if (!isDocumentEmpty(present) && !question(REPLACE_FROM_LINK_QUESTION)) return;
+            apply(result.doc, result.pinned, result.notice);
+          },
+          (err: unknown) => {
+            if (current()) latest.current.onError(shareErrorMessage(err));
+          },
+        )
+        .finally(() => {
+          // The same link may be opened again later.
+          if (handled.current === payload) handled.current = null;
+        });
     };
     run();
     globalThis.addEventListener("hashchange", run);
+    // No invalidation on cleanup: under StrictMode the effect re-runs after the fragment has
+    // already been cleared, and the first decode must still land.
     return () => globalThis.removeEventListener("hashchange", run);
   }, [ready]);
 }

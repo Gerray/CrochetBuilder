@@ -31,6 +31,7 @@ export function App({ exportActions }: AppProps = {}) {
   const [focusRequest, setFocusRequest] = useState<FocusRequest | null>(null);
   const focusCounter = useRef(0);
   const [linkError, setLinkError] = useState<string | null>(null);
+  const [linkNotice, setLinkNotice] = useState<string | null>(null);
 
   const replaceDocument = useCallback((doc: BuilderDoc, pinned: string[]) => {
     dispatch({ type: "replaceDocument", doc, pinned });
@@ -41,11 +42,15 @@ export function App({ exportActions }: AppProps = {}) {
   useFragmentImport({
     ready: persistence.status !== "loading",
     doc: state.doc,
-    onImport: (doc, pinned) => {
+    onImport: (doc, pinned, notice) => {
       setLinkError(null);
+      setLinkNotice(notice ?? null);
       replaceDocument(doc, pinned);
     },
-    onError: setLinkError,
+    onError: (message) => {
+      setLinkNotice(null);
+      setLinkError(message);
+    },
   });
 
   const part = currentPart(state.doc);
@@ -131,6 +136,14 @@ export function App({ exportActions }: AppProps = {}) {
             <strong>Anleitung aus dem Link konnte nicht geöffnet werden.</strong> {linkError}
           </span>
           <button type="button" className="btn btn-small" onClick={() => setLinkError(null)}>
+            Schließen
+          </button>
+        </div>
+      )}
+      {linkNotice !== null && (
+        <div className="link-notice link-notice-info" role="status">
+          <span>{linkNotice}</span>
+          <button type="button" className="btn btn-small" onClick={() => setLinkNotice(null)}>
             Schließen
           </button>
         </div>
