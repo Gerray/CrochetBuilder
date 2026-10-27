@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
-import { importFile } from "../export/import.js";
+import { ShareDecodeError } from "@crochetbuilder/engine";
+import { importFile, UNSUPPORTED_BROWSER_MESSAGE } from "../export/import.js";
 import { downloadJson, isDocumentEmpty } from "../export/prepare.js";
 import { embedSnippet, LONG_URL_CHARS, shareLinks, type ShareLinks } from "../export/share.js";
 import type { BuilderDoc } from "../state/document.js";
@@ -40,6 +41,13 @@ type View = "share" | "embed" | null;
 
 const count = (n: number) => n.toLocaleString("de-DE");
 
+/** Why no share link could be made (German). */
+function packErrorMessage(err: unknown): string {
+  if (err instanceof ShareDecodeError && err.code === "unsupported") return UNSUPPORTED_BROWSER_MESSAGE;
+  if (err instanceof RangeError) return "Die Anleitung ist zu groß für einen Link. Speichere sie als JSON.";
+  return "Die Anleitung konnte nicht verpackt werden. Speichere sie als JSON.";
+}
+
 /** "Exportieren": TellmeCrochet, PDF, JSON (save / open), share link and embed code. */
 export function ExportMenu({ doc, onReplace, actions: overrides }: ExportMenuProps) {
   const actions = { ...defaultActions, ...overrides };
@@ -68,7 +76,7 @@ export function ExportMenu({ doc, onReplace, actions: overrides }: ExportMenuPro
         if (cancelled) return;
         console.error(err);
         setLinks(null);
-        setLinkError("Die Anleitung konnte nicht verpackt werden. Speichere sie als JSON.");
+        setLinkError(packErrorMessage(err));
       },
     );
     return () => {
@@ -119,6 +127,7 @@ export function ExportMenu({ doc, onReplace, actions: overrides }: ExportMenuPro
       if (!result.ok) return { kind: "error", text: result.message };
       if (!isDocumentEmpty(doc) && !actions.confirm(REPLACE_FROM_FILE_QUESTION)) return null;
       onReplace(result.doc, result.pinned);
+      if (result.notice) return { kind: "info", text: `„${file.name}“ geöffnet. ${result.notice}` };
       return { kind: "ok", text: `„${file.name}“ geöffnet.` };
     });
   };
