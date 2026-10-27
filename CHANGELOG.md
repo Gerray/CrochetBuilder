@@ -20,8 +20,16 @@ All notable changes to this project are documented here. The format follows
   the PDF image.
 - Share links are documented in [`docs/FORMAT.md`](docs/FORMAT.md#share-links);
   `ShareDecodeError` gains the code `unsupported` (browser without deflate-raw streams).
+- `toMesh` options `smooth` (surface: 0–2 subdivision steps or `"auto"`, which keeps the
+  stitch vertices and rounds the fabric off) and `closed` (override of `isClosedPiece`, as
+  for `relax`).
 
 ### Fixed
+
+- Closed pieces are closed at the top in every mesh style: the surface fans the last round
+  to a closing pole (watertight, like the magic ring at the start), the stitch lattice
+  gathers the last round's front loops into a cinched ring, the tube runs on to the pole.
+  Surface normals are angle-weighted.
 
 - Share links: decompression is streamed in small slices so the 2 MiB cap holds in
   browsers; links are limited to 256 Ki characters; deeply nested payloads are rejected
