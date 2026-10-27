@@ -225,7 +225,9 @@ describe("buildGraph — stitch budget", () => {
     const content = part([row("a", [rep(1000, [st("SC", 1000)])], 1_000_000, { type: "row" })]);
     const t0 = performance.now();
     const g = buildGraph(content);
-    expect(performance.now() - t0).toBeLessThan(200);
+    // Guards against expanding a million stitches (seconds), not a benchmark: the bound is
+    // generous so a loaded machine running tests in parallel cannot make it flaky.
+    expect(performance.now() - t0).toBeLessThan(1000);
     expect(g.overBudget).toBe(true);
     expect(g.stitchCount).toBe(1_000_000);
     expect(g.nodes).toEqual([]);
