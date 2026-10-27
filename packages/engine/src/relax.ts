@@ -6,8 +6,10 @@
  *
  *   1. springs — every edge is pulled towards its rest length (Gauss–Seidel sweeps,
  *      alternating forward and backward so neither end of the work is favoured);
- *   2. radial stabiliser — the nodes of every closed round are nudged towards the radius
- *      their circumference implies (C / 2π), around the round's own centroid;
+ *   2. radial start-up stabiliser — the nodes of every closed round are nudged towards the
+ *      radius their circumference implies (C / 2π), around the round's own centroid. It
+ *      fades out linearly over the first half of the iterations, so the final shape is
+ *      decided by the springs, the stuffing and the repulsion alone;
  *   3. stuffing — closed pieces (opened with a magic ring, ending in a small round) are
  *      inflated towards the volume of a sphere with the fabric's surface area, like a
  *      stuffed amigurumi. Unilateral: it only ever pushes outwards;
@@ -18,8 +20,15 @@
  * breaks the perfect symmetry of the layout so flat fabric can buckle if it must).
  *
  * Output pose: rounds grow along +Y (the axis through the rounds' centres), flat pieces lie
- * in the XY plane with rows growing along +Y. The piece is centred on the Y axis and rests on
- * y = 0. Units are millimetres.
+ * in the XY plane with the working direction of the rows along X and rows growing along +Y.
+ * The piece is centred on the Y axis and rests on y = 0. Units are millimetres.
+ *
+ * What the shape depends on: the gauge's stitch height relative to its width. The classic
+ * flat-circle rule (6 increases per round lie flat) holds for h ≈ w (2π·h/w ≈ 6). The engine's
+ * default yarn table has h ≈ 0.83·w, so with defaults increase rounds ruffle slightly and the
+ * 8-round sphere of docs/FORMAT.md (one even round) comes out as a flattened ball — its
+ * pole-to-pole path is barely longer than its equator radius. That is the fabric's geometry,
+ * not a solver artefact; with square stitches the same pattern is clearly rounder.
  */
 
 import type { StitchGraph } from "./graph.js";
@@ -34,7 +43,10 @@ export interface RelaxOptions {
   stiffness?: number;
   /** Fraction of velocity removed per step, 0–1. Default 0.2. */
   damping?: number;
-  /** Strength of the radial stabiliser for closed rounds, 0–1. Default 0.3. */
+  /**
+   * Start-up strength of the radial stabiliser for closed rounds, 0–1. Default 0.3. Fades
+   * linearly to zero over the first half of the iterations.
+   */
   radial?: number;
   /** Strength of node–node repulsion, 0–1. Default 0.3. */
   repulsion?: number;
@@ -48,11 +60,17 @@ export interface RelaxOptions {
   jitter?: number;
   /** Rotate/translate the result into the canonical pose (see module doc). Default true. */
   pose?: boolean;
+  /**
+   * Override whether the piece is closed (capped and stuffed). Default: `isClosedPiece`.
+   * Use it for a piece the heuristic gets wrong, e.g. an open tube that narrows at the end.
+   */
+  closed?: boolean;
 }
 
 /**
- * A piece is closed when it starts with a magic ring, consists only of rounds and ends in a
- * round much smaller than its widest one (the last hole is pulled shut when finishing).
+ * A piece is closed when it starts with a magic ring, consists only of rounds and is
+ * decreased at the end: its last round has less than half the stitches of its widest one
+ * (the last hole is pulled shut when finishing). A straight tube — an arm, say — is open.
  */
 export function isClosedPiece(graph: StitchGraph): boolean {
   const rows = graph.rows;
@@ -60,7 +78,7 @@ export function isClosedPiece(graph: StitchGraph): boolean {
   if (rows[0]!.kind !== "ring") return false;
   if (!rows.every((r) => r.closed)) return false;
   const max = Math.max(...rows.map((r) => r.widthStitches));
-  return rows[rows.length - 1]!.widthStitches <= Math.max(8, 0.35 * max);
+  return rows[rows.length - 1]!.widthStitches < 0.5 * max;
 }
 
 /**
@@ -71,19 +89,20 @@ export function relax(graph: StitchGraph, opts: RelaxOptions = {}): StitchGraph 
   const n = graph.nodes.length;
   if (n === 0) return { ...graph, positions: new Float64Array(0), relaxed: true };
 
-  const iterations = Math.max(0, Math.floor(opts.iterations ?? 300));
-  const stiffness = clamp01(opts.stiffness ?? 1);
-  const keep = 1 - clamp01(opts.damping ?? 0.2);
-  const radialK = clamp01(opts.radial ?? 0.3);
-  const repulsionK = clamp01(opts.repulsion ?? 0.3);
-  const closed = isClosedPiece(graph);
-  const stuffing = opts.stuffing === undefined || opts.stuffing === "auto" ? (closed ? 1 : 0) : clamp01(opts.stuffing);
+  const iterations = Math.max(0, Math.floor(num(opts.iterations, 300)));
+  const stiffness = clamp01(num(opts.stiffness, 1));
+  const keep = 1 - clamp01(num(opts.damping, 0.2));
+  const radialK = clamp01(num(opts.radial, 0.3));
+  const repulsionK = clamp01(num(opts.repulsion, 0.3));
+  const closed = typeof opts.closed === "boolean" ? opts.closed : isClosedPiece(graph);
+  const stuffing =
+    opts.stuffing === undefined || opts.stuffing === "auto" ? (closed ? 1 : 0) : clamp01(num(opts.stuffing, 0));
   const w = graph.gauge.stitchWidthMm;
   const h = graph.gauge.stitchHeightMm;
 
   // Start positions with seeded jitter.
-  const rand = createRandom(opts.seed ?? 1);
-  const amp = (opts.jitter ?? 0.02) * w;
+  const rand = createRandom(num(opts.seed, 1));
+  const amp = Math.max(0, num(opts.jitter, 0.02)) * w;
   const pos = Float64Array.from(graph.positions);
   for (let i = 0; i < pos.length; i++) pos[i] = pos[i]! + (rand() * 2 - 1) * amp;
   const old = Float64Array.from(pos);
@@ -98,6 +117,7 @@ export function relax(graph: StitchGraph, opts: RelaxOptions = {}): StitchGraph 
     eb[i] = e.b;
     er[i] = e.restLength;
   });
+  const half = 0.5 * stiffness;
 
   // Adjacency (CSR) so repulsion skips directly linked nodes.
   const deg = new Uint32Array(n + 1);
@@ -131,7 +151,8 @@ export function relax(graph: StitchGraph, opts: RelaxOptions = {}): StitchGraph 
   let targetVolume = 0;
   let volumeSign = 1;
   if (stuffing > 0) {
-    const last = rings[rings.length - 1];
+    // Cap the last round's hole only on a closed piece; a stuffed open piece stays open.
+    const last = closed ? rings[rings.length - 1] : undefined;
     if (last && last.ids.length >= 3) {
       const cap: number[] = [];
       const flip = graph.rows[graph.rows.length - 1]!.direction === -1;
@@ -179,7 +200,7 @@ export function relax(graph: StitchGraph, opts: RelaxOptions = {}): StitchGraph 
         const dz = pos[b + 2]! - pos[a + 2]!;
         const len = Math.sqrt(dx * dx + dy * dy + dz * dz);
         if (len < 1e-9) continue;
-        const s = (0.5 * stiffness * (len - er[e]!)) / len;
+        const s = (half * (len - er[e]!)) / len;
         pos[a] = pos[a]! + dx * s;
         pos[a + 1] = pos[a + 1]! + dy * s;
         pos[a + 2] = pos[a + 2]! + dz * s;
@@ -189,8 +210,9 @@ export function relax(graph: StitchGraph, opts: RelaxOptions = {}): StitchGraph 
       }
     }
 
-    // 3. Radial stabiliser.
-    if (radialK > 0) {
+    // 3. Radial start-up stabiliser, fading out over the first half.
+    const rk = radialK * Math.max(0, 1 - (2 * it) / Math.max(1, iterations));
+    if (rk > 0) {
       for (const ring of rings) {
         let cx = 0;
         let cy = 0;
@@ -210,7 +232,7 @@ export function relax(graph: StitchGraph, opts: RelaxOptions = {}): StitchGraph 
           const dz = pos[3 * id + 2]! - cz;
           const d = Math.sqrt(dx * dx + dy * dy + dz * dz);
           if (d < 1e-9) continue;
-          const s = (radialK * (ring.radius - d)) / d;
+          const s = (rk * (ring.radius - d)) / d;
           pos[3 * id] = pos[3 * id]! + dx * s;
           pos[3 * id + 1] = pos[3 * id + 1]! + dy * s;
           pos[3 * id + 2] = pos[3 * id + 2]! + dz * s;
@@ -255,6 +277,11 @@ export function relax(graph: StitchGraph, opts: RelaxOptions = {}): StitchGraph 
 
 /** Fraction of the volume deficit the stuffing step corrects per iteration at stuffing 1. */
 const STUFFING_STEP = 0.3;
+
+/** A finite number, else the default (NaN / ±Infinity / undefined options fall back). */
+function num(x: number | undefined, fallback: number): number {
+  return typeof x === "number" && Number.isFinite(x) ? x : fallback;
+}
 
 function clamp01(x: number): number {
   return Math.min(1, Math.max(0, x));
@@ -419,31 +446,34 @@ export function canonicalPose(graph: StitchGraph): void {
       az += nrm[2];
     }
     rotateInto(pos, [ax, ay, az], [0, 1, 0]);
-  } else if (graph.triangles.length > 0) {
+  } else {
+    // Flat piece: fabric normal → +Z, then the rows' working direction → +X. Rows then grow
+    // along ±Y (+Y for consistently wound fabric), whatever the outline of the piece.
     const t = graph.triangles;
-    let nx = 0, ny = 0, nz = 0;
-    for (let k = 0; k < t.length; k += 3) {
-      const c = triNormal(pos, t[k]!, t[k + 1]!, t[k + 2]!);
-      nx += c[0];
-      ny += c[1];
-      nz += c[2];
-    }
-    rotateInto(pos, [nx, ny, nz], [0, 0, 1]);
-    const first = graph.rows[0]!;
-    const last = graph.rows[graph.rows.length - 1]!;
-    const c0 = centroid(pos, first.firstNode, first.nodeCount);
-    const c1 = centroid(pos, last.firstNode, last.nodeCount);
-    const gx = c1[0] - c0[0];
-    const gy = c1[1] - c0[1];
-    if (gx * gx + gy * gy > 1e-12) {
-      // Rotate about Z so that growth points along +Y.
-      const ang = Math.atan2(gx, gy);
-      const cs = Math.cos(ang), sn = Math.sin(ang);
-      for (let i = 0; i < n; i++) {
-        const x = pos[3 * i]!, y = pos[3 * i + 1]!;
-        pos[3 * i] = cs * x - sn * y;
-        pos[3 * i + 1] = sn * x + cs * y;
+    if (t.length > 0) {
+      let nx = 0, ny = 0, nz = 0;
+      for (let k = 0; k < t.length; k += 3) {
+        const c = triNormal(pos, t[k]!, t[k + 1]!, t[k + 2]!);
+        nx += c[0];
+        ny += c[1];
+        nz += c[2];
       }
+      rotateInto(pos, [nx, ny, nz], [0, 0, 1]);
+    }
+    const u = workingDirection(graph);
+    if (t.length > 0) {
+      if (u[0] * u[0] + u[1] * u[1] > 1e-12) {
+        // Rotate about Z so that the working direction points along +X.
+        const ang = -Math.atan2(u[1], u[0]);
+        const cs = Math.cos(ang), sn = Math.sin(ang);
+        for (let i = 0; i < n; i++) {
+          const x = pos[3 * i]!, y = pos[3 * i + 1]!;
+          pos[3 * i] = cs * x - sn * y;
+          pos[3 * i + 1] = sn * x + cs * y;
+        }
+      }
+    } else {
+      rotateInto(pos, u, [1, 0, 0]);
     }
   }
 
@@ -461,6 +491,30 @@ export function canonicalPose(graph: StitchGraph): void {
     pos[3 * i + 1] = pos[3 * i + 1]! - minY;
     pos[3 * i + 2] = pos[3 * i + 2]! - oz;
   }
+}
+
+/**
+ * Mean working direction of the rows: the sum of in-row steps between neighbouring stitches
+ * (turning chains and MR left out), each row counted in its own direction so that turned rows
+ * add up instead of cancelling.
+ */
+function workingDirection(graph: StitchGraph): [number, number, number] {
+  const pos = graph.positions;
+  let x = 0, y = 0, z = 0;
+  for (const row of graph.rows) {
+    let prev = -1;
+    for (let id = row.firstNode; id < row.firstNode + row.nodeCount; id++) {
+      const node = graph.nodes[id]!;
+      if (node.lift || node.code === "MR") continue;
+      if (prev >= 0) {
+        x += row.direction * (pos[3 * id]! - pos[3 * prev]!);
+        y += row.direction * (pos[3 * id + 1]! - pos[3 * prev + 1]!);
+        z += row.direction * (pos[3 * id + 2]! - pos[3 * prev + 2]!);
+      }
+      prev = id;
+    }
+  }
+  return [x, y, z];
 }
 
 /** Newell's method: area-weighted normal of a (non-planar) closed polygon. */
@@ -481,16 +535,6 @@ function triNormal(pos: Float64Array, i: number, j: number, k: number): [number,
   const ux = pos[b]! - pos[a]!, uy = pos[b + 1]! - pos[a + 1]!, uz = pos[b + 2]! - pos[a + 2]!;
   const vx = pos[c]! - pos[a]!, vy = pos[c + 1]! - pos[a + 1]!, vz = pos[c + 2]! - pos[a + 2]!;
   return [uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx];
-}
-
-function centroid(pos: Float64Array, first: number, count: number): [number, number, number] {
-  let x = 0, y = 0, z = 0;
-  for (let i = first; i < first + count; i++) {
-    x += pos[3 * i]!;
-    y += pos[3 * i + 1]!;
-    z += pos[3 * i + 2]!;
-  }
-  return count > 0 ? [x / count, y / count, z / count] : [0, 0, 0];
 }
 
 /** Rotate all positions by the minimal rotation taking direction `from` onto `to` (unit). */

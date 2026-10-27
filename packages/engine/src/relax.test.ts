@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
-import { buildGraph } from "./graph.js";
+import { buildGraph, type StitchGraph } from "./graph.js";
 import { relax, isClosedPiece, signedVolume, newellNormal } from "./relax.js";
+import { measure, measureRounds, maxRoundDiameter } from "./measure.js";
 import { createRandom } from "./random.js";
 import type { Op, PartContent, Row, StitchCode } from "./schema.js";
 
@@ -28,6 +29,11 @@ const SPHERE = part([
   row("r8", [st("DEC", 6)], 6),
 ]);
 const DISC = part(INCREASES);
+/** An arm: magic ring, then 12 even rounds of 6 — narrow but open. */
+const ARM = part([
+  row("r1", [st("MR"), st("SC", 6)], 6),
+  ...Array.from({ length: 12 }, (_, i) => row(`e${i}`, [st("SC", 6)], 6)),
+]);
 const FLAT = part([
   row("f", [st("CH", 7)], 0, "row"),
   row("1", [st("SC", 6)], 6, "row"),
@@ -111,10 +117,76 @@ describe("relax", () => {
     expect(p[1]!).toBeLessThan(2);
   });
 
-  it("recognises closed pieces (ring start, small last round, rounds only)", () => {
+  it("recognises closed pieces (ring start, rounds only, decreased to under half at the end)", () => {
     expect(isClosedPiece(buildGraph(SPHERE))).toBe(true);
     expect(isClosedPiece(buildGraph(DISC))).toBe(false);
     expect(isClosedPiece(buildGraph(FLAT))).toBe(false);
+    expect(isClosedPiece(buildGraph(ARM))).toBe(false); // narrow, but never decreased
+  });
+
+  it("leaves an open arm unstuffed, unless the caller says it is closed", () => {
+    const g = buildGraph(ARM);
+    const w = g.gauge.stitchWidthMm;
+    const tube = (x: StitchGraph) => measureRounds(x).slice(-6).map((r) => r.diameter);
+    for (const d of tube(relax(g))) expect(d).toBeCloseTo((6 * w) / Math.PI, 0);
+    const forced = tube(relax(g, { closed: true }));
+    expect(Math.min(...forced)).toBeGreaterThan(1.1 * ((6 * w) / Math.PI));
+  });
+
+  it("falls back to defaults for non-finite numeric options", () => {
+    const g = buildGraph(SPHERE);
+    const ref = Array.from(relax(g).positions);
+    const bad = relax(g, {
+      iterations: NaN,
+      seed: Infinity,
+      stiffness: NaN,
+      damping: NaN,
+      radial: -Infinity,
+      repulsion: NaN,
+      stuffing: NaN,
+      jitter: NaN,
+    });
+    expect(Array.from(bad.positions).every(Number.isFinite)).toBe(true);
+    // radial and stuffing clamp (−∞ → 0, NaN → 0), the rest are exactly the defaults.
+    expect(Array.from(relax(g, { iterations: NaN, seed: NaN, stiffness: NaN, damping: NaN, jitter: NaN }).positions)).toEqual(ref);
+  });
+
+  it("uses the radial force only to start: the springs decide the final shape", () => {
+    const g = buildGraph(SPHERE);
+    const a = maxRoundDiameter(relax(g));
+    const b = maxRoundDiameter(relax(g, { radial: 0 }));
+    expect(Math.abs(a - b) / b).toBeLessThan(0.03);
+  });
+
+  it("orients flat pieces by their working direction, whatever their outline", () => {
+    // Two half-width rows on a full-width base: the row centroids drift sideways.
+    const half = part([
+      row("f", [st("CH", 7)], 0, "row"),
+      row("1", [st("SC", 6)], 6, "row"),
+      row("2", [st("CH"), st("SC", 3)], 3, "row"),
+      row("3", [st("CH"), st("SC", 3)], 3, "row"),
+    ]);
+    const g = relax(buildGraph(half));
+    const { width, height, depth } = measure(g);
+    const w = g.gauge.stitchWidthMm, h = g.gauge.stitchHeightMm, d = g.gauge.yarnDiameterMm;
+    expect(width).toBeCloseTo(6 * w + d, -0.5); // ± ~1.5 mm
+    expect(height).toBeLessThan(1.2 * (3 * h + d));
+    expect(depth).toBeLessThan(2 * d);
+  });
+
+  it("converges back to the rectangle from a disturbed start", () => {
+    const rect = part([...FLAT.rows, row("3", [st("CH"), st("SC", 6)], 6, "row")]);
+    const g = buildGraph(rect);
+    const w = g.gauge.stitchWidthMm, h = g.gauge.stitchHeightMm, d = g.gauge.yarnDiameterMm;
+    const stretched = { ...g, positions: g.positions.map((v) => 1.4 * v) };
+    for (const start of [relax(stretched), relax(g, { jitter: 0.3 })]) {
+      const size = measure(start);
+      expect(size.width).toBeGreaterThan(0.85 * (6 * w + d));
+      expect(size.width).toBeLessThan(1.15 * (6 * w + d));
+      expect(size.height).toBeGreaterThan(0.8 * (3 * h + d));
+      expect(size.height).toBeLessThan(1.2 * (3 * h + d));
+      expect(size.depth).toBeLessThan(0.3 * size.width);
+    }
   });
 
   it("stuffing only inflates closed pieces and makes them taller", () => {
