@@ -48,6 +48,11 @@ export interface RoundMeasure {
   diameter: number;
   /** Length of the closed polygon through the round's stitches (mm). */
   circumference: number;
+  /**
+   * How far the round is from a circle: standard deviation of the stitches' distances from
+   * the centroid over their mean (0 = perfect circle; a hexagon is ≈ 0.04).
+   */
+  circularity: number;
 }
 
 /**
@@ -76,18 +81,24 @@ export function measureRounds(graph: StitchGraph): RoundMeasure[] {
     cy /= ids.length;
     cz /= ids.length;
     let r = 0;
+    let r2 = 0;
     let circ = 0;
     ids.forEach((id, k) => {
-      r += Math.hypot(pos[3 * id]! - cx, pos[3 * id + 1]! - cy, pos[3 * id + 2]! - cz);
+      const d = Math.hypot(pos[3 * id]! - cx, pos[3 * id + 1]! - cy, pos[3 * id + 2]! - cz);
+      r += d;
+      r2 += d * d;
       const nx = ids[(k + 1) % ids.length]!;
       circ += Math.hypot(pos[3 * nx]! - pos[3 * id]!, pos[3 * nx + 1]! - pos[3 * id + 1]!, pos[3 * nx + 2]! - pos[3 * id + 2]!);
     });
+    const mean = r / ids.length;
+    const sd = Math.sqrt(Math.max(0, r2 / ids.length - mean * mean));
     out.push({
       rowId: row.rowId,
       rowIndex: row.rowIndex,
       center: [cx, cy, cz],
-      diameter: (2 * r) / ids.length,
+      diameter: 2 * mean,
       circumference: circ,
+      circularity: mean > 1e-9 ? sd / mean : 0,
     });
   }
   return out;
