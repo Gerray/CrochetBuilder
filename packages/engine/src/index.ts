@@ -60,6 +60,7 @@ export {
   anchorsConsumed,
   consumesOfAtom,
   isRingRow,
+  checkEmptyRepeats,
 } from "./validate.js";
 export type { Finding, FindingCode } from "./validate.js";
 
@@ -71,6 +72,15 @@ export {
   parseRowText,
   resolveStitchTerm,
   resolveModTerm,
+  stitchVocabulary,
+  countWorkedStitches,
+  opsWithinLimits,
+  modifierAllowed,
+  normalizeModifiers,
+  MAX_COUNT,
+  MAX_TIMES,
+  MAX_ROW_STITCHES,
+  MAX_STITCH_COUNT_TARGET,
   NOTATION_LOCALES,
   STITCH_ABBREVIATIONS,
   STITCH_NAMES,

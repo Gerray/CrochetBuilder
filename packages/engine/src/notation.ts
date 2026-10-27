@@ -21,7 +21,64 @@
  * Pure functions, no I/O, no framework imports.
  */
 
-import type { Mod, Op, Row, StitchCode, StitchOp } from "./schema.js";
+import { STITCH_PROPERTIES, type Mod, type Op, type Row, type StitchCode, type StitchOp } from "./schema.js";
+
+// ---------------------------------------------------------------------------
+// Limits and modifier rules (shared by the parser and editors)
+// ---------------------------------------------------------------------------
+
+/** Largest `count` of a single stitch op an editor accepts. */
+export const MAX_COUNT = 999;
+/** Largest `times` of a repeat group an editor accepts. */
+export const MAX_TIMES = 999;
+/** Largest number of worked stitches (expanded atoms) in one row. */
+export const MAX_ROW_STITCHES = 10_000;
+/** Largest declared stitch count of a row (an INC row produces at most twice its atoms). */
+export const MAX_STITCH_COUNT_TARGET = 2 * MAX_ROW_STITCHES;
+
+/**
+ * Worked stitches of an op list (what `expandRow` would produce) without expanding it, so
+ * oversized input can be rejected cheaply.
+ */
+export function countWorkedStitches(ops: readonly Op[]): number {
+  let total = 0;
+  for (const op of ops) {
+    total += op.kind === "stitch" ? op.count : op.times * countWorkedStitches(op.ops);
+  }
+  return total;
+}
+
+/** Whether every count, every repeat and the row total stay within the editor limits. */
+export function opsWithinLimits(ops: readonly Op[]): boolean {
+  const inner = (list: readonly Op[]): boolean =>
+    list.every((op) =>
+      op.kind === "stitch" ? op.count <= MAX_COUNT : op.times <= MAX_TIMES && inner(op.ops),
+    );
+  return inner(ops) && countWorkedStitches(ops) <= MAX_ROW_STITCHES;
+}
+
+/**
+ * Whether `mod` makes sense on `code`: loops (BLO/FLO) need a stitch worked into the
+ * previous row (not MR/CH); TOG needs a stitch worked into one stitch that is not already
+ * an increase or decrease (sc2tog yes, "inc tog" no).
+ */
+export function modifierAllowed(code: StitchCode, mod: Mod): boolean {
+  const consumes = STITCH_PROPERTIES[code].consumesStitches;
+  if (mod === "TOG") return consumes === 1 && code !== "INC";
+  return consumes > 0;
+}
+
+/**
+ * Normalise a modifier list for `code`: duplicates removed (first occurrence kept).
+ * Returns null when the list is contradictory (BLO with FLO) or contains a modifier that
+ * does not apply to the code.
+ */
+export function normalizeModifiers(code: StitchCode, mods: readonly Mod[]): Mod[] | null {
+  const unique = [...new Set(mods)];
+  if (unique.includes("BLO") && unique.includes("FLO")) return null;
+  if (!unique.every((m) => modifierAllowed(code, m))) return null;
+  return unique;
+}
 
 /** Display/notation locales. */
 export type NotationLocale = "de" | "en_us" | "en_uk";
@@ -84,66 +141,6 @@ export const MOD_NAMES: Record<Mod, Record<NotationLocale, string>> = {
 /** Times sign used when rendering repeat groups. */
 const TIMES_SIGN: Record<NotationLocale, string> = { de: "×", en_us: "x", en_uk: "x" };
 
-/** Additional spellings understood when parsing (lowercase, dots removed). */
-const STITCH_ALIASES: Record<NotationLocale, Record<string, StitchCode>> = {
-  de: {
-    luftmaschen: "CH",
-    kettmaschen: "SL_ST",
-    "feste maschen": "SC",
-    "halbe stäbchen": "HDC",
-    "halbes stb": "HDC",
-    "doppelte stäbchen": "TR",
-    "doppeltes stäbchen": "TR",
-    "dreifache stäbchen": "DTR",
-    "dreifaches stäbchen": "DTR",
-    "doppeltes doppelstäbchen": "DTR",
-    magischer: "MR",
-    fadenring: "MR",
-    "magischer fadenring": "MR",
-    zunahmen: "INC",
-    abnahmen: "DEC",
-    "unsichtbare abnahmen": "INVDEC",
-    maschen: "ST",
-  },
-  en_us: {
-    chains: "CH",
-    slst: "SL_ST",
-    ss: "SL_ST",
-    "slip stitches": "SL_ST",
-    "single crochets": "SC",
-    single: "SC",
-    "half double": "HDC",
-    "double crochets": "DC",
-    double: "DC",
-    treble: "TR",
-    "double treble": "DTR",
-    "magic circle": "MR",
-    increases: "INC",
-    decreases: "DEC",
-    "invisible decreases": "INVDEC",
-    sts: "ST",
-    stitches: "ST",
-  },
-  en_uk: {
-    chains: "CH",
-    "sl st": "SL_ST",
-    slst: "SL_ST",
-    "slip stitches": "SL_ST",
-    "double crochets": "SC",
-    "half treble": "HDC",
-    "treble crochets": "DC",
-    treble: "DC",
-    "double treble": "TR",
-    "triple treble": "DTR",
-    "magic circle": "MR",
-    increases: "INC",
-    decreases: "DEC",
-    "invisible decreases": "INVDEC",
-    sts: "ST",
-    stitches: "ST",
-  },
-};
-
 const MOD_ALIASES: Record<string, Mod> = {
   "hinteres maschenglied": "BLO",
   "hinteres mg": "BLO",
@@ -162,13 +159,84 @@ function termKey(term: string): string {
   return term.toLowerCase().replace(/\./g, "").replace(/\s+/g, " ").trim();
 }
 
+/**
+ * Extra spellings understood when parsing, beyond the abbreviation and the full name.
+ * Singular/plural and short forms of the English names ("double", "trebles") are generated
+ * in `nameForms`; German plurals are listed here.
+ */
+const STITCH_ALIASES: Record<NotationLocale, Record<string, StitchCode>> = {
+  de: {
+    luftmaschen: "CH",
+    kettmaschen: "SL_ST",
+    "feste maschen": "SC",
+    "halbe stäbchen": "HDC",
+    "halbes stb": "HDC",
+    "doppelte stäbchen": "TR",
+    "doppeltes stäbchen": "TR",
+    "dreifache stäbchen": "DTR",
+    "dreifaches stäbchen": "DTR",
+    "doppeltes doppelstäbchen": "DTR",
+    "doppelte doppelstäbchen": "DTR",
+    magischer: "MR",
+    "magische ringe": "MR",
+    fadenring: "MR",
+    "magischer fadenring": "MR",
+    zunahmen: "INC",
+    abnahmen: "DEC",
+    "unsichtbare abnahmen": "INVDEC",
+    maschen: "ST",
+  },
+  en_us: {
+    slst: "SL_ST",
+    ss: "SL_ST",
+    "magic circle": "MR",
+    "magic circles": "MR",
+    sts: "ST",
+  },
+  en_uk: {
+    "sl st": "SL_ST",
+    slst: "SL_ST",
+    "magic circle": "MR",
+    "magic circles": "MR",
+    sts: "ST",
+  },
+};
+
+/** English plural of the last word ("stitch" → "stitches"/"stitchs", "chain" → "chains"). */
+function pluralEn(phrase: string): string[] {
+  const words = phrase.split(" ");
+  const last = words.pop()!;
+  const plurals = /(ch|sh|s|x)$/.test(last) ? [`${last}es`, `${last}s`] : [`${last}s`];
+  return plurals.map((p) => [...words, p].join(" "));
+}
+
+/**
+ * All spellings of a full stitch name: the name, its plural and, for English names ending
+ * in "crochet", the short form ("double crochet" → "double", "doubles").
+ */
+function nameForms(name: string, locale: NotationLocale): string[] {
+  if (locale === "de") return [name];
+  const forms = [name, ...pluralEn(name)];
+  const short = name.replace(/ crochet$/, "");
+  if (short !== name) forms.push(short, ...pluralEn(short));
+  return forms;
+}
+
 function buildStitchVocab(locale: NotationLocale): Map<string, StitchCode> {
   const vocab = new Map<string, StitchCode>();
+  const add = (term: string, code: StitchCode) => {
+    const key = termKey(term);
+    const existing = vocab.get(key);
+    if (existing && existing !== code) {
+      throw new Error(`notation: "${key}" means both ${existing} and ${code} in ${locale}`);
+    }
+    vocab.set(key, code);
+  };
   for (const code of Object.keys(STITCH_ABBREVIATIONS) as StitchCode[]) {
-    vocab.set(termKey(STITCH_ABBREVIATIONS[code][locale]), code);
-    vocab.set(termKey(STITCH_NAMES[code][locale]), code);
+    add(STITCH_ABBREVIATIONS[code][locale], code);
+    for (const form of nameForms(STITCH_NAMES[code][locale], locale)) add(form, code);
   }
-  for (const [term, code] of Object.entries(STITCH_ALIASES[locale])) vocab.set(termKey(term), code);
+  for (const [term, code] of Object.entries(STITCH_ALIASES[locale])) add(term, code);
   return vocab;
 }
 
@@ -177,6 +245,11 @@ const STITCH_VOCAB: Record<NotationLocale, Map<string, StitchCode>> = {
   en_us: buildStitchVocab("en_us"),
   en_uk: buildStitchVocab("en_uk"),
 };
+
+/** Every spelling the parser understands for `locale` (for tests and tooling). */
+export function stitchVocabulary(locale: NotationLocale): ReadonlyMap<string, StitchCode> {
+  return STITCH_VOCAB[locale];
+}
 
 const MOD_VOCAB: Map<string, Mod> = (() => {
   const vocab = new Map<string, Mod>();
@@ -191,16 +264,26 @@ const MOD_VOCAB: Map<string, Mod> = (() => {
 })();
 
 /**
- * Resolve a stitch term in a locale. The locale's own vocabulary wins; a term of another
- * locale is accepted only if every locale that knows it agrees on the stitch (so UK "dc"
- * is never silently read as a US double crochet, or vice versa).
+ * Locales whose terms are also understood when reading `locale`. US and UK terms are never
+ * mixed: the same words mean different stitches there ("double", "treble", "dc").
+ */
+const FALLBACK_LOCALES: Record<NotationLocale, readonly NotationLocale[]> = {
+  de: ["en_us", "en_uk"],
+  en_us: ["de"],
+  en_uk: ["de"],
+};
+
+/**
+ * Resolve a stitch term in a locale. The locale's own vocabulary wins; a term of a
+ * fallback locale is accepted only if all fallback locales that know it agree on the
+ * stitch (so in German, "dc" is never guessed).
  */
 export function resolveStitchTerm(term: string, locale: NotationLocale): StitchCode | undefined {
   const key = termKey(term);
   const own = STITCH_VOCAB[locale].get(key);
   if (own) return own;
   const hits = new Set<StitchCode>();
-  for (const other of NOTATION_LOCALES) {
+  for (const other of FALLBACK_LOCALES[locale]) {
     const hit = STITCH_VOCAB[other].get(key);
     if (hit) hits.add(hit);
   }
@@ -260,7 +343,14 @@ export function rowLabel(row: Row, ordinal: number, locale: NotationLocale): str
 // Parsing
 // ---------------------------------------------------------------------------
 
-export type ParseRowErrorCode = "empty" | "unknown-term" | "syntax";
+export type ParseRowErrorCode =
+  | "empty"
+  | "unknown-term"
+  | "syntax"
+  /** A count, repeat or the row total exceeds the limits (`limit` says which maximum). */
+  | "too-large"
+  /** A modifier that contradicts another one or does not apply to the stitch (`term`). */
+  | "invalid-modifier";
 
 export type ParseRowResult =
   | {
@@ -272,10 +362,12 @@ export type ParseRowResult =
   | {
       ok: false;
       code: ParseRowErrorCode;
-      /** The offending term (for `unknown-term`), as written. */
+      /** The offending term (for `unknown-term` / `invalid-modifier`), as written. */
       term?: string;
       /** 0-based character offset of the problem in the input text. */
       position?: number;
+      /** The exceeded maximum (for `too-large`). */
+      limit?: number;
     };
 
 type Token =
@@ -325,9 +417,10 @@ function tokenize(text: string): Token[] {
 /** Thrown inside the parser, turned into a ParseRowResult at the boundary. */
 class ParseFailure {
   constructor(
-    readonly code: "unknown-term" | "syntax",
+    readonly code: Exclude<ParseRowErrorCode, "empty">,
     readonly position: number,
     readonly term?: string,
+    readonly limit?: number,
   ) {}
 }
 
@@ -390,7 +483,7 @@ class Parser {
       if (depth === 0) {
         const span = this.atTrailingCount();
         if (span !== undefined) {
-          this.stitchCountTarget = (this.peek(1) as { value: number }).value;
+          this.stitchCountTarget = this.limited(this.peek(1), MAX_STITCH_COUNT_TARGET, 0);
           for (let k = 0; k < span; k++) this.next();
           return ops;
         }
@@ -405,18 +498,32 @@ class Parser {
     }
   }
 
+  /** `( list )` of a repeat group; `()` is an empty group (rendered as `N× ()`). */
   private parseGroupBody(depth: number): Op[] {
     const open = this.next(); // "("
-    if (this.peek().t === "rp") this.fail(this.peek());
+    if (this.peek().t === "rp") {
+      this.next();
+      return [];
+    }
     const ops = this.parseList(depth + 1);
     const close = this.next();
     if (close.t !== "rp") this.fail(close.t === "end" ? close : open);
     return ops;
   }
 
-  private positiveNumber(tok: Token): number {
-    if (tok.t !== "num" || tok.value <= 0 || !Number.isSafeInteger(tok.value)) this.fail(tok);
+  /** A number token within `min..max`; above `max` is a `too-large` failure. */
+  private limited(tok: Token, max: number, min = 1): number {
+    if (tok.t !== "num" || tok.value < min) this.fail(tok);
+    if (tok.value > max) throw new ParseFailure("too-large", tok.pos, undefined, max);
     return tok.value;
+  }
+
+  private count(tok: Token): number {
+    return this.limited(tok, MAX_COUNT);
+  }
+
+  private times(tok: Token): number {
+    return this.limited(tok, MAX_TIMES);
   }
 
   private parseItem(depth: number): Op {
@@ -428,9 +535,9 @@ class Parser {
       let times: number;
       if (this.isTimes(this.peek())) {
         this.next();
-        times = this.positiveNumber(this.next());
+        times = this.times(this.next());
       } else if (this.peek().t === "num") {
-        times = this.positiveNumber(this.next());
+        times = this.times(this.next());
         if (this.isTimes(this.peek())) this.next();
       } else {
         this.fail(this.peek());
@@ -439,16 +546,14 @@ class Parser {
     }
 
     if (tok.t === "num") {
-      const count = this.positiveNumber(this.next());
       // Prefix repeat: "6× (…)", "6 x (…)", "6 mal (…)", or plain "6 (…)"
-      if (this.isTimes(this.peek()) && this.peek(1).t === "lp") {
-        this.next();
-        return { kind: "repeat", times: count, ops: this.parseGroupBody(depth) };
+      const repeat = (this.isTimes(this.peek(1)) && this.peek(2).t === "lp") || this.peek(1).t === "lp";
+      if (repeat) {
+        const times = this.times(this.next());
+        if (this.isTimes(this.peek())) this.next();
+        return { kind: "repeat", times, ops: this.parseGroupBody(depth) };
       }
-      if (this.peek().t === "lp") {
-        return { kind: "repeat", times: count, ops: this.parseGroupBody(depth) };
-      }
-      return this.parseStitch(count, depth);
+      return this.parseStitch(this.count(this.next()), depth);
     }
 
     if (tok.t === "word") return this.parseStitch(1, depth);
@@ -468,7 +573,7 @@ class Parser {
     const op: StitchOp = { kind: "stitch", code, count };
     if (this.peek().t !== "lp" || (depth === 0 && this.atTrailingCount() !== undefined)) return op;
 
-    // Modifier list: "(hMG)", "(BLO, tog)"
+    // Modifier list: "(hMG)", "(BLO, tog)" — duplicates collapse, contradictions fail.
     const open = this.next();
     const modifiers: Mod[] = [];
     for (;;) {
@@ -480,7 +585,10 @@ class Parser {
       const modTerm = this.text.slice(w.pos, wEnd);
       const mod = resolveModTerm(modTerm);
       if (!mod) throw new ParseFailure("unknown-term", w.pos, modTerm);
-      modifiers.push(mod);
+      if (normalizeModifiers(code, [...modifiers, mod]) === null) {
+        throw new ParseFailure("invalid-modifier", w.pos, modTerm);
+      }
+      if (!modifiers.includes(mod)) modifiers.push(mod);
       const sep = this.next();
       if (sep.t === "rp") break;
       if (sep.t !== "sep") this.fail(sep.t === "end" ? open : sep);
@@ -500,14 +608,18 @@ export function parseRowText(text: string, locale: NotationLocale = "de"): Parse
   const parser = new Parser(tokenize(text), text, locale);
   try {
     const ops = parser.parseRow();
+    if (countWorkedStitches(ops) > MAX_ROW_STITCHES) {
+      return { ok: false, code: "too-large", position: 0, limit: MAX_ROW_STITCHES };
+    }
     return parser.stitchCountTarget === undefined
       ? { ok: true, ops }
       : { ok: true, ops, stitchCountTarget: parser.stitchCountTarget };
   } catch (err) {
     if (err instanceof ParseFailure) {
-      return err.term === undefined
-        ? { ok: false, code: err.code, position: err.position }
-        : { ok: false, code: err.code, term: err.term, position: err.position };
+      const failure: ParseRowResult = { ok: false, code: err.code, position: err.position };
+      if (err.term !== undefined) failure.term = err.term;
+      if (err.limit !== undefined) failure.limit = err.limit;
+      return failure;
     }
     throw err;
   }

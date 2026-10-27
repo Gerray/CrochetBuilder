@@ -1,6 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
+  MAX_COUNT,
+  MAX_ROW_STITCHES,
+  MAX_TIMES,
   NOTATION_LOCALES,
+  countWorkedStitches,
+  modifierAllowed,
+  normalizeModifiers,
+  opsWithinLimits,
+  stitchVocabulary,
   STITCH_ABBREVIATIONS,
   STITCH_NAMES,
   parseRowText,
@@ -202,7 +210,6 @@ describe("parseRowText — errors", () => {
 
   it("reports structural problems as syntax errors with a position", () => {
     expect(parseRowText("6× (1 fM")).toEqual({ ok: false, code: "syntax", position: 8 });
-    expect(parseRowText("6× ()")).toEqual({ ok: false, code: "syntax", position: 4 });
     expect(parseRowText("0 fM")).toEqual({ ok: false, code: "syntax", position: 0 });
     expect(parseRowText("6 fM)")).toEqual({ ok: false, code: "syntax", position: 4 });
     expect(parseRowText("1 MR 6 fM")).toEqual({ ok: false, code: "syntax", position: 5 });
@@ -231,26 +238,39 @@ function prng(seed: number): () => number {
 
 function generateOps(rand: () => number, depth: number): Op[] {
   const codes = StitchCodeSchema.options;
-  const mods = ModSchema.options;
   const pick = <T>(xs: readonly T[]): T => xs[Math.floor(rand() * xs.length)]!;
   const length = 1 + Math.floor(rand() * 4);
   const ops: Op[] = [];
   for (let i = 0; i < length; i++) {
-    if (depth < 3 && rand() < 0.3) {
+    const roll = rand();
+    if (depth < 3 && roll < 0.03) {
+      ops.push(rep(1 + Math.floor(rand() * 12), [])); // empty group, rendered as "N× ()"
+    } else if (depth < 3 && roll < 0.3) {
       ops.push(rep(1 + Math.floor(rand() * 12), generateOps(rand, depth + 1)));
     } else {
+      const code = pick(codes);
       const count = 1 + Math.floor(rand() * 30);
-      const modCount = rand() < 0.6 ? 0 : 1 + Math.floor(rand() * 2);
-      const modifiers = Array.from({ length: modCount }, () => pick(mods));
-      ops.push(st(pick(codes), count, modifiers.length > 0 ? modifiers : undefined));
+      const allowed = ModSchema.options.filter((m) => modifierAllowed(code, m));
+      const wanted = allowed.filter(() => rand() < 0.3);
+      const modifiers = normalizeModifiers(code, wanted) ?? wanted.filter((m) => m !== "FLO");
+      ops.push(st(code, count, modifiers.length > 0 ? modifiers : undefined));
     }
   }
   return ops;
 }
 
+function generateTrees(seed: number, n: number): Op[][] {
+  const rand = prng(seed);
+  const trees: Op[][] = [];
+  while (trees.length < n) {
+    const ops = generateOps(rand, 0);
+    if (opsWithinLimits(ops)) trees.push(ops);
+  }
+  return trees;
+}
+
 describe("parseRowText ∘ renderOps — round trip", () => {
-  const rand = prng(20261027);
-  const trees = Array.from({ length: 400 }, () => generateOps(rand, 0));
+  const trees = generateTrees(20261027, 400);
 
   it.each(NOTATION_LOCALES)("gives back the same ops for 400 generated trees (%s)", (locale) => {
     for (const ops of trees) {
@@ -268,5 +288,141 @@ describe("parseRowText ∘ renderOps — round trip", () => {
       const variant = i % 3 === 0 ? text.toUpperCase() : i % 3 === 1 ? text.toLowerCase() : text;
       expect(parseRowText(variant, "de"), variant).toEqual({ ok: true, ops });
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Review fixes: vocabulary, limits, modifiers, empty repeats
+// ---------------------------------------------------------------------------
+
+describe("vocabulary — all spellings of all names", () => {
+  /** Expected spellings per locale: abbreviation, full name, plural, short form + plural. */
+  function expectedForms(code: StitchCode, locale: NotationLocale): string[] {
+    const name = STITCH_NAMES[code][locale].toLowerCase();
+    const forms = [STITCH_ABBREVIATIONS[code][locale].toLowerCase(), name];
+    if (locale === "de") return forms;
+    const plural = (p: string) => p.replace(/(ch)$/, "$1e") + "s";
+    forms.push(plural(name));
+    const short = name.replace(/ crochet$/, "");
+    if (short !== name) forms.push(short, plural(short));
+    return forms;
+  }
+
+  it.each(NOTATION_LOCALES)("every singular/plural/short form resolves to its code (%s)", (locale) => {
+    for (const code of StitchCodeSchema.options) {
+      for (const form of expectedForms(code, locale)) {
+        expect(resolveStitchTerm(form, locale), `${locale} "${form}"`).toBe(code);
+        expect(resolveStitchTerm(form.toUpperCase(), locale), `${locale} "${form}" upper`).toBe(code);
+      }
+    }
+  });
+
+  it("knows German plurals", () => {
+    const plurals: Array<[string, StitchCode]> = [
+      ["Luftmaschen", "CH"],
+      ["Kettmaschen", "SL_ST"],
+      ["Feste Maschen", "SC"],
+      ["Halbe Stäbchen", "HDC"],
+      ["Zunahmen", "INC"],
+      ["Abnahmen", "DEC"],
+      ["Unsichtbare Abnahmen", "INVDEC"],
+      ["Maschen", "ST"],
+    ];
+    for (const [term, code] of plurals) expect(resolveStitchTerm(term, "de"), term).toBe(code);
+  });
+
+  it("resolves the reported US/UK cases by locale", () => {
+    expectOps("6 double", [st("SC", 6)], "en_uk");
+    expectOps("6 doubles", [st("SC", 6)], "en_uk");
+    expectOps("6 double", [st("DC", 6)], "en_us");
+    expectOps("6 treble crochets", [st("TR", 6)], "en_us");
+    expectOps("6 treble crochets", [st("DC", 6)], "en_uk");
+    expectOps("2 half trebles", [st("HDC", 2)], "en_uk");
+    expectOps("3 magic rings", [st("MR", 3)], "en_us");
+  });
+
+  it("never falls back between US and UK terms", () => {
+    // "htr" exists only in UK terms, "sc" only in US terms: not guessed across dialects.
+    expect(parseRowText("6 htr", "en_us")).toMatchObject({ ok: false, code: "unknown-term", term: "htr" });
+    expect(parseRowText("6 sc", "en_uk")).toMatchObject({ ok: false, code: "unknown-term", term: "sc" });
+    // German terms remain understood in both dialects, and unambiguous English in German.
+    expectOps("6 fM", [st("SC", 6)], "en_us");
+    expectOps("6 htr", [st("HDC", 6)], "de");
+    expect(parseRowText("6 double", "de")).toMatchObject({ ok: false, code: "unknown-term" });
+  });
+
+  it("exposes a vocabulary per locale", () => {
+    for (const locale of NOTATION_LOCALES) {
+      expect(stitchVocabulary(locale).size).toBeGreaterThan(StitchCodeSchema.options.length);
+    }
+  });
+});
+
+describe("limits", () => {
+  it("counts worked stitches without expanding", () => {
+    expect(countWorkedStitches([st("SC", 6)])).toBe(6);
+    expect(countWorkedStitches([rep(6, [st("SC", 2), rep(3, [st("INC", 1)])])])).toBe(30);
+    expect(opsWithinLimits([rep(10, [st("SC", 999)])])).toBe(true);
+    expect(opsWithinLimits([rep(11, [st("SC", 999)])])).toBe(false);
+    expect(opsWithinLimits([st("SC", MAX_COUNT + 1)])).toBe(false);
+    expect(opsWithinLimits([rep(MAX_TIMES + 1, [st("SC", 1)])])).toBe(false);
+  });
+
+  it("rejects too large counts, repeats and rows quickly", () => {
+    expect(parseRowText("1000 fM")).toEqual({ ok: false, code: "too-large", position: 0, limit: MAX_COUNT });
+    expect(parseRowText("99999999999999999999 fM")).toMatchObject({ ok: false, code: "too-large" });
+    expect(parseRowText("1000× (1 fM)")).toEqual({ ok: false, code: "too-large", position: 0, limit: MAX_TIMES });
+    expect(parseRowText("(1 fM) x 1000")).toMatchObject({ ok: false, code: "too-large", limit: MAX_TIMES });
+    expect(parseRowText("6 fM (20001)")).toMatchObject({ ok: false, code: "too-large" });
+    const started = performance.now();
+    expect(parseRowText("999× (999× (999 fM))")).toEqual({
+      ok: false,
+      code: "too-large",
+      position: 0,
+      limit: MAX_ROW_STITCHES,
+    });
+    expect(performance.now() - started).toBeLessThan(100);
+    expectOps("10× (999 fM)", [rep(10, [st("SC", 999)])]);
+  });
+});
+
+describe("modifiers", () => {
+  it("collapses duplicates", () => {
+    expectOps("2 fM (hMG, hMG)", [st("SC", 2, ["BLO"])]);
+    expectOps("2 sc (tog, TOG, blo)", [st("SC", 2, ["TOG", "BLO"])], "en_us");
+  });
+
+  it("rejects contradictory or meaningless modifiers", () => {
+    expect(parseRowText("2 fM (hMG, vMG)")).toEqual({
+      ok: false,
+      code: "invalid-modifier",
+      term: "vMG",
+      position: 11,
+    });
+    expect(parseRowText("6 Zun (zus)")).toMatchObject({ ok: false, code: "invalid-modifier", term: "zus" });
+    expect(parseRowText("1 MR (zus)")).toMatchObject({ ok: false, code: "invalid-modifier" });
+    expect(parseRowText("1 MR (hMG)")).toMatchObject({ ok: false, code: "invalid-modifier" });
+    expect(parseRowText("3 Lm (vMG)")).toMatchObject({ ok: false, code: "invalid-modifier" });
+    expect(parseRowText("2 Abn (zus)")).toMatchObject({ ok: false, code: "invalid-modifier" });
+    expectOps("2 Abn (hMG)", [st("DEC", 2, ["BLO"])]);
+  });
+
+  it("modifierAllowed / normalizeModifiers", () => {
+    expect(modifierAllowed("SC", "TOG")).toBe(true);
+    expect(modifierAllowed("INC", "TOG")).toBe(false);
+    expect(modifierAllowed("CH", "BLO")).toBe(false);
+    expect(normalizeModifiers("SC", ["BLO", "TOG", "BLO"])).toEqual(["BLO", "TOG"]);
+    expect(normalizeModifiers("SC", ["BLO", "FLO"])).toBeNull();
+    expect(normalizeModifiers("MR", ["TOG"])).toBeNull();
+  });
+});
+
+describe("empty repeat groups", () => {
+  it("render and parse back consistently", () => {
+    const ops = [st("SC", 2), rep(6, [])];
+    expect(renderOps(ops, "de")).toBe("2 fM, 6× ()");
+    expectOps("2 fM, 6× ()", ops);
+    expectOps("6 ()", [rep(6, [])]);
+    expectOps("() x 3", [rep(3, [])]);
   });
 });
