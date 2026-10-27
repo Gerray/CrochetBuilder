@@ -20,10 +20,14 @@ describe("production build", () => {
     });
     const html = readFileSync(join(outDir, "index.html"), "utf8");
     expect(html).toMatch(/src="\.\/assets\/index-[\w-]+\.js"/);
+    // The viewer page (share links, embeds) sits one level down and reaches the shared assets.
+    const viewer = readFileSync(join(outDir, "viewer", "index.html"), "utf8");
+    expect(viewer).toMatch(/src="\.\.\/assets\/viewer-[\w-]+\.js"/);
+    expect(viewer).not.toMatch(/(src|href)="\/|(src|href)="\.\/assets/);
     const assets = readdirSync(join(outDir, "assets"));
     expect(assets.some((f) => f.startsWith("preview.worker-"))).toBe(true);
     expect(assets.some((f) => f.startsWith("ModelCanvas-"))).toBe(true);
-    for (const file of [html, ...assets.filter((f) => f.endsWith(".js")).map((f) => readFileSync(join(outDir, "assets", f), "utf8"))]) {
+    for (const file of [html, viewer, ...assets.filter((f) => f.endsWith(".js")).map((f) => readFileSync(join(outDir, "assets", f), "utf8"))]) {
       expect(file).not.toMatch(/["'`]\/assets\//);
     }
   }, 60_000);

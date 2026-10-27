@@ -33,7 +33,7 @@ export class ViewLoadError extends Error {
 export type ViewLoader = () => Promise<{ default: ComponentType<ModelCanvasProps> }>;
 
 // Three.js is large: load the 3D view after the editor has painted.
-const loadModelCanvas: ViewLoader = () =>
+export const loadModelCanvas: ViewLoader = () =>
   import("../three/ModelCanvas.js").catch((err: unknown) => {
     throw new ViewLoadError(err);
   });
@@ -96,7 +96,7 @@ function writeSetting(key: string, value: string) {
 }
 
 /** Catches a failed lazy load or a crash inside the 3D view; the rest of the pane stays. */
-class ViewBoundary extends Component<
+export class ViewBoundary extends Component<
   { children: ReactNode; fallback: (error: unknown) => ReactNode },
   { error: unknown; failed: boolean }
 > {
@@ -114,7 +114,7 @@ function reloadPage() {
 }
 
 /** Message for a 3D view that failed to load or start, with a way to try again. */
-function ViewError({ error, onRetry }: { error: unknown; onRetry: () => void }) {
+export function ViewError({ error, onRetry }: { error: unknown; onRetry: () => void }) {
   const chunk = error instanceof ViewLoadError;
   return (
     <div className="model-message model-error" role="alert">
