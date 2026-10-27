@@ -1,0 +1,56 @@
+name: Bug report
+description: Something in CrochetBuilder does not work as expected.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! Most bugs are about a specific pattern, so the pattern itself
+        is the most useful thing you can send: export it from the builder as **JSON** and
+        attach the file (or paste its content) below.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you do, and what went wrong? Screenshots are welcome.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+      description: For shape problems, describe the piece as it turns out when you crochet it.
+    validations:
+      required: true
+  - type: textarea
+    id: pattern
+    attributes:
+      label: Pattern (JSON export)
+      description: Drag the exported .json file here, or paste its content. Leave empty only if the bug does not depend on a pattern.
+      render: json
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open the pattern
+        2. Edit round 5 to …
+        3. The 3D view shows …
+  - type: input
+    id: browser
+    attributes:
+      label: Browser and operating system
+      placeholder: e.g. Firefox 140 on Windows 11
+    validations:
+      required: true
+  - type: dropdown
+    id: where
+    attributes:
+      label: Where are you running CrochetBuilder?
+      options:
+        - The online version (gerray.github.io)
+        - Locally from source (npm start)
+        - Self-hosted build
+        - Embedded viewer / share link
+    validations:
+      required: true
