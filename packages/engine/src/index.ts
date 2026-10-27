@@ -1,7 +1,7 @@
 /**
  * @crochetbuilder/engine — public API.
  *
- * Schema → expansion → validation today; graph, relaxation and mesh follow (B2).
+ * Schema → expansion → validation → stitch graph → relaxation → measurements / mesh.
  * Everything here is pure TypeScript with no UI or framework imports.
  */
 
@@ -32,6 +32,7 @@ export type {
 export {
   expandRow,
   expandPart,
+  countRowAtoms,
   isInstructionRow,
   instructionText,
   rowOrdinals,
@@ -55,10 +56,40 @@ export type { Gauge, YarnWeight, ResolvedGauge } from "./gauge.js";
 export {
   validate,
   checkConsumes,
+  checkStitchBudget,
+  countPartAtoms,
+  DEFAULT_MAX_STITCHES,
   checkStitchCounts,
   anchorsOffered,
   anchorsConsumed,
   consumesOfAtom,
   isRingRow,
 } from "./validate.js";
-export type { Finding, FindingCode } from "./validate.js";
+export type { Finding, FindingCode, ValidateOptions } from "./validate.js";
+
+export { buildGraph, nodesOfRow } from "./graph.js";
+export type {
+  StitchGraph,
+  StitchNode,
+  StitchEdge,
+  EdgeKind,
+  GraphRow,
+  GraphRowKind,
+  NodeId,
+  BuildGraphOptions,
+} from "./graph.js";
+
+export { relax, isClosedPiece, canonicalPose } from "./relax.js";
+export type { RelaxOptions } from "./relax.js";
+
+export { measure, measureRounds, maxRoundDiameter } from "./measure.js";
+export type { Size, RoundMeasure } from "./measure.js";
+
+export { nodeForCursor } from "./cursor.js";
+export type { StitchCursor } from "./cursor.js";
+
+export { toMesh } from "./mesh.js";
+export type { MeshData, MeshOptions, MeshStyle } from "./mesh.js";
+
+export { buildModel } from "./model.js";
+export type { Model, ModelOptions } from "./model.js";

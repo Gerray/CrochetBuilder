@@ -5,8 +5,9 @@ import {
   isInstructionRow,
   instructionText,
   rowOrdinals,
+  countRowAtoms,
 } from "./expand.js";
-import type { PartContent, Row } from "./schema.js";
+import type { Op, PartContent, Row } from "./schema.js";
 
 /** Build a Row with sensible defaults so each test only states what it cares about. */
 function row(partial: Partial<Row> & Pick<Row, "ops">): Row {
@@ -217,5 +218,27 @@ describe("rowOrdinals", () => {
     });
     const note = (id: string): Row => ({ id, type: "round", ops: [], stitchCountTarget: 0, note: "Augen" });
     expect(rowOrdinals([note("a"), sc("1"), sc("2"), note("b"), sc("3")])).toEqual([0, 1, 2, 2, 3]);
+  });
+});
+
+describe("large repeats", () => {
+  it("expands a repeat body far beyond the call-stack argument limit", () => {
+    const r = row({ ops: [{ kind: "repeat", times: 2, ops: [{ kind: "stitch", code: "SC", count: 200_000 }] }] });
+    expect(expandRow(r)).toHaveLength(400_000);
+  });
+});
+
+describe("countRowAtoms", () => {
+  it("equals expandRow(row).length without expanding", () => {
+    const sc = (count: number): Op => ({ kind: "stitch", code: "SC", count });
+    const rows: Row[] = [
+      row({ ops: [] }),
+      row({ ops: [], note: "Insert eyes" }),
+      row({ ops: [sc(3), { kind: "repeat", times: 4, ops: [sc(2), { kind: "repeat", times: 3, ops: [sc(1)] }] }] }),
+      row({ ops: [{ kind: "repeat", times: 6, ops: [] }] }),
+    ];
+    for (const r of rows) expect(countRowAtoms(r)).toBe(expandRow(r).length);
+    const huge = row({ ops: [{ kind: "repeat", times: 1_000_000, ops: [sc(1_000_000)] }] });
+    expect(countRowAtoms(huge)).toBe(1e12);
   });
 });

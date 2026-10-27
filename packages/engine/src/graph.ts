@@ -1,0 +1,539 @@
+/**
+ * Stitch graph — the topology of a crocheted part, built from its expanded rows.
+ *
+ * One node per worked stitch (atom of `expandRow`; free-instruction NOTE atoms are skipped).
+ * Two kinds of edges, each with a rest length in millimetres from the resolved gauge:
+ *
+ *   - `prev`: the yarn path. Every node links to the node worked just before it, also across
+ *     row boundaries, so the working path is one continuous chain.
+ *   - `parent`: the vertical link to the stitches of the previous stitch row this stitch is
+ *     worked into, assigned sequentially by `consumesStitches` (TOG-aware): a normal stitch
+ *     has 1 parent, `DEC`/`INVDEC`/`… TOG` 2, `CH`/`MR` none. An `INC` is one node that
+ *     offers two anchor slots to the next row (it is two fabric stitches on one parent).
+ *
+ * Anchors (what a row offers the next one) follow `anchorsOffered` in validate.ts: one slot
+ * per produced fabric stitch, except a foundation chain (a row of only `CH`), which offers
+ * one slot per chain. A row that contains `MR` is a ring row: its MR node sits at the origin
+ * and every stitch of that row is worked into it. After a `type: "row"` row the work turns,
+ * so the next row consumes the anchors in reverse order; after a round it continues in the
+ * same order (spiral).
+ *
+ * The graph never throws on an invalid pattern — `validate` reports problems. Here: a
+ * stitch with no anchor left attaches to the last available anchor, surplus anchors stay
+ * free, a row with nothing to work into gets no parents. When a row works into a foundation
+ * chain with fewer stitches than chains, the chains nearest the hook are skipped ("sc into
+ * the 2nd chain from the hook"), which is how crochet patterns count.
+ *
+ * Positions: `buildGraph` also lays the nodes out procedurally (rounds on circles stacked
+ * along +Y, rows as a flat grid in the XY plane) so the graph is usable before `relax`.
+ *
+ * Pure functions, no UI or framework imports.
+ */
+
+import { expandRow, isInstructionRow } from "./expand.js";
+import { resolveGauge, STITCH_HEIGHT_FACTOR, type Gauge, type ResolvedGauge } from "./gauge.js";
+import { STITCH_PROPERTIES, type Mod, type PartContent, type StitchCode } from "./schema.js";
+import { consumesOfAtom, countPartAtoms, DEFAULT_MAX_STITCHES } from "./validate.js";
+
+/** Index of a node in `StitchGraph.nodes` (equal to its position in working order). */
+export type NodeId = number;
+
+export interface StitchNode {
+  /** Index in `graph.nodes`; nodes are stored in working order. */
+  id: NodeId;
+  /** Position of the atom in `expandPart(content)` (counts NOTE atoms, like TellmeCrochet). */
+  globalIndex: number;
+  rowId: string;
+  /** 0-based index of the row in `content.rows`. */
+  rowIndex: number;
+  code: StitchCode;
+  /** Index of the atom within its row (`expandRow(row)[offset]`), as TellmeCrochet's cursor. */
+  offset: number;
+  modifiers?: Mod[];
+  /** Node worked just before this one (yarn path), `null` for the very first node. */
+  prev: NodeId | null;
+  /** Distinct nodes of the previous stitch row this stitch is worked into, in working order. */
+  parents: NodeId[];
+  /** Width of the stitch top along its row, in stitch widths (INC 2, MR 0, otherwise 1). */
+  span: number;
+  /** Vertical rest length in mm: `stitchHeightMm × STITCH_HEIGHT_FACTOR[code]`. */
+  height: number;
+  /**
+   * A turning / standing chain: chains before the first worked stitch of a row or round, or
+   * chains after the last worked stitch of a `type: "row"` row ("6 sc, ch 1, turn"). It lifts
+   * the yarn to the next stitch's height instead of adding width.
+   */
+  lift: boolean;
+}
+
+export type EdgeKind = "prev" | "parent";
+
+export interface StitchEdge {
+  a: NodeId;
+  b: NodeId;
+  kind: EdgeKind;
+  /** Rest length in mm. */
+  restLength: number;
+}
+
+/** `chain`: only CH (foundation chain) · `ring`: contains MR · `stitch`: anything else. */
+export type GraphRowKind = "chain" | "ring" | "stitch";
+
+export interface GraphRow {
+  rowId: string;
+  rowIndex: number;
+  type: "row" | "round";
+  kind: GraphRowKind;
+  /** First node of the row; the row's nodes are `firstNode … firstNode + nodeCount − 1`. */
+  firstNode: NodeId;
+  nodeCount: number;
+  /** `true` when this row consumed the previous stitch row's anchors in reverse (work turned). */
+  reversed: boolean;
+  /** Working direction relative to the first row: flips at every turn. */
+  direction: 1 | -1;
+  /** `true` when the row forms a closed ring (a round worked into a round or a magic ring). */
+  closed: boolean;
+  /** Anchor slots this row offers to the next row. */
+  anchorsOffered: number;
+  /** Total width of the row in stitch widths (Σ span); for rounds this is the circumference. */
+  widthStitches: number;
+}
+
+export interface StitchGraph {
+  nodes: StitchNode[];
+  edges: StitchEdge[];
+  /** Rows that produced at least one node, in document order. */
+  rows: GraphRow[];
+  /** Fabric surface: node triples (3 per triangle), consistently wound. */
+  triangles: Uint32Array;
+  /** Node positions in mm, `[x0, y0, z0, x1, …]`. Procedural layout until `relax` runs. */
+  positions: Float64Array;
+  gauge: ResolvedGauge;
+  /** `true` when the gauge came from defaults rather than a swatch (sizes are estimates). */
+  estimated: boolean;
+  /** `true` once `relax` has run. */
+  relaxed: boolean;
+  /** Atomic stitches of the part (NOTE excluded), also when the graph was not built. */
+  stitchCount: number;
+  /** `true` when the part exceeded the stitch budget and the graph was left empty. */
+  overBudget: boolean;
+}
+
+export interface BuildGraphOptions {
+  /**
+   * Stitch budget (default `DEFAULT_MAX_STITCHES`, 20,000). Above it no graph is built — the
+   * result is empty with `overBudget: true` — so a runaway repeat cannot hang the app.
+   */
+  maxStitches?: number;
+}
+
+/** One anchor slot offered to the next row, in the consumer's frame. */
+interface Slot {
+  node: NodeId;
+  /** Horizontal offset of the slot from its node's centre, in mm, along the consumer's direction. */
+  offset: number;
+}
+
+function spanOf(code: StitchCode): number {
+  if (code === "MR") return 0;
+  if (code === "CH") return 1;
+  return Math.max(1, STITCH_PROPERTIES[code].producesStitches);
+}
+
+/**
+ * Build the stitch graph of a part. Never throws for well-shaped content; see the module doc
+ * for how invalid patterns degrade.
+ */
+export function buildGraph(content: PartContent, gauge?: Gauge, opts: BuildGraphOptions = {}): StitchGraph {
+  const g = resolveGauge(gauge ?? {});
+  const w = g.stitchWidthMm;
+  const stitchCount = countPartAtoms(content);
+  const maxStitches = Number.isFinite(opts.maxStitches) ? opts.maxStitches! : DEFAULT_MAX_STITCHES;
+  if (stitchCount > maxStitches) {
+    return {
+      nodes: [],
+      edges: [],
+      rows: [],
+      triangles: new Uint32Array(0),
+      positions: new Float64Array(0),
+      gauge: g,
+      estimated: g.estimated,
+      relaxed: false,
+      stitchCount,
+      overBudget: true,
+    };
+  }
+  const nodes: StitchNode[] = [];
+  const rows: GraphRow[] = [];
+  const parentDx: number[][] = []; // per node: horizontal offset to each parent (mm)
+  const consumes: number[] = [];
+
+  let globalIndex = 0;
+  let lastNode: NodeId | null = null;
+  let prevRow: GraphRow | null = null;
+  let prevSlots: Slot[] = [];
+
+  content.rows.forEach((row, rowIndex) => {
+    const atoms = expandRow(row);
+    const atomCount = atoms.length;
+    if (isInstructionRow(row) || atomCount === 0) {
+      globalIndex += atomCount;
+      return;
+    }
+    const allChain = atoms.every((a) => a.code === "CH");
+    const hasRing = atoms.some((a) => a.code === "MR");
+    const kind: GraphRowKind = allChain ? "chain" : hasRing ? "ring" : "stitch";
+    const firstNode = nodes.length;
+
+    // Nodes.
+    let seenConsumer = false;
+    atoms.forEach((atom, offset) => {
+      if (atom.code === "NOTE") return; // cannot happen in a stitch row; defensive
+      const code = atom.code;
+      const c = consumesOfAtom(atom);
+      const lift = kind !== "chain" && code === "CH" && !seenConsumer;
+      if (c > 0) seenConsumer = true;
+      const node: StitchNode = {
+        id: nodes.length,
+        globalIndex: globalIndex + offset,
+        rowId: row.id,
+        rowIndex,
+        code,
+        offset,
+        prev: lastNode,
+        parents: [],
+        span: spanOf(code),
+        height: g.stitchHeightMm * STITCH_HEIGHT_FACTOR[code],
+        lift,
+      };
+      if (atom.modifiers) node.modifiers = [...atom.modifiers];
+      nodes.push(node);
+      parentDx.push([]);
+      consumes.push(kind === "chain" ? 0 : c);
+      lastNode = node.id;
+    });
+    globalIndex += atomCount;
+    const nodeCount = nodes.length - firstNode;
+
+    // Trailing turning chain of a row that turns: "6 sc, ch 1, turn".
+    if (row.type === "row" && kind !== "chain" && seenConsumer) {
+      for (let id = firstNode + nodeCount - 1; id >= firstNode; id--) {
+        const n = nodes[id]!;
+        if (n.code !== "CH" || consumes[id]! > 0) break;
+        n.lift = true;
+      }
+    }
+
+    // Parents. The work turns after a row; a foundation chain is always worked back from the
+    // hook end (the last chain made is next to the hook), whatever its declared type.
+    const reversed =
+      prevRow !== null && kind !== "ring" && (prevRow.type === "row" || prevRow.kind === "chain");
+    if (kind === "ring") {
+      const mr = nodes.slice(firstNode).find((n) => n.code === "MR")!;
+      for (let id = firstNode; id < firstNode + nodeCount; id++) {
+        if (consumes[id]! > 0) {
+          nodes[id]!.parents.push(mr.id);
+          parentDx[id]!.push(0);
+        }
+      }
+    } else if (kind === "stitch" && prevSlots.length > 0) {
+      const slots = reversed
+        ? prevSlots.map((s) => ({ node: s.node, offset: -s.offset })).reverse()
+        : prevSlots;
+      let total = 0;
+      for (let id = firstNode; id < firstNode + nodeCount; id++) total += consumes[id]!;
+      // Working into a foundation chain with fewer stitches than chains: skip from the hook.
+      let cursor = prevRow!.kind === "chain" && total < slots.length ? slots.length - total : 0;
+      for (let id = firstNode; id < firstNode + nodeCount; id++) {
+        const c = consumes[id]!;
+        if (c === 0) continue;
+        const sums = new Map<NodeId, { dx: number; n: number }>();
+        const order: NodeId[] = [];
+        for (let j = 0; j < c; j++) {
+          const slot = slots[Math.min(cursor, slots.length - 1)]!;
+          cursor++;
+          const dx = slot.offset - (j - (c - 1) / 2) * w;
+          const acc = sums.get(slot.node);
+          if (acc) {
+            acc.dx += dx;
+            acc.n++;
+          } else {
+            sums.set(slot.node, { dx, n: 1 });
+            order.push(slot.node);
+          }
+        }
+        for (const p of order) {
+          const acc = sums.get(p)!;
+          nodes[id]!.parents.push(p);
+          parentDx[id]!.push(acc.dx / acc.n);
+        }
+      }
+    }
+
+    // Anchors offered to the next row.
+    const slots: Slot[] = [];
+    for (let id = firstNode; id < firstNode + nodeCount; id++) {
+      const n = nodes[id]!;
+      const p = kind === "chain" ? 1 : STITCH_PROPERTIES[n.code].producesStitches;
+      for (let k = 0; k < p; k++) slots.push({ node: id, offset: (k - (p - 1) / 2) * w });
+    }
+
+    const direction: 1 | -1 = prevRow === null ? 1 : reversed ? (-prevRow.direction as 1 | -1) : prevRow.direction;
+    const closed =
+      row.type === "round" &&
+      (kind === "ring" ||
+        (kind === "stitch" && prevRow !== null && !reversed && prevRow.kind !== "chain" && prevRow.type === "round"));
+    let widthStitches = 0;
+    for (let id = firstNode; id < firstNode + nodeCount; id++) {
+      const n = nodes[id]!;
+      if (!n.lift) widthStitches += n.span;
+    }
+    const graphRow: GraphRow = {
+      rowId: row.id,
+      rowIndex,
+      type: row.type,
+      kind,
+      firstNode,
+      nodeCount,
+      reversed,
+      direction,
+      closed,
+      anchorsOffered: slots.length,
+      widthStitches,
+    };
+    rows.push(graphRow);
+    prevRow = graphRow;
+    prevSlots = slots;
+  });
+
+  const positions = layout(nodes, rows, g);
+  const edges = buildEdges(nodes, rows, parentDx, positions, g);
+  const triangles = triangulate(nodes, rows);
+  return {
+    nodes,
+    edges,
+    rows,
+    triangles,
+    positions,
+    gauge: g,
+    estimated: g.estimated,
+    relaxed: false,
+    stitchCount,
+    overBudget: false,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Edges
+// ---------------------------------------------------------------------------
+
+function buildEdges(
+  nodes: StitchNode[],
+  rows: GraphRow[],
+  parentDx: number[][],
+  positions: Float64Array,
+  g: ResolvedGauge,
+): StitchEdge[] {
+  const w = g.stitchWidthMm;
+  const lo = 0.5 * Math.min(w, g.stitchHeightMm);
+  const hi = 3 * Math.max(w, g.stitchHeightMm * 4);
+  const edges: StitchEdge[] = [];
+  const seen = new Set<number>();
+  const n = nodes.length;
+  const key = (a: number, b: number) => (a < b ? a * n + b : b * n + a);
+  const rowOf = new Int32Array(n);
+  rows.forEach((r, i) => rowOf.fill(i, r.firstNode, r.firstNode + r.nodeCount));
+
+  // Lift runs (turning/standing chains, possibly a trailing run followed by a leading one):
+  // the run plus the step into the next real stitch climb that stitch's height together.
+  const liftRest = new Map<NodeId, number>();
+  for (let s = 0; s < n; s++) {
+    if (!nodes[s]!.lift || (s > 0 && nodes[s - 1]!.lift)) continue;
+    let e = s;
+    while (e + 1 < n && nodes[e + 1]!.lift) e++;
+    const next = nodes[e + 1];
+    const climb = next && next.height > 0 ? next.height : g.stitchHeightMm;
+    const rest = climb / (e - s + 2);
+    for (let id = s; id <= e + 1 && id < n; id++) liftRest.set(id, rest);
+  }
+
+  // Parent edges first: they dominate the shape, and prev edges that duplicate them are dropped.
+  for (const node of nodes) {
+    node.parents.forEach((p, k) => {
+      const dx = parentDx[node.id]![k]!;
+      const h = node.height > 0 ? node.height : g.stitchHeightMm;
+      edges.push({ a: p, b: node.id, kind: "parent", restLength: Math.sqrt(h * h + dx * dx) });
+      seen.add(key(p, node.id));
+    });
+  }
+
+  for (const node of nodes) {
+    const a = node.prev;
+    if (a === null || seen.has(key(a, node.id))) continue;
+    seen.add(key(a, node.id));
+    const prev = nodes[a]!;
+    let rest: number;
+    if (liftRest.has(node.id)) {
+      rest = liftRest.get(node.id)!;
+    } else if (rowOf[a] === rowOf[node.id]) {
+      rest = ((prev.span + node.span) / 2) * w;
+      if (rest === 0) rest = w;
+    } else {
+      // Across a row boundary: the procedural layout is the ideal geometry there.
+      const dx = positions[3 * a]! - positions[3 * node.id]!;
+      const dy = positions[3 * a + 1]! - positions[3 * node.id + 1]!;
+      const dz = positions[3 * a + 2]! - positions[3 * node.id + 2]!;
+      rest = Math.min(hi, Math.max(lo, Math.sqrt(dx * dx + dy * dy + dz * dz)));
+    }
+    edges.push({ a, b: node.id, kind: "prev", restLength: rest });
+  }
+  return edges;
+}
+
+// ---------------------------------------------------------------------------
+// Surface triangulation
+// ---------------------------------------------------------------------------
+
+/**
+ * Zip every row to its parents: a fan from each child to its parents, and one or two
+ * triangles between neighbouring children. Closed rings also zip the seam. Triangles are wound
+ * so that their normals agree across turned rows.
+ */
+function triangulate(nodes: StitchNode[], rows: GraphRow[]): Uint32Array {
+  const out: number[] = [];
+  for (const row of rows) {
+    const children: StitchNode[] = [];
+    for (let id = row.firstNode; id < row.firstNode + row.nodeCount; id++) {
+      const n = nodes[id]!;
+      if (n.parents.length > 0) children.push(n);
+    }
+    if (children.length === 0) continue;
+    const flip = row.direction === -1;
+    const tri = (a: number, b: number, c: number) => {
+      if (a === b || b === c || a === c) return;
+      if (flip) out.push(a, c, b);
+      else out.push(a, b, c);
+    };
+    const zip = (c1: StitchNode, c2: StitchNode) => {
+      const last = c1.parents[c1.parents.length - 1]!;
+      const first = c2.parents[0]!;
+      tri(c1.id, last, c2.id);
+      if (first !== last) tri(c2.id, last, first);
+    };
+    for (let i = 0; i < children.length; i++) {
+      const c = children[i]!;
+      for (let k = 0; k + 1 < c.parents.length; k++) tri(c.id, c.parents[k]!, c.parents[k + 1]!);
+      if (i + 1 < children.length) zip(c, children[i + 1]!);
+    }
+    // Close the ring around the magic ring (a fan), or around at least three distinct parents:
+    // on a parent ring of two the seam would reuse the edge between them a third time and
+    // break the surface's orientation.
+    const ringOk = row.kind === "ring" || new Set(children.flatMap((c) => c.parents)).size > 2;
+    if (row.closed && children.length > 2 && ringOk) {
+      zip(children[children.length - 1]!, children[0]!);
+    }
+  }
+  return Uint32Array.from(out);
+}
+
+// ---------------------------------------------------------------------------
+// Procedural layout
+// ---------------------------------------------------------------------------
+
+/**
+ * Initial positions: rounds on circles around the Y axis whose circumference is the row's
+ * width in stitches × stitch width, stacked so that consecutive rounds are one stitch height
+ * apart along the surface; rows as a flat grid in the XY plane, turning at each row.
+ */
+function layout(nodes: StitchNode[], rows: GraphRow[], g: ResolvedGauge): Float64Array {
+  const w = g.stitchWidthMm;
+  const pos = new Float64Array(nodes.length * 3);
+  const set = (id: number, x: number, y: number, z: number) => {
+    pos[3 * id] = x;
+    pos[3 * id + 1] = y;
+    pos[3 * id + 2] = z;
+  };
+  let prevRadius: number | null = null; // radius of the previous round, null after a flat row
+  let baseY = 0; // y of the previous row
+  let placedAny = false;
+
+  for (const row of rows) {
+    const ids: number[] = [];
+    for (let id = row.firstNode; id < row.firstNode + row.nodeCount; id++) ids.push(id);
+    const real = ids.filter((id) => !nodes[id]!.lift && nodes[id]!.code !== "MR");
+    const lifts = ids.filter((id) => nodes[id]!.lift);
+    const heights = real.map((id) => nodes[id]!.height).filter((h) => h > 0);
+    const hv = heights.length > 0 ? heights.reduce((s, h) => s + h, 0) / heights.length : g.stitchHeightMm;
+
+    if (row.kind === "chain") {
+      let x = 0;
+      let y = baseY;
+      if (placedAny && row.firstNode > 0) {
+        x = pos[3 * (row.firstNode - 1)]! + row.direction * w;
+        y = pos[3 * (row.firstNode - 1) + 1]!;
+      }
+      ids.forEach((id, i) => set(id, x + row.direction * i * w, y, 0));
+      baseY = y;
+      prevRadius = null;
+    } else if (row.type === "round" || row.kind === "ring") {
+      const S = Math.max(1, row.widthStitches);
+      const R = (S * w) / (2 * Math.PI);
+      let y0 = placedAny ? baseY : 0;
+      let r0 = prevRadius ?? R;
+      if (row.kind === "ring") {
+        if (placedAny) y0 = baseY + hv;
+        r0 = 0;
+      }
+      const dR = R - r0;
+      const dy = Math.sqrt(Math.max(0, hv * hv - dR * dR));
+      const y = y0 + dy;
+      let cum = 0;
+      for (const id of real) {
+        const n = nodes[id]!;
+        const phi = (2 * Math.PI * (cum + n.span / 2)) / S;
+        cum += n.span;
+        set(id, R * Math.cos(phi), y, -R * Math.sin(phi));
+      }
+      for (const id of ids) if (nodes[id]!.code === "MR") set(id, 0, y0, 0);
+      lifts.forEach((id, i) => {
+        const t = (i + 1) / (lifts.length + 1);
+        set(id, r0 + (R - r0) * t, y0 + dy * t, 0);
+      });
+      baseY = y;
+      prevRadius = R;
+    } else {
+      // Flat row: start above the first anchor this row works into, then step along the row.
+      let x0 = 0;
+      const firstConsumer = real.find((id) => nodes[id]!.parents.length > 0);
+      if (firstConsumer !== undefined) x0 = pos[3 * nodes[firstConsumer]!.parents[0]!]!;
+      else if (row.firstNode > 0) x0 = pos[3 * (row.firstNode - 1)]!;
+      const y0 = placedAny ? baseY : 0;
+      let x = x0;
+      real.forEach((id, i) => {
+        const n = nodes[id]!;
+        if (i > 0) x += row.direction * ((nodes[real[i - 1]!]!.span + n.span) / 2) * w;
+        set(id, x, y0 + (n.height > 0 ? n.height : hv), 0);
+      });
+      // Leading lifts climb from the previous row at the row start; trailing lifts climb from
+      // this row at its end, towards the next row.
+      const firstReal = real.length > 0 ? real[0]! : Infinity;
+      const leading = lifts.filter((id) => id < firstReal);
+      const trailing = lifts.filter((id) => id > firstReal);
+      leading.forEach((id, i) => set(id, x0, y0 + (hv * (i + 1)) / (leading.length + 1), 0));
+      trailing.forEach((id, i) => set(id, x, y0 + hv + (hv * (i + 1)) / (trailing.length + 1), 0));
+      for (const id of ids) {
+        if (nodes[id]!.code === "MR") set(id, x0, y0, 0);
+      }
+      baseY = y0 + hv;
+      prevRadius = null;
+    }
+    placedAny = true;
+  }
+  return pos;
+}
+
+/** Node range of a row, or `null` when the row has no nodes (free instruction, empty row). */
+export function nodesOfRow(graph: StitchGraph, rowId: string): { first: NodeId; count: number } | null {
+  const row = graph.rows.find((r) => r.rowId === rowId);
+  return row ? { first: row.firstNode, count: row.nodeCount } : null;
+}

@@ -5,7 +5,12 @@ import {
   anchorsOffered,
   anchorsConsumed,
   isRingRow,
+  consumesOfAtom,
+  countPartAtoms,
+  DEFAULT_MAX_STITCHES,
 } from "./validate.js";
+import { expandPart, expandRow } from "./expand.js";
+import { createRandom } from "./random.js";
 import { STITCH_PROPERTIES, StitchCodeSchema, consumesOf } from "./schema.js";
 import type { Mod, Op, PartContent, Row, StitchCode } from "./schema.js";
 
@@ -156,5 +161,79 @@ describe("validate", () => {
       ["r2", "STITCH_COUNT_MISMATCH"],
       ["r3", "CONSUMES_OVERFLOW"],
     ]);
+  });
+});
+
+describe("arithmetic counting", () => {
+  /** Reference implementation by expansion (what validate did before it became arithmetic). */
+  const reference = (r: Row) => {
+    const atoms = expandRow(r).filter((a) => a.code !== "NOTE");
+    const allChain = atoms.length > 0 && atoms.every((a) => a.code === "CH");
+    return {
+      offered: allChain
+        ? atoms.length
+        : atoms.reduce((s, a) => s + (a.code === "NOTE" ? 0 : STITCH_PROPERTIES[a.code].producesStitches), 0),
+      consumed: expandRow(r).reduce((s, a) => s + consumesOfAtom(a), 0),
+      ring: atoms.some((a) => a.code === "MR"),
+    };
+  };
+
+  it("matches the expansion-based counts on random op trees", () => {
+    const codes = StitchCodeSchema.options;
+    const r = createRandom(99);
+    const genOp = (depth: number): Op => {
+      if (depth < 2 && r() < 0.25) {
+        return { kind: "repeat", times: 1 + Math.floor(r() * 4), ops: Array.from({ length: Math.floor(r() * 3) }, () => genOp(depth + 1)) };
+      }
+      const code = codes[Math.floor(r() * codes.length)]!;
+      const modifiers: Mod[] | undefined = r() < 0.2 ? ["TOG"] : undefined;
+      return modifiers ? { kind: "stitch", code, count: 1 + Math.floor(r() * 5), modifiers } : { kind: "stitch", code, count: 1 + Math.floor(r() * 5) };
+    };
+    const rows: Row[] = [];
+    for (let i = 0; i < 500; i++) {
+      const allChain = r() < 0.15;
+      const ops = allChain
+        ? [st("CH", 1 + Math.floor(r() * 9))]
+        : Array.from({ length: Math.floor(r() * 4) }, () => genOp(0));
+      rows.push(row(`x${i}`, ops, 0, r() < 0.05 ? { note: "note" } : {}));
+    }
+    for (const x of rows) {
+      expect({ offered: anchorsOffered(x), consumed: anchorsConsumed(x), ring: isRingRow(x) }).toEqual(reference(x));
+    }
+    expect(countPartAtoms(part(rows))).toBe(expandPart(part(rows)).filter((a) => a.code !== "NOTE").length);
+  });
+
+  it("validates a pattern with a billion stitches in milliseconds", () => {
+    const huge = part([
+      row("r1", [st("MR"), st("SC", 6)], 6),
+      row("r2", [rep(1000, [rep(1000, [st("SC", 1000)])])], 1e9),
+    ]);
+    const t0 = performance.now();
+    const findings = validate(huge);
+    expect(performance.now() - t0).toBeLessThan(50);
+    expect(findings.map((f) => f.code)).toEqual(["CONSUMES_OVERFLOW"]);
+  });
+});
+
+describe("stitch budget", () => {
+  const big = part([row("a", [st("MR"), st("SC", 6)], 6), row("b", [rep(4000, [st("SC", 6)])], 24000)]);
+
+  it("is not checked unless asked for — a large pattern is still a valid pattern", () => {
+    expect(validate(big).map((f) => f.code)).not.toContain("TOO_MANY_STITCHES");
+  });
+
+  it("reports TOO_MANY_STITCHES at the row that crosses the budget", () => {
+    const findings = validate(big, { maxStitches: DEFAULT_MAX_STITCHES }).filter((f) => f.code === "TOO_MANY_STITCHES");
+    expect(findings).toEqual([
+      {
+        rowId: "b",
+        severity: "error",
+        code: "TOO_MANY_STITCHES",
+        message: "The part has 24007 stitches; the 3D model is limited to 20000.",
+        expected: 20000,
+        actual: 24007,
+      },
+    ]);
+    expect(validate(big, { maxStitches: 30_000 }).map((f) => f.code)).not.toContain("TOO_MANY_STITCHES");
   });
 });
