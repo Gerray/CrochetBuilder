@@ -22,10 +22,59 @@ Thanks for looking. A few things to know before opening an issue or a pull reque
 
 - Every change to `packages/engine` comes with deterministic unit tests (vitest). Shapes are
   tested by measurements and topology, never by screenshots.
-- `npm run typecheck` and `npm test` must be green.
+- `npm run typecheck` and `npm test` must be green (`npm run check` runs both plus the build).
 - Keep the engine free of UI and framework imports. Three.js belongs in the apps.
 - Bug reports about a specific pattern: attach the pattern as JSON (export from the builder)
   and say what you expected to see.
+
+## Development
+
+Node.js 20.19+ (22 LTS recommended; `nvm use` reads `.nvmrc`). Then `npm install` once.
+Keep the repository's `.npmrc` — it works around an npm 10.9 bug with Vitest 4.
+
+| Command | What it does |
+|---|---|
+| `npm start` | Builder dev server at http://localhost:5190, opens the browser |
+| `npm run dev` | The same without opening the browser (`npm run dev -- --port 5191` for another port) |
+| `npm test` | All unit tests once (Vitest); `npm run test:watch` re-runs on change |
+| `npm run typecheck` | `tsc --noEmit` in every workspace |
+| `npm run build` | Production build of the builder (incl. viewer) into `apps/builder/dist` |
+| `npm run preview` | Serves that build locally |
+| `npm run check` | typecheck + test + build — run this before opening a pull request |
+
+Run a single test file, or only tests whose name matches:
+
+```bash
+npx vitest run packages/engine/src/relax.test.ts
+npx vitest run -t "stitch count"
+```
+
+### Tests
+
+- Tests are deterministic: the relaxation uses a fixed seed, so the same pattern always
+  gives the same positions. Never depend on timing or `Math.random`.
+- Shapes are checked by numbers — sizes, round diameters, node and edge counts, closedness —
+  not by screenshots. A test for "a ball" asserts that the piece is closed and roughly as
+  wide as it is tall.
+- Engine tests live next to the code (`foo.ts` → `foo.test.ts`). App tests use
+  Testing Library with jsdom; the 3D view is replaced by a fake in tests.
+- Something without a test is not finished.
+
+### Where things live
+
+| Path | Contents |
+|---|---|
+| `packages/engine/src/schema.ts` | Canonical pattern format (Zod). Changes are rare — see above. |
+| `packages/engine/src/expand.ts`, `stitch-count.ts`, `validate.ts` | Expansion of repeats into stitches, stitch-count and consumes checks |
+| `packages/engine/src/gauge.ts` | Gauge and yarn-weight defaults → stitch size in mm |
+| `packages/engine/src/graph.ts`, `relax.ts`, `measure.ts`, `mesh.ts`, `model.ts` | Stitch graph, relaxation, measurements, mesh data, and the `buildModel` pipeline |
+| `packages/engine/src/notation.ts` | Parsing and rendering row text (German, US, UK terms) |
+| `packages/engine/src/export.ts` | Export file schema |
+| `packages/engine/src/index.ts` | The public API — everything the apps may import |
+| `apps/builder/src/components` | Editor UI (React) |
+| `apps/builder/src/state` | Document model, editing actions, saving in the browser (IndexedDB) |
+| `apps/builder/src/preview`, `apps/builder/src/three` | Model building in a web worker, Three.js view |
+| `docs/FORMAT.md` | The pattern format, for people and other software |
 
 ## Scope questions
 
