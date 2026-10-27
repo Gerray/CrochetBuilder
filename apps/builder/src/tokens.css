@@ -1,0 +1,188 @@
+/* CrochetBuilder — design tokens. The ONLY place for colours, sizes, radii and motion.
+ *
+ * Names and values follow the sister app TellmeCrochet: neutral greys plus ONE teal accent,
+ * flat surfaces, hairlines instead of shadows; red/green only for stitch-count validation.
+ *
+ * Themes: dark is the default. Light applies when the system asks for it
+ * (prefers-color-scheme: light). `data-theme="dark" | "light"` on <html> forces a theme.
+ * The light palette appears twice (media query + data-theme) — tokens.test.ts keeps both
+ * copies identical and checks text contrast (WCAG AA, ≥ 4.5:1) for both themes.
+ *
+ * Deviations from TellmeCrochet's values exist only for contrast and are marked "AA".
+ */
+
+:root {
+  /* ---- Typography (system font stack) ---- */
+  --font-system: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "Cascadia Code", "Cascadia Mono", Menlo, Consolas, monospace;
+
+  --fs-xs: 12px;
+  --lh-xs: 16px;
+  --fs-sm: 14px;
+  --lh-sm: 20px;
+  --fs-base: 16px;
+  --lh-base: 24px;
+  --fs-lg: 18px;
+  --lh-lg: 26px;
+  --fs-xl: 22px;
+  --lh-xl: 28px;
+
+  --fw-regular: 400;
+  --fw-medium: 500;
+  --fw-semibold: 600;
+  --fw-bold: 700;
+
+  /* ---- Spacing (4 px grid) ---- */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 20px;
+  --sp-6: 24px;
+  --sp-8: 32px;
+  --sp-10: 40px;
+  --sp-12: 48px;
+
+  /* ---- Control heights (desktop; TellmeCrochet's touch sizes do not apply) ---- */
+  --h-control: 32px;
+  --h-control-sm: 28px;
+  --h-control-lg: 44px;
+
+  /* ---- Radii ---- */
+  --r-input: 6px;
+  --r-card: 8px;
+  --r-sheet: 16px;
+  --r-pill: 9999px;
+
+  /* ---- Borders ---- */
+  --bd-hairline: 1px solid var(--c-line);
+  --bd-default: 1px solid var(--c-border);
+  --bd-accent: 1px solid var(--c-accent-base);
+  --bd-focus: 2px solid var(--c-accent-base);
+  --bd-marker: 3px solid;
+
+  /* ---- Motion (transform/opacity/colour only) ---- */
+  --mo-fast: 120ms cubic-bezier(0.2, 0, 0, 1);
+  --mo-base: 200ms cubic-bezier(0.2, 0, 0, 1);
+
+  /* ================================================================ dark (default) */
+  color-scheme: dark;
+
+  --c-neutral-0: #1b1b1f;
+  --c-neutral-50: #161619;
+  --c-neutral-100: #232328;
+  --c-neutral-200: #2f2f35;
+  --c-neutral-300: #3c3c44;
+  --c-neutral-500: #9a9aa2;
+  --c-neutral-600: #9a9aa2;
+  --c-neutral-700: #c8c8ce;
+  --c-neutral-900: #f2f2f4;
+
+  --c-accent-subtle: #16322f;
+  --c-accent-base: #3cb6ad;
+  --c-accent-strong: #5ccfc6;
+  --c-accent-on: #ffffff;
+  /* AA: white on TMC's dark accent-base is 2.4:1 — buttons use the deeper teal instead. */
+  --c-accent-fill: #1f7d77;
+  --c-accent-fill-hover: #1a6b66;
+  --c-accent-text: var(--c-accent-strong);
+
+  --c-warn: #cf3b32;
+  --c-warn-bg: #3a1a17;
+  --c-warn-text: #f2877d; /* AA */
+  --c-ok: #2f8f54;
+  --c-ok-bg: #16301f;
+  --c-ok-text: #6fcf8f; /* AA */
+
+  --c-field: var(--c-neutral-50);
+  --c-yarn: #e0a983;
+
+  --el-popover: 0 8px 24px rgba(0, 0, 0, 0.5);
+
+  /* ---- Roles (aliases; identical in both themes) ---- */
+  --c-bg: var(--c-neutral-50);
+  --c-surface: var(--c-neutral-0);
+  --c-surface-2: var(--c-neutral-100);
+  --c-text: var(--c-neutral-900);
+  --c-text-2: var(--c-neutral-700);
+  --c-text-mute: var(--c-neutral-600);
+  --c-line: var(--c-neutral-200);
+  --c-border: var(--c-neutral-300);
+
+  /* ---- 3D view (read at runtime by three/ModelCanvas.tsx; plain colours only) ---- */
+  --c-model-bg: var(--c-neutral-50);
+  --c-model-grid: var(--c-neutral-300);
+  --c-model-highlight: var(--c-accent-base);
+  --c-model-yarn: var(--c-yarn);
+}
+
+/* ================================================================ light */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    color-scheme: light;
+
+    --c-neutral-0: #ffffff;
+    --c-neutral-50: #fafafa;
+    --c-neutral-100: #f4f4f5;
+    --c-neutral-200: #e7e7e9;
+    --c-neutral-300: #d6d6da;
+    --c-neutral-500: #8e8e95;
+    --c-neutral-600: #6e6e76; /* AA: muted text; TMC's neutral-500 reaches 3.3:1 */
+    --c-neutral-700: #54545b;
+    --c-neutral-900: #27272c;
+
+    --c-accent-subtle: #e6f2f1;
+    --c-accent-base: #2f9e96;
+    --c-accent-strong: #1f7d77;
+    --c-accent-on: #ffffff;
+    --c-accent-fill: var(--c-accent-strong); /* AA: white on accent-base is 3.3:1 */
+    --c-accent-fill-hover: #1a6b66;
+    --c-accent-text: #1a6b66; /* AA: also on accent-subtle */
+
+    --c-warn: #cf3b32;
+    --c-warn-bg: #fbe9e7;
+    --c-warn-text: #b42f27; /* AA */
+    --c-ok: #2f8f54;
+    --c-ok-bg: #e8f5ec;
+    --c-ok-text: #237042; /* AA */
+
+    --c-field: var(--c-neutral-0);
+    --c-yarn: #e7b48f;
+
+    --el-popover: 0 8px 24px rgba(39, 39, 44, 0.12);
+  }
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+
+  --c-neutral-0: #ffffff;
+  --c-neutral-50: #fafafa;
+  --c-neutral-100: #f4f4f5;
+  --c-neutral-200: #e7e7e9;
+  --c-neutral-300: #d6d6da;
+  --c-neutral-500: #8e8e95;
+  --c-neutral-600: #6e6e76; /* AA: muted text; TMC's neutral-500 reaches 3.3:1 */
+  --c-neutral-700: #54545b;
+  --c-neutral-900: #27272c;
+
+  --c-accent-subtle: #e6f2f1;
+  --c-accent-base: #2f9e96;
+  --c-accent-strong: #1f7d77;
+  --c-accent-on: #ffffff;
+  --c-accent-fill: var(--c-accent-strong); /* AA: white on accent-base is 3.3:1 */
+  --c-accent-fill-hover: #1a6b66;
+  --c-accent-text: #1a6b66; /* AA: also on accent-subtle */
+
+  --c-warn: #cf3b32;
+  --c-warn-bg: #fbe9e7;
+  --c-warn-text: #b42f27; /* AA */
+  --c-ok: #2f8f54;
+  --c-ok-bg: #e8f5ec;
+  --c-ok-text: #237042; /* AA */
+
+  --c-field: var(--c-neutral-0);
+  --c-yarn: #e7b48f;
+
+  --el-popover: 0 8px 24px rgba(39, 39, 44, 0.12);
+}
