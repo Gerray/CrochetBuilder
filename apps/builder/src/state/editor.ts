@@ -8,7 +8,11 @@
  */
 
 import {
+  MAX_STITCH_COUNT_TARGET,
   computeRowStitches,
+  modifierAllowed,
+  normalizeModifiers,
+  opsWithinLimits,
   type Gauge,
   type Material,
   type Op,
@@ -69,7 +73,9 @@ export type EditorAction =
   | { type: "replaceDocument"; doc: BuilderDoc; pinned?: readonly string[] }
   | { type: "hydrate"; doc: BuilderDoc; pinned?: readonly string[] }
   | { type: "undo" }
-  | { type: "redo" };
+  | { type: "redo" }
+  /** Typing in a field ended (blur): the next edit starts a new undo step. */
+  | { type: "endTyping" };
 
 export function initEditorState(doc: BuilderDoc, pinned: readonly string[] = []): EditorState {
   return { doc, pinned, past: [], future: [], lastKey: undefined };
@@ -112,9 +118,14 @@ function sameJson(a: unknown, b: unknown): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
 }
 
-/** New ops for a row, applying the Soll-follows-Ist rule. */
+/**
+ * New ops for a row, applying the Soll-follows-Ist rule. Edits that would break the limits
+ * (count/times > 999, more than 10,000 worked stitches) are refused: the row stays as is.
+ */
 function rowWithOps(row: Row, ops: Op[], pinned: readonly string[], target?: number): Row {
   if (sameJson(ops, row.ops) && (target === undefined || target === row.stitchCountTarget)) return row;
+  if (!opsWithinLimits(ops)) return row;
+  if (target !== undefined && (target < 0 || target > MAX_STITCH_COUNT_TARGET)) return row;
   const next: Row = { ...row, ops };
   if (target !== undefined) next.stitchCountTarget = target;
   else if (!pinned.includes(row.id) && row.stitchCountTarget === computeRowStitches(row)) {
@@ -257,11 +268,12 @@ function applyEdit(state: EditorState, action: EditorAction): DocResult {
       };
 
     case "setTarget": {
-      const target = Math.max(0, Math.floor(action.target));
-      if (!Number.isFinite(target)) return same;
-      const next = withRow(doc, action.rowId, (row) =>
-        row.stitchCountTarget === target ? row : { ...row, stitchCountTarget: target },
-      );
+      const target = action.target;
+      if (!Number.isInteger(target) || target < 0 || target > MAX_STITCH_COUNT_TARGET) return same;
+      const row = currentPart(doc).rows.find((r) => r.id === action.rowId);
+      // An unchanged value is a no-op: no pin, no history entry.
+      if (!row || row.stitchCountTarget === target) return same;
+      const next = withRow(doc, action.rowId, (r) => ({ ...r, stitchCountTarget: target }));
       return { doc: next, pinned: pin(action.rowId) };
     }
 
@@ -284,8 +296,17 @@ function applyEdit(state: EditorState, action: EditorAction): DocResult {
         tree.updateOp(ops, action.path, (op) => {
           if (op.kind !== "stitch") return op;
           const next: StitchOp = { ...op, ...action.patch };
-          if (next.modifiers && next.modifiers.length === 0) delete next.modifiers;
           if (!Number.isInteger(next.count) || next.count < 1) return op;
+          if (next.modifiers) {
+            let mods = normalizeModifiers(next.code, next.modifiers);
+            if (mods === null) {
+              // A new code drops modifiers that no longer apply; an invalid toggle is refused.
+              if (action.patch.modifiers !== undefined) return op;
+              mods = normalizeModifiers(next.code, next.modifiers.filter((m) => modifierAllowed(next.code, m))) ?? [];
+            }
+            next.modifiers = mods;
+            if (mods.length === 0) delete next.modifiers;
+          }
           return next;
         }),
       );
@@ -319,6 +340,7 @@ function applyEdit(state: EditorState, action: EditorAction): DocResult {
 
     case "undo":
     case "redo":
+    case "endTyping":
       return same;
   }
 }
@@ -372,6 +394,9 @@ export function editorReducer(state: EditorState, action: EditorAction): EditorS
   }
   if (action.type === "hydrate") {
     return initEditorState(action.doc, action.pinned ?? []);
+  }
+  if (action.type === "endTyping") {
+    return state.lastKey === undefined ? state : { ...state, lastKey: undefined };
   }
 
   const result = applyEdit(state, action);

@@ -3,7 +3,7 @@
  * errors of the free-text row field.
  */
 
-import type { Finding, ParseRowResult, Row } from "@crochetbuilder/engine";
+import { MAX_COUNT, MAX_ROW_STITCHES, type Finding, type ParseRowResult, type Row } from "@crochetbuilder/engine";
 
 /** German message for a validation finding of `row`. */
 export function findingMessage(finding: Finding, row: Row | undefined): string {
@@ -20,8 +20,14 @@ export function findingMessage(finding: Finding, row: Row | undefined): string {
     }
     case "NO_ANCHOR_ROW":
       return `Wird in ${actual} Maschen gearbeitet, aber davor gibt es keine Runde, Luftmaschenkette oder keinen Magischen Ring.`;
+    case "EMPTY_REPEAT":
+      return actual === 1
+        ? "Eine Wiederholung enthält keine Maschen."
+        : `${actual} Wiederholungen enthalten keine Maschen.`;
   }
 }
+
+const n = (value: number) => value.toLocaleString("de-DE");
 
 /** German message for a failed parse, or null on success. */
 export function parseErrorMessage(result: ParseRowResult): string | null {
@@ -31,6 +37,12 @@ export function parseErrorMessage(result: ParseRowResult): string | null {
       return "Bitte mindestens eine Masche angeben, z. B. „6 fM“.";
     case "unknown-term":
       return `Unbekannter Begriff: „${result.term ?? ""}“`;
+    case "too-large":
+      return result.limit === MAX_ROW_STITCHES
+        ? `Zu viele Maschen in einer Zeile – höchstens ${n(MAX_ROW_STITCHES)}.`
+        : `Zahl zu groß – höchstens ${n(result.limit ?? MAX_COUNT)}.`;
+    case "invalid-modifier":
+      return `„${result.term ?? ""}“ passt hier nicht (widerspricht einer anderen Angabe oder gilt nicht für diese Masche).`;
     case "syntax":
       return result.position !== undefined
         ? `Nicht lesbar ab Zeichen ${result.position + 1}. Beispiel: 6× (1 fM, 1 Zun)`
