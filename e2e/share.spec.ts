@@ -93,3 +93,46 @@ test("a broken share link shows a German error in the viewer", async ({ page }) 
   await page.goto("viewer/");
   await expect(page.getByRole("heading", { name: "Keine Anleitung im Link" })).toBeVisible();
 });
+
+/** deflate-raw of `megabytes` MiB of spaces as a `v1.` payload, built without holding the input. */
+async function zipBomb(megabytes: number): Promise<string> {
+  const chunk = new Uint8Array(1024 * 1024).fill(0x20);
+  let sent = 0;
+  const source = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      if (sent++ < megabytes) controller.enqueue(chunk);
+      else controller.close();
+    },
+  });
+  const deflate = new CompressionStream("deflate-raw") as unknown as TransformStream<Uint8Array, Uint8Array>;
+  const packed = Buffer.from(await new Response(source.pipeThrough(deflate)).arrayBuffer());
+  return `v1.${packed.toString("base64url")}`;
+}
+
+test("a zip-bomb link is refused quickly in the browser (bounded decompression)", async ({ page }) => {
+  // ~150 MiB once inflated; the viewer must stop at the 2 MiB limit instead of inflating it all.
+  const payload = await zipBomb(150);
+  expect(payload.length).toBeLessThan(256 * 1024);
+  const started = Date.now();
+  await page.goto(`viewer/#data=${payload}`);
+  const alert = page.getByRole("alert");
+  await expect(alert).toContainText("Die Anleitung im Link ist zu groß.");
+  expect(Date.now() - started).toBeLessThan(10_000);
+});
+
+test("a link with bytes after the compressed data is refused as broken", async ({ page }) => {
+  await openBuilder(page);
+  await loadDemo(page, "Kugel");
+  const panel = await openExportMenu(page);
+  await panel.getByRole("button", { name: "Link teilen" }).click();
+  const viewerUrl = await panel.getByRole("textbox", { name: "Link zur 3D-Ansicht" }).inputValue();
+  const payload = viewerUrl.slice(viewerUrl.indexOf("#data=") + "#data=".length);
+  const junk = Buffer.concat([Buffer.from(payload.slice(3), "base64url"), Buffer.from("JUNK")]).toString("base64url");
+
+  // Surrounding whitespace is fine …
+  await page.goto(`viewer/#data=%20${payload}%0A`);
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText("Amigurumi-Kugel");
+  // … trailing bytes are not.
+  await page.goto(`viewer/#data=v1.${junk}`);
+  await expect(page.getByRole("alert")).toContainText("beschädigt");
+});
