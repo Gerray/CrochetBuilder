@@ -250,6 +250,47 @@ input[aria-invalid="true"] {
   border-color: var(--error);
 }
 
+.split-button {
+  position: relative;
+  display: inline-flex;
+}
+.split-button > .btn:first-child {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+.split-button > .btn + .btn {
+  margin-left: -1px;
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+}
+.menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 20;
+  min-width: 18em;
+  display: grid;
+  padding: 4px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: 0 6px 20px rgba(40, 30, 20, 0.15);
+}
+.menu-item {
+  display: grid;
+  gap: 1px;
+  text-align: left;
+  border: 0;
+  border-radius: var(--radius-small);
+  padding: 6px 10px;
+  background: transparent;
+  cursor: pointer;
+}
+.menu-item:hover,
+.menu-item:focus-visible {
+  background: var(--accent-soft);
+}
+
 .segmented {
   display: inline-flex;
   border: 1px solid var(--border-strong);

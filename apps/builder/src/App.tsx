@@ -107,7 +107,7 @@ export function App() {
         canRedo={canRedo(state)}
         status={persistence.status}
         onNew={() => dispatch(newDocument())}
-        onDemo={() => dispatch(loadDemo())}
+        onDemo={(kind) => dispatch(loadDemo(kind))}
       />
       <main className="workspace">
         <SplitPane
