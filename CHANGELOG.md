@@ -14,6 +14,20 @@ All notable changes to this project are documented here. The format follows
   thickness, also with a swatch. See [`docs/FORMAT.md`](docs/FORMAT.md#gauge).
 - Builder: a "Garndicke" field (mm) next to the yarn weight, typical thicknesses in the yarn
   weight list, and a hint which inputs drive the size. PDF and viewer list the thickness.
+- **Stitch-level 3D model.** New mesh style `toMesh(graph, "stitches")`: every stitch is a
+  yarn loop with its V top, posts and wraps; increases, decreases, chains and the magic ring
+  have their own shapes. It is the default "Maschen" view in the builder, the viewer and
+  the PDF image.
+- Share links are documented in [`docs/FORMAT.md`](docs/FORMAT.md#share-links);
+  `ShareDecodeError` gains the code `unsupported` (browser without deflate-raw streams).
+
+### Fixed
+
+- Share links: decompression is streamed in small slices so the 2 MiB cap holds in
+  browsers; links are limited to 256 Ki characters; deeply nested payloads are rejected
+  as `invalid` instead of overflowing the stack.
+- PDF: long words without spaces wrap in linear time; decomposed umlauts and ligatures
+  survive the WinAnsi conversion.
 
 ### Changed
 
