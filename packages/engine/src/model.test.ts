@@ -38,6 +38,27 @@ describe("buildModel", () => {
     expect(m.size.width).toBeGreaterThan(0);
   });
 
+  it("refuses to build above the stitch budget and says so, instead of hanging", () => {
+    const huge: PartContent = {
+      schemaVersion: 1,
+      rows: [
+        CUP.rows[0]!,
+        { id: "r2", type: "round", ops: [{ kind: "repeat", times: 100_000, ops: [st("SC", 1000)] }], stitchCountTarget: 1e8 },
+      ],
+    };
+    const t0 = performance.now();
+    const m = buildModel(huge);
+    expect(performance.now() - t0).toBeLessThan(200);
+    expect(m.graph.overBudget).toBe(true);
+    expect(m.graph.nodes).toHaveLength(0);
+    expect(m.size).toEqual({ width: 0, height: 0, depth: 0 });
+    const budget = m.findings.find((f) => f.code === "TOO_MANY_STITCHES")!;
+    expect(budget).toMatchObject({ rowId: "r2", severity: "error", expected: 20_000, actual: 100_000_007 });
+    // A custom budget moves the limit; under it no budget finding appears.
+    expect(buildModel(CUP, undefined, { maxStitches: 10 }).graph.overBudget).toBe(true);
+    expect(buildModel(CUP).findings.map((f) => f.code)).not.toContain("TOO_MANY_STITCHES");
+  });
+
   it("passes relax options through", () => {
     const a = buildModel(CUP, undefined, { seed: 3 });
     const b = buildModel(CUP, undefined, { seed: 3 });

@@ -32,6 +32,7 @@ export type {
 export {
   expandRow,
   expandPart,
+  countRowAtoms,
   isInstructionRow,
   instructionText,
   rowOrdinals,
@@ -55,13 +56,16 @@ export type { Gauge, YarnWeight, ResolvedGauge } from "./gauge.js";
 export {
   validate,
   checkConsumes,
+  checkStitchBudget,
+  countPartAtoms,
+  DEFAULT_MAX_STITCHES,
   checkStitchCounts,
   anchorsOffered,
   anchorsConsumed,
   consumesOfAtom,
   isRingRow,
 } from "./validate.js";
-export type { Finding, FindingCode } from "./validate.js";
+export type { Finding, FindingCode, ValidateOptions } from "./validate.js";
 
 export { buildGraph, nodesOfRow } from "./graph.js";
 export type {
@@ -72,6 +76,7 @@ export type {
   GraphRow,
   GraphRowKind,
   NodeId,
+  BuildGraphOptions,
 } from "./graph.js";
 
 export { relax, isClosedPiece, canonicalPose } from "./relax.js";
@@ -87,4 +92,4 @@ export { toMesh } from "./mesh.js";
 export type { MeshData, MeshOptions, MeshStyle } from "./mesh.js";
 
 export { buildModel } from "./model.js";
-export type { Model } from "./model.js";
+export type { Model, ModelOptions } from "./model.js";
