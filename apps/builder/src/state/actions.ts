@@ -4,7 +4,7 @@
  */
 
 import { currentPart, type EditorAction } from "./editor.js";
-import { demoDocument, emptyDocument, newId, type BuilderDoc } from "./document.js";
+import { demoDocument, emptyDocument, newId, type BuilderDoc, type DemoKind } from "./document.js";
 
 export function addRow(afterId?: string | null, instruction = false): Extract<EditorAction, { type: "addRow" }> {
   return { type: "addRow", id: newId(), afterId: afterId ?? null, instruction };
@@ -19,7 +19,7 @@ export function newDocument(): EditorAction {
 }
 
 /** The demo's targets are declared by the pattern, so they are pinned. */
-export function loadDemo(): EditorAction {
-  const doc: BuilderDoc = demoDocument(newId);
+export function loadDemo(kind: DemoKind = "sphere"): EditorAction {
+  const doc: BuilderDoc = demoDocument(newId, kind);
   return { type: "replaceDocument", doc, pinned: currentPart(doc).rows.map((r) => r.id) };
 }

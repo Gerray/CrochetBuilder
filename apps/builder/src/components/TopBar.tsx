@@ -1,6 +1,6 @@
-import { useState, type Dispatch } from "react";
+import { useEffect, useRef, useState, type Dispatch } from "react";
 import type { Gauge, Material, MaterialKind, YarnWeight } from "@crochetbuilder/engine";
-import type { BuilderDoc } from "../state/document.js";
+import { DEMOS, type BuilderDoc, type DemoKind } from "../state/document.js";
 import type { EditorAction } from "../state/editor.js";
 import type { SaveStatus } from "../state/usePersistence.js";
 import { ListField, NumberField } from "./fields.js";
@@ -38,7 +38,8 @@ interface TopBarProps {
   canRedo: boolean;
   status: SaveStatus;
   onNew: () => void;
-  onDemo: () => void;
+  /** Load a demo pattern (the button itself loads the sphere). */
+  onDemo: (kind: DemoKind) => void;
 }
 
 export function TopBar({ doc, dispatch, canUndo, canRedo, status, onNew, onDemo }: TopBarProps) {
@@ -73,9 +74,7 @@ export function TopBar({ doc, dispatch, canUndo, canRedo, status, onNew, onDemo 
           <button type="button" className="btn" onClick={onNew} title="Neue, leere Anleitung (rückgängig machbar)">
             Neu
           </button>
-          <button type="button" className="btn" onClick={onDemo} title="Beispiel: Amigurumi-Kugel laden">
-            Demo laden
-          </button>
+          <DemoMenu onDemo={onDemo} />
           <span className="toolbar-sep" aria-hidden="true" />
           <button
             type="button"
@@ -104,6 +103,85 @@ export function TopBar({ doc, dispatch, canUndo, canRedo, status, onNew, onDemo 
       </div>
       {overviewOpen && <OverviewPanel doc={doc} dispatch={dispatch} />}
     </header>
+  );
+}
+
+// ---------------------------------------------------------------------------
+
+/** "Demo laden" (the sphere) plus a small menu with all demos. */
+function DemoMenu({ onDemo }: { onDemo: (kind: DemoKind) => void }) {
+  const [open, setOpen] = useState(false);
+  const root = useRef<HTMLDivElement>(null);
+  const toggle = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    root.current?.querySelector<HTMLElement>("[role='menuitem']")?.focus();
+    const onPointer = (e: PointerEvent) => {
+      if (!root.current?.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("pointerdown", onPointer);
+    return () => document.removeEventListener("pointerdown", onPointer);
+  }, [open]);
+
+  const close = () => {
+    setOpen(false);
+    toggle.current?.focus();
+  };
+
+  return (
+    <div className="split-button" ref={root}>
+      <button type="button" className="btn" onClick={() => onDemo("sphere")} title="Beispiel: Amigurumi-Kugel laden">
+        Demo laden
+      </button>
+      <button
+        ref={toggle}
+        type="button"
+        className="btn btn-icon"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-label="Weitere Demos"
+        title="Weitere Demos"
+        onClick={() => setOpen((o) => !o)}
+      >
+        ▾
+      </button>
+      {open && (
+        <div
+          className="menu"
+          role="menu"
+          aria-label="Demos"
+          onKeyDown={(e) => {
+            const items = Array.from(e.currentTarget.querySelectorAll<HTMLElement>("[role='menuitem']"));
+            const index = items.indexOf(document.activeElement as HTMLElement);
+            if (e.key === "Escape") {
+              e.preventDefault();
+              close();
+            } else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+              e.preventDefault();
+              const step = e.key === "ArrowDown" ? 1 : -1;
+              items[(index + step + items.length) % items.length]?.focus();
+            }
+          }}
+        >
+          {DEMOS.map((demo) => (
+            <button
+              key={demo.kind}
+              type="button"
+              role="menuitem"
+              className="menu-item"
+              onClick={() => {
+                onDemo(demo.kind);
+                close();
+              }}
+            >
+              <span>{demo.label}</span>
+              <span className="muted small">{demo.description}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 

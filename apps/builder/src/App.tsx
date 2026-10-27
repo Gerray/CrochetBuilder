@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
-import { validate } from "@crochetbuilder/engine";
+import { DEFAULT_MAX_STITCHES, validate } from "@crochetbuilder/engine";
 import { PreviewPane } from "./components/PreviewPane.js";
 import { RowList, type FocusRequest } from "./components/RowList.js";
 import { SplitPane } from "./components/SplitPane.js";
@@ -26,7 +26,8 @@ export function App() {
 
   const part = currentPart(state.doc);
   // Validation only reruns when the part content changes (row/op limits keep it cheap).
-  const findings = useMemo(() => validate(part), [part]);
+  // The stitch budget of the 3D preview is reported like any other finding.
+  const findings = useMemo(() => validate(part, { maxStitches: DEFAULT_MAX_STITCHES }), [part]);
   const rows = part.rows;
 
   const focusRow = useCallback((rowId: string) => {
@@ -107,7 +108,7 @@ export function App() {
         canRedo={canRedo(state)}
         status={persistence.status}
         onNew={() => dispatch(newDocument())}
-        onDemo={() => dispatch(loadDemo())}
+        onDemo={(kind) => dispatch(loadDemo(kind))}
       />
       <main className="workspace">
         <SplitPane
