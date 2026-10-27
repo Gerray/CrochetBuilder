@@ -49,9 +49,12 @@ export {
   YARN_WEIGHT_DEFAULTS,
   DEFAULT_YARN_WEIGHT,
   STITCH_HEIGHT_FACTOR,
+  MAX_YARN_DIAMETER_MM,
+  YARN_DIAMETER_EXTRAPOLATION,
   resolveGauge,
+  yarnDefaultsForDiameter,
 } from "./gauge.js";
-export type { Gauge, YarnWeight, ResolvedGauge } from "./gauge.js";
+export type { Gauge, YarnWeight, ResolvedGauge, YarnSizeDefaults } from "./gauge.js";
 
 export {
   validate,
