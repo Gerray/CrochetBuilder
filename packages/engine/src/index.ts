@@ -1,7 +1,7 @@
 /**
  * @crochetbuilder/engine — public API.
  *
- * Schema → expansion → validation today; graph, relaxation and mesh follow (B2).
+ * Schema → expansion → validation → stitch graph → relaxation → measurements / mesh.
  * Everything here is pure TypeScript with no UI or framework imports.
  */
 
@@ -62,3 +62,14 @@ export {
   isRingRow,
 } from "./validate.js";
 export type { Finding, FindingCode } from "./validate.js";
+
+export { buildGraph, nodesOfRow } from "./graph.js";
+export type {
+  StitchGraph,
+  StitchNode,
+  StitchEdge,
+  EdgeKind,
+  GraphRow,
+  GraphRowKind,
+  NodeId,
+} from "./graph.js";
