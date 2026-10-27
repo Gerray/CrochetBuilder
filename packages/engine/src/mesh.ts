@@ -85,7 +85,12 @@ export function toMesh(graph: StitchGraph, style: MeshStyle, opts: MeshOptions =
   // Per-node normals (the pole, if any, comes after the nodes).
   const nodeNormals = surface.normals.slice(0, 3 * n);
   if (style === "stitches") {
-    const arrays = stitchMesh(graph, nodeNormals, opts);
+    // A closed piece's last round is gathered at the pole (see stitch-mesh.ts).
+    const closing =
+      surface.pole >= 0
+        ? { pole: vec(surface.pos, surface.pole), normal: vec(surface.normals, surface.pole), ring: surface.ring }
+        : undefined;
+    const arrays = stitchMesh(graph, nodeNormals, opts, closing);
     return { style, primitive: "triangles", ...arrays };
   }
   if (style === "points") {
@@ -109,6 +114,10 @@ export function toMesh(graph: StitchGraph, style: MeshStyle, opts: MeshOptions =
     indices: s.tris,
     nodeIndex: s.nodeIndex,
   };
+}
+
+function vec(a: ArrayLike<number>, i: number): [number, number, number] {
+  return [a[3 * i]!, a[3 * i + 1]!, a[3 * i + 2]!];
 }
 
 function smoothSteps(smooth: MeshOptions["smooth"], nodes: number): number {

@@ -325,6 +325,40 @@ describe("stitch yarn — per stitch code", () => {
     expect(m.positions.every(Number.isFinite)).toBe(true);
     expect(m.normals.every(Number.isFinite)).toBe(true);
   });
+
+  it("gathers the last round of a closed piece into a cinched ring at the closing pole", () => {
+    const n = sphere.nodes.length;
+    const surface = toMesh(sphere, "surface");
+    const pole: V3 = [surface.positions[3 * n]!, surface.positions[3 * n + 1]!, surface.positions[3 * n + 2]!];
+    const normal: V3 = [surface.normals[3 * n]!, surface.normals[3 * n + 1]!, surface.normals[3 * n + 2]!];
+    const ring = sphere.nodes.filter((s) => s.rowId === "r8").map((s) => s.id);
+    const Y = sphere.gauge.yarnDiameterMm;
+    const sw = sphere.gauge.stitchWidthMm;
+    const out: YarnPiece[] = [];
+    stitchYarn(sphere, surface.normals.slice(0, 3 * n), Y, (p) => out.push(p), { pole, normal, ring });
+    // Without a closing nothing is gathered.
+    expect(sPieces.some((p) => p.kind === "gather")).toBe(false);
+    for (const id of ring) {
+      const g = arcs(out, id, "gather");
+      expect(g).toHaveLength(1);
+      // From the stitch's front loop to the small ring around the pole — no long legs.
+      expect(dist(g[0]!.a, P(sphere, id))).toBeLessThan(Y);
+      expect(dist(g[0]!.b, pole)).toBeLessThan(0.5 * sw);
+      expect(dist(g[0]!.a, g[0]!.b)).toBeLessThan(dist(P(sphere, id), pole));
+    }
+    const cinch = out.filter((p) => p.kind === "ring" && "centre" in p && dist(p.centre, pole) < 1e-9);
+    expect(cinch).toHaveLength(1);
+    expect(cinch[0]!.node).toBe(ring[ring.length - 1]);
+    // The stitch mesh of the closed piece draws it: yarn of the last round right at the pole.
+    const m = toMesh(sphere, "stitches");
+    const last = new Set(ring);
+    let near = 0;
+    for (let v = 0; v < m.nodeIndex.length; v++) {
+      const p: V3 = [m.positions[3 * v]!, m.positions[3 * v + 1]!, m.positions[3 * v + 2]!];
+      if (last.has(m.nodeIndex[v]!) && dist(p, pole) < 0.5 * sw) near++;
+    }
+    expect(near).toBeGreaterThan(0);
+  });
 });
 
 describe("stitch mesh — budget", () => {

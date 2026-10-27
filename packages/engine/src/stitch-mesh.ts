@@ -19,7 +19,10 @@
  *     braid of V's when seen from above;
  *   - wraps: one (HDC, DC), two (TR) or three (DTR) slanted bars across a tall post;
  *   - a chain (foundation, turning or mid-row) is an elongated link lying in the fabric;
- *   - the magic ring is a small ring around its anchor.
+ *   - the magic ring is a small ring around its anchor;
+ *   - a closed piece's last round, pulled shut: the tail runs from the front loop of every
+ *     stitch of that round to a small cinched ring at the closing pole (see `StitchClosing`),
+ *     mirroring the magic ring with its legs at the start.
  * Each post loop encloses a hole, as real crochet has.
  *
  * Deterministic, no randomness. Degenerate frames (coincident nodes, a lone chain) fall back
@@ -400,8 +403,18 @@ function frames(graph: StitchGraph, normals: Float32Array): Frame[] {
   return out;
 }
 
+/**
+ * Where a closed piece is pulled shut (from the surface style): the closing pole, the
+ * outward normal there and the last round's stitches around it.
+ */
+export interface StitchClosing {
+  pole: V3;
+  normal: V3;
+  ring: readonly number[];
+}
+
 /** What a piece of yarn in the stitch mesh is (for tests and other renderers). */
-export type YarnArcKind = "top" | "wrap";
+export type YarnArcKind = "top" | "wrap" | "gather";
 export type YarnLoopKind = "link" | "ring";
 
 /** A yarn arc: quadratic Bézier `a → b` with control `c`, bending in the plane normal to `hint`. */
@@ -446,8 +459,15 @@ export type YarnPiece = YarnArc | YarnLoop | YarnPost;
  *
  * Works on the topology alone (code, prev, parents, span), so a stitch reads the same
  * whether an increase is one node offering two anchors or two nodes on one parent.
+ * `closing`: the closing pole of a closed piece; its last round is then gathered there.
  */
-export function stitchYarn(graph: StitchGraph, normals: Float32Array, yarn: number, emit: (piece: YarnPiece) => void): void {
+export function stitchYarn(
+  graph: StitchGraph,
+  normals: Float32Array,
+  yarn: number,
+  emit: (piece: YarnPiece) => void,
+  closing?: StitchClosing,
+): void {
   const { nodes } = graph;
   const n = nodes.length;
   if (n === 0) return;
@@ -560,13 +580,39 @@ export function stitchYarn(graph: StitchGraph, normals: Float32Array, yarn: numb
       stitch(top, f, bottoms, wraps, i);
     }
   }
+
+  // The last round pulled shut: the tail runs through the front loop of each of its stitches
+  // and is cinched into a small ring at the pole.
+  if (closing && closing.ring.length >= 3) {
+    const { pole, ring } = closing;
+    const axis = unit(closing.normal, [0, 1, 0]);
+    const rr = 0.15 * graph.gauge.stitchWidthMm + 0.5 * Y;
+    for (const id of ring) {
+      const f = F[id]!;
+      const t = P(id);
+      const a = at(t, f.d, 0, f.u, 0.2 * Y, f.n, 0.5 * Y); // the crest of the front loop
+      const out = sub(a, pole);
+      const radial = unit(sub(out, mul(axis, dot(out, axis))), f.u);
+      const b = add(pole, mul(radial, rr));
+      const span = len(sub(b, a));
+      const c = at(lerp(a, b, 0.5), axis, 0.15 * span + 0.3 * Y, f.d, 0, f.n, 0);
+      emit({ kind: "gather", node: id, a, c, b, hint: axis });
+    }
+    const e1 = perpendicular(axis);
+    emit({ kind: "ring", node: ring[ring.length - 1]!, centre: pole, e1: mul(e1, rr), e2: mul(cross(axis, e1), rr) });
+  }
 }
 
 /**
  * The stitch mesh of a graph. `normals`: fabric normal per node (unit, as for the surface
- * style).
+ * style); `closing`: where a closed piece is pulled shut (see `stitchYarn`).
  */
-export function stitchMesh(graph: StitchGraph, normals: Float32Array, opts: StitchMeshOptions = {}): StitchMeshArrays {
+export function stitchMesh(
+  graph: StitchGraph,
+  normals: Float32Array,
+  opts: StitchMeshOptions = {},
+  closing?: StitchClosing,
+): StitchMeshArrays {
   const n = graph.nodes.length;
   const detail = stitchDetail(n);
   const radius = opts.radius ?? stitchYarnRadius(graph.gauge);
@@ -578,6 +624,6 @@ export function stitchMesh(graph: StitchGraph, normals: Float32Array, opts: Stit
     if (p.kind === "post") sw.closedSpline(p.points, p.hint, p.node);
     else if ("a" in p) sw.arc(p.a, p.c, p.b, p.hint, p.node);
     else sw.loop(p.centre, p.e1, p.e2, p.node);
-  });
+  }, closing);
   return buf.result();
 }
