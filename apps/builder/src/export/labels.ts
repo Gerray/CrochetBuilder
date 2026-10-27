@@ -1,6 +1,13 @@
 /** German display labels shared by the editor, the PDF and the viewer. */
 
-import { resolveGauge, type Gauge, type Material, type MaterialKind, type YarnWeight } from "@crochetbuilder/engine";
+import {
+  resolveGauge,
+  YARN_WEIGHT_DEFAULTS,
+  type Gauge,
+  type Material,
+  type MaterialKind,
+  type YarnWeight,
+} from "@crochetbuilder/engine";
 
 export const YARN_WEIGHTS: Array<[YarnWeight, string]> = [
   ["lace", "Lace (sehr fein)"],
@@ -43,9 +50,33 @@ export function materialLine(m: Material): string {
   return line;
 }
 
+/** Select option for a yarn weight with its typical thickness: "DK (leicht) · ca. 2,5 mm". */
+export function yarnWeightOption(weight: YarnWeight): string {
+  const label = YARN_WEIGHT_LABEL.get(weight) ?? weight;
+  return `${label} · ca. ${num(YARN_WEIGHT_DEFAULTS[weight].yarnDiameterMm)} mm`;
+}
+
 /**
- * The size basis in one line: the swatch when there is one, else yarn weight and hook, else
- * a note that the engine defaults apply.
+ * Which inputs drive the stitch size, as a short sentence for the editor:
+ * "Größe aus Garndicke 2,5 mm und Nadel 3 mm geschätzt". Mirrors `resolveGauge`'s order.
+ */
+export function sizeBasisText(gauge: Gauge | undefined): string {
+  const g = gauge ?? {};
+  if (g.stitchesPer10cm !== undefined || g.rowsPer10cm !== undefined) return "Größe aus der Maschenprobe";
+  const hook = g.hookMm !== undefined ? `Nadel ${num(g.hookMm, 2)} mm` : null;
+  let yarn: string | null = null;
+  if (g.yarnDiameterMm !== undefined) yarn = `Garndicke ${num(g.yarnDiameterMm, 2)} mm`;
+  else if (g.yarnWeight) yarn = `Garn ${YARN_WEIGHT_LABEL.get(g.yarnWeight) ?? g.yarnWeight}`;
+  if (!yarn && !hook) return "Größe aus Standardwerten (DK, 4 mm) geschätzt";
+  const basis = [yarn ?? "Standardgarn (DK)", hook].filter(Boolean).join(" und ");
+  let text = `Größe aus ${basis} geschätzt`;
+  if (g.yarnDiameterMm !== undefined && g.yarnWeight) text += " – die Garndicke hat Vorrang vor der Garnstärke";
+  return text;
+}
+
+/**
+ * The size basis in one line: the swatch when there is one, then yarn weight, yarn thickness
+ * and hook, else a note that the engine defaults apply.
  */
 export function gaugeLine(gauge: Gauge | undefined): string {
   const g = gauge ?? {};
@@ -58,6 +89,7 @@ export function gaugeLine(gauge: Gauge | undefined): string {
     parts.push(`Maschenprobe: ${counts.join(" × ")} = 10 × 10 cm`);
   }
   if (g.yarnWeight) parts.push(`Garn: ${YARN_WEIGHT_LABEL.get(g.yarnWeight) ?? g.yarnWeight}`);
+  if (g.yarnDiameterMm !== undefined) parts.push(`Garndicke: ${num(g.yarnDiameterMm, 2)} mm`);
   if (g.hookMm !== undefined) parts.push(`Nadel: ${num(g.hookMm, 2)} mm`);
   return parts.length > 0 ? parts.join(" · ") : "Keine Angabe zu Garn, Nadel oder Maschenprobe";
 }

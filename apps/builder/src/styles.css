@@ -402,6 +402,10 @@ input[aria-invalid="true"] {
   align-items: center;
   gap: 8px 12px;
 }
+.gauge-hint {
+  color: var(--text-muted);
+  font-size: 0.8em;
+}
 .toolbar {
   display: flex;
   align-items: center;
