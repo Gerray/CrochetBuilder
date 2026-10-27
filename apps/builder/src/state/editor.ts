@@ -1,0 +1,389 @@
+/**
+ * Editor state: the document plus undo/redo history. A pure reducer — ids for new rows
+ * arrive inside the action (see `actions.ts`), so the reducer stays deterministic.
+ *
+ * Soll (stitchCountTarget) rule: a row's Soll follows its Ist while the two agree and the
+ * Soll was never set explicitly. Typing a Soll, "Soll übernehmen" or a trailing "(18)" in
+ * the free text pins it; from then on a differing Ist is reported, never silently copied.
+ */
+
+import {
+  computeRowStitches,
+  type Gauge,
+  type Material,
+  type Op,
+  type PartContent,
+  type Row,
+  type StitchOp,
+} from "@crochetbuilder/engine";
+import { emptyRow, instructionRow, type BuilderDoc } from "./document.js";
+import * as tree from "./op-tree.js";
+import type { OpPath } from "./op-tree.js";
+
+export const HISTORY_LIMIT = 200;
+
+export interface EditorState {
+  doc: BuilderDoc;
+  /** Row ids whose Soll was set explicitly (see module doc). */
+  pinned: readonly string[];
+  past: readonly Snapshot[];
+  future: readonly Snapshot[];
+  /** Key of the last coalescable edit (typing into one field = one undo step). */
+  lastKey: string | undefined;
+}
+
+interface Snapshot {
+  doc: BuilderDoc;
+  pinned: readonly string[];
+}
+
+export type RowPatch = Partial<Pick<Row, "label" | "type" | "note">>;
+export type StitchPatch = Partial<Pick<StitchOp, "code" | "count" | "modifiers">>;
+
+export type EditorAction =
+  // overview
+  | { type: "setTitle"; title: string }
+  | { type: "setGauge"; gauge: Gauge }
+  | { type: "setNotes"; notes: string }
+  | { type: "addMaterial"; material: Material }
+  | { type: "updateMaterial"; index: number; material: Material }
+  | { type: "removeMaterial"; index: number }
+  // rows
+  | { type: "addRow"; id: string; afterId?: string | null; instruction?: boolean }
+  | { type: "deleteRow"; rowId: string }
+  | { type: "moveRow"; rowId: string; delta: number }
+  | { type: "duplicateRow"; rowId: string; newId: string }
+  | { type: "updateRow"; rowId: string; patch: RowPatch }
+  | { type: "setTarget"; rowId: string; target: number }
+  | { type: "adoptTarget"; rowId: string }
+  | { type: "setRowOps"; rowId: string; ops: Op[]; target?: number }
+  // ops inside a row
+  | { type: "updateStitch"; rowId: string; path: OpPath; patch: StitchPatch }
+  | { type: "setRepeatTimes"; rowId: string; path: OpPath; times: number }
+  | { type: "insertOp"; rowId: string; path: OpPath; op: Op }
+  | { type: "removeOp"; rowId: string; path: OpPath }
+  | { type: "moveOp"; rowId: string; path: OpPath; delta: number }
+  | { type: "wrapInRepeat"; rowId: string; path: OpPath; times?: number; length?: number }
+  | { type: "unwrapRepeat"; rowId: string; path: OpPath }
+  // document
+  | { type: "replaceDocument"; doc: BuilderDoc; pinned?: readonly string[] }
+  | { type: "hydrate"; doc: BuilderDoc; pinned?: readonly string[] }
+  | { type: "undo" }
+  | { type: "redo" };
+
+export function initEditorState(doc: BuilderDoc, pinned: readonly string[] = []): EditorState {
+  return { doc, pinned, past: [], future: [], lastKey: undefined };
+}
+
+/** The part being edited (MVP: always the first). */
+export function currentPart(doc: BuilderDoc): PartContent {
+  return doc.parts[0]!.content;
+}
+
+// ---------------------------------------------------------------------------
+// Document edits (no history concerns)
+// ---------------------------------------------------------------------------
+
+function withRows(doc: BuilderDoc, fn: (rows: Row[]) => Row[]): BuilderDoc {
+  const part = doc.parts[0];
+  if (!part) return doc;
+  const rows = fn(part.content.rows);
+  if (rows === part.content.rows) return doc;
+  return {
+    ...doc,
+    parts: [{ ...part, content: { ...part.content, rows } }, ...doc.parts.slice(1)],
+  };
+}
+
+function withRow(doc: BuilderDoc, rowId: string, fn: (row: Row) => Row): BuilderDoc {
+  return withRows(doc, (rows) => {
+    const index = rows.findIndex((r) => r.id === rowId);
+    if (index < 0) return rows;
+    const row = rows[index]!;
+    const next = fn(row);
+    if (next === row) return rows;
+    const copy = [...rows];
+    copy[index] = next;
+    return copy;
+  });
+}
+
+function sameJson(a: unknown, b: unknown): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
+/** New ops for a row, applying the Soll-follows-Ist rule. */
+function rowWithOps(row: Row, ops: Op[], pinned: readonly string[], target?: number): Row {
+  if (sameJson(ops, row.ops) && (target === undefined || target === row.stitchCountTarget)) return row;
+  const next: Row = { ...row, ops };
+  if (target !== undefined) next.stitchCountTarget = target;
+  else if (!pinned.includes(row.id) && row.stitchCountTarget === computeRowStitches(row)) {
+    next.stitchCountTarget = computeRowStitches(next);
+  }
+  return next;
+}
+
+function setOptionalText<T extends object, K extends keyof T>(obj: T, key: K, value: T[K] | undefined): T {
+  const next = { ...obj };
+  if (value === undefined) delete next[key];
+  else next[key] = value;
+  return next;
+}
+
+/** Remove undefined / non-finite fields so the gauge stays schema-clean. */
+function cleanGauge(gauge: Gauge): Gauge | undefined {
+  const out: Gauge = {};
+  for (const [k, v] of Object.entries(gauge) as Array<[keyof Gauge, Gauge[keyof Gauge]]>) {
+    if (v === undefined) continue;
+    if (typeof v === "number" && !(Number.isFinite(v) && v > 0)) continue;
+    (out as Record<string, unknown>)[k] = v;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+interface DocResult {
+  doc: BuilderDoc;
+  pinned: readonly string[];
+}
+
+function applyEdit(state: EditorState, action: EditorAction): DocResult {
+  const { doc, pinned } = state;
+  const same = { doc, pinned };
+  const pin = (rowId: string) => (pinned.includes(rowId) ? pinned : [...pinned, rowId]);
+  const opsEdit = (rowId: string, fn: (ops: Op[]) => Op[]): DocResult => ({
+    doc: withRow(doc, rowId, (row) => rowWithOps(row, fn(row.ops), pinned)),
+    pinned,
+  });
+
+  switch (action.type) {
+    case "setTitle":
+      return action.title === doc.title ? same : { doc: { ...doc, title: action.title }, pinned };
+
+    case "setGauge": {
+      const gauge = cleanGauge(action.gauge);
+      if (sameJson(gauge, doc.overview.gauge)) return same;
+      return { doc: { ...doc, overview: setOptionalText(doc.overview, "gauge", gauge) }, pinned };
+    }
+
+    case "setNotes": {
+      const notes = action.notes === "" ? undefined : action.notes;
+      if (notes === doc.overview.notes) return same;
+      return { doc: { ...doc, overview: setOptionalText(doc.overview, "notes", notes) }, pinned };
+    }
+
+    case "addMaterial": {
+      const materials = [...(doc.overview.materials ?? []), action.material];
+      return { doc: { ...doc, overview: { ...doc.overview, materials } }, pinned };
+    }
+
+    case "updateMaterial": {
+      const list = doc.overview.materials ?? [];
+      if (!list[action.index] || sameJson(list[action.index], action.material)) return same;
+      const materials = list.map((m, i) => (i === action.index ? action.material : m));
+      return { doc: { ...doc, overview: { ...doc.overview, materials } }, pinned };
+    }
+
+    case "removeMaterial": {
+      const list = doc.overview.materials ?? [];
+      if (!list[action.index]) return same;
+      const materials = list.filter((_, i) => i !== action.index);
+      return { doc: { ...doc, overview: { ...doc.overview, materials } }, pinned };
+    }
+
+    case "addRow":
+      return {
+        doc: withRows(doc, (rows) => {
+          const anchor = action.afterId ? rows.findIndex((r) => r.id === action.afterId) : rows.length - 1;
+          const at = anchor < 0 ? rows.length : anchor + 1;
+          // A new line takes the type (row/round) of the line above it.
+          const type = rows[at - 1]?.type ?? "round";
+          const row = action.instruction ? instructionRow(action.id, type) : emptyRow(action.id, type);
+          return [...rows.slice(0, at), row, ...rows.slice(at)];
+        }),
+        pinned,
+      };
+
+    case "deleteRow":
+      return {
+        doc: withRows(doc, (rows) =>
+          rows.some((r) => r.id === action.rowId) ? rows.filter((r) => r.id !== action.rowId) : rows,
+        ),
+        pinned: pinned.includes(action.rowId) ? pinned.filter((id) => id !== action.rowId) : pinned,
+      };
+
+    case "moveRow":
+      return {
+        doc: withRows(doc, (rows) => {
+          const from = rows.findIndex((r) => r.id === action.rowId);
+          const to = Math.max(0, Math.min(rows.length - 1, from + action.delta));
+          if (from < 0 || to === from) return rows;
+          const copy = [...rows];
+          const [row] = copy.splice(from, 1);
+          copy.splice(to, 0, row!);
+          return copy;
+        }),
+        pinned,
+      };
+
+    case "duplicateRow": {
+      const source = currentPart(doc).rows.find((r) => r.id === action.rowId);
+      if (!source) return same;
+      return {
+        doc: withRows(doc, (rows) => {
+          const at = rows.findIndex((r) => r.id === action.rowId) + 1;
+          const copy: Row = { ...structuredClone(source), id: action.newId };
+          return [...rows.slice(0, at), copy, ...rows.slice(at)];
+        }),
+        pinned: pinned.includes(source.id) ? [...pinned, action.newId] : pinned,
+      };
+    }
+
+    case "updateRow":
+      return {
+        doc: withRow(doc, action.rowId, (row) => {
+          let next = row;
+          for (const key of ["label", "type", "note"] as const) {
+            if (!(key in action.patch)) continue;
+            const value = action.patch[key];
+            if (value === row[key]) continue;
+            // An empty label disappears (the automatic "Runde n" shows instead); so does an
+            // empty note on a stitch row. A free instruction keeps its (empty) note.
+            const drop = value === "" && (key === "label" || (key === "note" && row.ops.length > 0));
+            next = drop ? setOptionalText(next, key, undefined) : { ...next, [key]: value };
+          }
+          return next;
+        }),
+        pinned,
+      };
+
+    case "setTarget": {
+      const target = Math.max(0, Math.floor(action.target));
+      if (!Number.isFinite(target)) return same;
+      const next = withRow(doc, action.rowId, (row) =>
+        row.stitchCountTarget === target ? row : { ...row, stitchCountTarget: target },
+      );
+      return { doc: next, pinned: pin(action.rowId) };
+    }
+
+    case "adoptTarget": {
+      const next = withRow(doc, action.rowId, (row) => {
+        const actual = computeRowStitches(row);
+        return row.stitchCountTarget === actual ? row : { ...row, stitchCountTarget: actual };
+      });
+      return { doc: next, pinned: pin(action.rowId) };
+    }
+
+    case "setRowOps":
+      return {
+        doc: withRow(doc, action.rowId, (row) => rowWithOps(row, action.ops, pinned, action.target)),
+        pinned: action.target === undefined ? pinned : pin(action.rowId),
+      };
+
+    case "updateStitch":
+      return opsEdit(action.rowId, (ops) =>
+        tree.updateOp(ops, action.path, (op) => {
+          if (op.kind !== "stitch") return op;
+          const next: StitchOp = { ...op, ...action.patch };
+          if (next.modifiers && next.modifiers.length === 0) delete next.modifiers;
+          if (!Number.isInteger(next.count) || next.count < 1) return op;
+          return next;
+        }),
+      );
+
+    case "setRepeatTimes":
+      if (!Number.isInteger(action.times) || action.times < 1) return same;
+      return opsEdit(action.rowId, (ops) =>
+        tree.updateOp(ops, action.path, (op) => (op.kind === "repeat" ? { ...op, times: action.times } : op)),
+      );
+
+    case "insertOp":
+      return opsEdit(action.rowId, (ops) => tree.insertOp(ops, action.path, action.op));
+
+    case "removeOp":
+      return opsEdit(action.rowId, (ops) => tree.removeOp(ops, action.path));
+
+    case "moveOp":
+      return opsEdit(action.rowId, (ops) => tree.moveOp(ops, action.path, action.delta));
+
+    case "wrapInRepeat":
+      return opsEdit(action.rowId, (ops) =>
+        tree.wrapInRepeat(ops, action.path, action.times ?? 2, action.length ?? 1),
+      );
+
+    case "unwrapRepeat":
+      return opsEdit(action.rowId, (ops) => tree.unwrapRepeat(ops, action.path));
+
+    case "replaceDocument":
+    case "hydrate":
+      return { doc: action.doc, pinned: action.pinned ?? [] };
+
+    case "undo":
+    case "redo":
+      return same;
+  }
+}
+
+/** Edits that coalesce into one undo step while the same field is being typed into. */
+function coalesceKey(action: EditorAction): string | undefined {
+  switch (action.type) {
+    case "setTitle":
+      return "title";
+    case "setNotes":
+      return "notes";
+    case "setGauge":
+      return "gauge";
+    case "updateMaterial":
+      return `material:${action.index}`;
+    case "updateRow":
+      return "label" in action.patch || "note" in action.patch ? `row:${action.rowId}:text` : undefined;
+    case "setTarget":
+      return `row:${action.rowId}:target`;
+    case "updateStitch":
+      return "count" in action.patch ? `op:${action.rowId}:${action.path.join(".")}` : undefined;
+    case "setRepeatTimes":
+      return `op:${action.rowId}:${action.path.join(".")}`;
+    default:
+      return undefined;
+  }
+}
+
+export function editorReducer(state: EditorState, action: EditorAction): EditorState {
+  if (action.type === "undo") {
+    const previous = state.past[state.past.length - 1];
+    if (!previous) return state;
+    return {
+      doc: previous.doc,
+      pinned: previous.pinned,
+      past: state.past.slice(0, -1),
+      future: [{ doc: state.doc, pinned: state.pinned }, ...state.future],
+      lastKey: undefined,
+    };
+  }
+  if (action.type === "redo") {
+    const next = state.future[0];
+    if (!next) return state;
+    return {
+      doc: next.doc,
+      pinned: next.pinned,
+      past: [...state.past, { doc: state.doc, pinned: state.pinned }],
+      future: state.future.slice(1),
+      lastKey: undefined,
+    };
+  }
+  if (action.type === "hydrate") {
+    return initEditorState(action.doc, action.pinned ?? []);
+  }
+
+  const result = applyEdit(state, action);
+  if (result.doc === state.doc && result.pinned === state.pinned) return state;
+
+  const key = coalesceKey(action);
+  const coalesce = key !== undefined && key === state.lastKey;
+  const past = coalesce
+    ? state.past
+    : [...state.past, { doc: state.doc, pinned: state.pinned }].slice(-HISTORY_LIMIT);
+  return { doc: result.doc, pinned: result.pinned, past, future: [], lastKey: key };
+}
+
+export const canUndo = (state: EditorState): boolean => state.past.length > 0;
+export const canRedo = (state: EditorState): boolean => state.future.length > 0;
