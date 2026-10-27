@@ -5,6 +5,7 @@ import {
   anchorsOffered,
   anchorsConsumed,
   isRingRow,
+  checkEmptyRepeats,
 } from "./validate.js";
 import { STITCH_PROPERTIES, StitchCodeSchema, consumesOf } from "./schema.js";
 import type { Mod, Op, PartContent, Row, StitchCode } from "./schema.js";
@@ -156,5 +157,45 @@ describe("validate", () => {
       ["r2", "STITCH_COUNT_MISMATCH"],
       ["r3", "CONSUMES_OVERFLOW"],
     ]);
+  });
+});
+
+describe("checkEmptyRepeats", () => {
+  it("warns once per row with empty repeat groups", () => {
+    const content: PartContent = {
+      schemaVersion: 1,
+      rows: [
+        {
+          id: "a",
+          type: "round",
+          ops: [
+            { kind: "stitch", code: "MR", count: 1 },
+            { kind: "stitch", code: "SC", count: 6 },
+            { kind: "repeat", times: 6, ops: [] },
+          ],
+          stitchCountTarget: 6,
+        },
+        {
+          id: "b",
+          type: "round",
+          ops: [
+            {
+              kind: "repeat",
+              times: 2,
+              ops: [
+                { kind: "stitch", code: "INC", count: 3 },
+                { kind: "repeat", times: 2, ops: [] },
+              ],
+            },
+          ],
+          stitchCountTarget: 12,
+        },
+      ],
+    };
+    expect(checkEmptyRepeats(content).map((f) => [f.rowId, f.code, f.severity, f.actual])).toEqual([
+      ["a", "EMPTY_REPEAT", "warning", 1],
+      ["b", "EMPTY_REPEAT", "warning", 1],
+    ]);
+    expect(validate(content).map((f) => f.code)).toEqual(["EMPTY_REPEAT", "EMPTY_REPEAT"]);
   });
 });
