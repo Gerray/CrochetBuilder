@@ -92,8 +92,9 @@ export interface ModelViewStyle {
 export const DEFAULT_STYLE: ModelViewStyle = {
   background: "#ffffff",
   yarn: "#e7b48f",
-  highlight: "#2f7d72",
-  grid: "#cfc8bd",
+  // Fallbacks when no theme is available (tests, snapshots): the light tokens.
+  highlight: "#2f9e96",
+  grid: "#d6d6da",
   showGrid: true,
   dimmed: false,
   backing: 0,

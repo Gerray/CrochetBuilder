@@ -28,20 +28,39 @@ export interface ModelCanvasProps {
   onView?: (view: ModelView | null) => void;
 }
 
-/** Colours from the theme's CSS custom properties (see styles.css, `.model-host`). */
+/** Colours from the theme's tokens (tokens.css, `--c-model-*`), as plain colour strings. */
 export function themeColors(el: Element): Partial<ModelViewStyle> {
   const css = getComputedStyle(el);
   const read = (name: string) => css.getPropertyValue(name).trim() || undefined;
   const colors: Partial<ModelViewStyle> = {};
-  const background = read("--model-bg");
-  const yarn = read("--model-yarn");
-  const highlight = read("--model-highlight");
-  const grid = read("--model-grid");
+  const background = read("--c-model-bg");
+  const yarn = read("--c-model-yarn");
+  const highlight = read("--c-model-highlight");
+  const grid = read("--c-model-grid");
   if (background) colors.background = background;
   if (yarn) colors.yarn = yarn;
   if (highlight) colors.highlight = highlight;
   if (grid) colors.grid = grid;
   return colors;
+}
+
+/**
+ * Calls `onChange` whenever the theme may have changed: the system colour scheme flips, or
+ * `data-theme` on <html> is set or removed (it forces dark/light, see tokens.css).
+ * Returns the unsubscribe function.
+ */
+export function watchTheme(
+  onChange: () => void,
+  root: Element | undefined = globalThis.document?.documentElement,
+): () => void {
+  const media = globalThis.matchMedia?.("(prefers-color-scheme: dark)");
+  media?.addEventListener?.("change", onChange);
+  const observer = root && typeof MutationObserver === "function" ? new MutationObserver(() => onChange()) : undefined;
+  if (root) observer?.observe(root, { attributes: true, attributeFilter: ["data-theme"] });
+  return () => {
+    media?.removeEventListener?.("change", onChange);
+    observer?.disconnect();
+  };
 }
 
 /** A click is a pointer that went down and up within this many pixels (else it was a drag). */
@@ -57,7 +76,7 @@ export default function ModelCanvas(props: ModelCanvasProps) {
 
   // Create the view once per mount, on a fresh canvas: a disposed view force-loses its WebGL
   // context, and a canvas keeps its (lost) context for good — StrictMode remounts would
-  // otherwise get a dead renderer. Follow the colour scheme.
+  // otherwise get a dead renderer. Follow the theme (system scheme or data-theme).
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
@@ -77,11 +96,9 @@ export default function ModelCanvas(props: ModelCanvasProps) {
     }
     viewRef.current = view;
     callbacks.current.onView?.(view);
-    const media = globalThis.matchMedia?.("(prefers-color-scheme: dark)");
-    const onScheme = () => view.setStyle(themeColors(host));
-    media?.addEventListener?.("change", onScheme);
+    const unwatch = watchTheme(() => view.setStyle(themeColors(host)));
     return () => {
-      media?.removeEventListener?.("change", onScheme);
+      unwatch();
       callbacks.current.onView?.(null);
       viewRef.current = null;
       view.dispose();
