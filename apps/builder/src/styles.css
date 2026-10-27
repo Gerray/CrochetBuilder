@@ -750,15 +750,7 @@ input[aria-invalid="true"] {
   font-weight: 600;
   color: var(--text);
 }
-.model-stage.is-stale .model-error {
-  pointer-events: auto;
-}
-.model-error-actions {
-  display: flex;
-  gap: 8px;
-  margin-top: 6px;
-}
-.model-message-title {
+.model-stage.is-stale .model-message-title {
   font-size: 1em;
   color: inherit;
 }
