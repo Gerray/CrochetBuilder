@@ -64,6 +64,7 @@ export {
   anchorsConsumed,
   consumesOfAtom,
   isRingRow,
+  checkEmptyRepeats,
 } from "./validate.js";
 export type { Finding, FindingCode, ValidateOptions } from "./validate.js";
 
@@ -93,3 +94,47 @@ export type { MeshData, MeshOptions, MeshStyle } from "./mesh.js";
 
 export { buildModel } from "./model.js";
 export type { Model, ModelOptions } from "./model.js";
+
+export {
+  renderOp,
+  renderOps,
+  renderRow,
+  rowLabel,
+  parseRowText,
+  resolveStitchTerm,
+  resolveModTerm,
+  stitchVocabulary,
+  countWorkedStitches,
+  opsWithinLimits,
+  modifierAllowed,
+  normalizeModifiers,
+  MAX_COUNT,
+  MAX_TIMES,
+  MAX_ROW_STITCHES,
+  MAX_STITCH_COUNT_TARGET,
+  NOTATION_LOCALES,
+  STITCH_ABBREVIATIONS,
+  STITCH_NAMES,
+  MOD_ABBREVIATIONS,
+  MOD_NAMES,
+} from "./notation.js";
+export type { NotationLocale, ParseRowResult, ParseRowErrorCode } from "./notation.js";
+
+export {
+  MaterialKindSchema,
+  MaterialSchema,
+  NotationLocaleSchema,
+  BuilderPartSchema,
+  BuilderOverviewSchema,
+  RenderedRowsSchema,
+  BuilderExportSchema,
+  renderedRows,
+} from "./export.js";
+export type {
+  MaterialKind,
+  Material,
+  BuilderPart,
+  BuilderOverview,
+  RenderedRows,
+  BuilderExport,
+} from "./export.js";

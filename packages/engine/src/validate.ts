@@ -27,7 +27,8 @@ export type FindingCode =
   | "CONSUMES_OVERFLOW"
   | "CONSUMES_UNDERFLOW"
   | "NO_ANCHOR_ROW"
-  | "TOO_MANY_STITCHES";
+  | "TOO_MANY_STITCHES"
+  | "EMPTY_REPEAT";
 
 export interface Finding {
   rowId: string;
@@ -189,6 +190,33 @@ export interface ValidateOptions {
   maxStitches?: number;
 }
 
+function countEmptyRepeats(ops: readonly Op[]): number {
+  return ops.reduce(
+    (n, op) => (op.kind === "repeat" ? n + (op.ops.length === 0 ? 1 : countEmptyRepeats(op.ops)) : n),
+    0,
+  );
+}
+
+/**
+ * Repeat groups without ops (`6× ()`) — legal in the schema, contribute nothing, and are
+ * almost always an unfinished edit. One warning per affected row.
+ */
+export function checkEmptyRepeats(content: PartContent): Finding[] {
+  return content.rows.flatMap((row) => {
+    const empty = countEmptyRepeats(row.ops);
+    if (empty === 0) return [];
+    return [
+      {
+        rowId: row.id,
+        severity: "warning" as const,
+        code: "EMPTY_REPEAT" as const,
+        message: `Row contains ${empty} repeat group${empty === 1 ? "" : "s"} without stitches.`,
+        actual: empty,
+      },
+    ];
+  });
+}
+
 /**
  * All findings for a part, in document order (stitch-count findings first within a row).
  * An empty list means the part can be turned into a stitch graph.
@@ -199,7 +227,7 @@ export function validate(content: PartContent, opts: ValidateOptions = {}): Find
     opts.maxStitches !== undefined && Number.isFinite(opts.maxStitches)
       ? checkStitchBudget(content, opts.maxStitches)
       : [];
-  for (const f of [...checkStitchCounts(content), ...checkConsumes(content), ...budget]) {
+  for (const f of [...checkStitchCounts(content), ...checkConsumes(content), ...checkEmptyRepeats(content), ...budget]) {
     const list = byRow.get(f.rowId) ?? [];
     list.push(f);
     byRow.set(f.rowId, list);

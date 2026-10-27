@@ -8,6 +8,7 @@ import {
   consumesOfAtom,
   countPartAtoms,
   DEFAULT_MAX_STITCHES,
+  checkEmptyRepeats,
 } from "./validate.js";
 import { expandPart, expandRow } from "./expand.js";
 import { createRandom } from "./random.js";
@@ -235,5 +236,45 @@ describe("stitch budget", () => {
       },
     ]);
     expect(validate(big, { maxStitches: 30_000 }).map((f) => f.code)).not.toContain("TOO_MANY_STITCHES");
+  });
+});
+
+describe("checkEmptyRepeats", () => {
+  it("warns once per row with empty repeat groups", () => {
+    const content: PartContent = {
+      schemaVersion: 1,
+      rows: [
+        {
+          id: "a",
+          type: "round",
+          ops: [
+            { kind: "stitch", code: "MR", count: 1 },
+            { kind: "stitch", code: "SC", count: 6 },
+            { kind: "repeat", times: 6, ops: [] },
+          ],
+          stitchCountTarget: 6,
+        },
+        {
+          id: "b",
+          type: "round",
+          ops: [
+            {
+              kind: "repeat",
+              times: 2,
+              ops: [
+                { kind: "stitch", code: "INC", count: 3 },
+                { kind: "repeat", times: 2, ops: [] },
+              ],
+            },
+          ],
+          stitchCountTarget: 12,
+        },
+      ],
+    };
+    expect(checkEmptyRepeats(content).map((f) => [f.rowId, f.code, f.severity, f.actual])).toEqual([
+      ["a", "EMPTY_REPEAT", "warning", 1],
+      ["b", "EMPTY_REPEAT", "warning", 1],
+    ]);
+    expect(validate(content).map((f) => f.code)).toEqual(["EMPTY_REPEAT", "EMPTY_REPEAT"]);
   });
 });
