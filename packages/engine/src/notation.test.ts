@@ -381,7 +381,9 @@ describe("limits", () => {
       position: 0,
       limit: MAX_ROW_STITCHES,
     });
-    expect(performance.now() - started).toBeLessThan(100);
+    // Guards against expanding the repeats (that would take many seconds); the bound is
+    // loose so a busy CI machine cannot make it flaky.
+    expect(performance.now() - started).toBeLessThan(1000);
     expectOps("10× (999 fM)", [rep(10, [st("SC", 999)])]);
   });
 });
