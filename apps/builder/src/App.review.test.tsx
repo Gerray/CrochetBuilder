@@ -1,9 +1,12 @@
 // @vitest-environment jsdom
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { App } from "./App.js";
 import { demoDocument } from "./state/document.js";
 import { BACKUP_KEY, LS_KEY } from "./state/storage.js";
+
+// No WebGL in jsdom: the 3D view is replaced by a recording fake.
+vi.mock("./three/modelView.js", async () => (await import("./test/fakeModelView.js")).fakeModule);
 
 const textField = (n: number) => screen.findByLabelText(`Maschen von Runde ${n} als Text`) as Promise<HTMLInputElement>;
 const stored = () => JSON.parse(localStorage.getItem(LS_KEY) ?? "null") as { doc: { title: string } } | null;
