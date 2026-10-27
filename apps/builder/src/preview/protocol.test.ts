@@ -39,8 +39,10 @@ describe("PreviewComputer", () => {
     expect(m.rowIds).toEqual(["r1", "r2"]);
     // MR + 6 SC in round 1, 6 INC in round 2.
     expect(Array.from(m.nodeRow)).toEqual([0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1]);
-    expect(m.positions.length).toBe(3 * 13);
-    expect(m.nodeIndex.length).toBe(13);
+    // The surface is smoothed: more vertices than stitches, each mapped back to a stitch.
+    expect(m.nodeIndex.length).toBeGreaterThan(13);
+    expect(m.positions.length).toBe(3 * m.nodeIndex.length);
+    expect(Math.max(...m.nodeIndex)).toBeLessThan(13);
     expect(m.primitive).toBe("triangles");
     expect(m.size.width).toBeGreaterThan(0);
     expect(m.maxDiameter).toBeGreaterThan(0);

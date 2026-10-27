@@ -70,7 +70,7 @@ export interface PreviewModel {
  * normals so the yarn always lies in front of it.
  */
 export function backingOf(graph: StitchGraph): MeshBacking {
-  const surface = toMesh(graph, "surface");
+  const surface = toMesh(graph, "surface", { smooth: "auto" });
   const inset = 0.75 * stitchYarnRadius(graph.gauge);
   const positions = surface.positions;
   for (let i = 0; i < positions.length; i++) positions[i] = positions[i]! - inset * surface.normals[i]!;
@@ -139,7 +139,7 @@ export class PreviewComputer {
       const { graph } = model;
       if (graph.overBudget) return { id, kind: "overBudget", stitchCount: graph.stitchCount, maxStitches };
       if (graph.nodes.length === 0) return { id, kind: "empty" };
-      const mesh = toMesh(graph, req.style);
+      const mesh = toMesh(graph, req.style, { smooth: "auto" });
       return {
         id,
         kind: "model",
