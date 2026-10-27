@@ -26,7 +26,7 @@ const CONTENT: PartContent = {
 describe("nodeForCursor", () => {
   const g = buildGraph(CONTENT);
 
-  it("maps row id + atom offset to the node", () => {
+  it("maps row id + atom offset (index of the next stitch) to the node", () => {
     expect(nodeForCursor(g, { rowId: "r1", offset: 0 })).toBe(0); // the magic ring
     expect(g.nodes[nodeForCursor(g, { rowId: "r1", offset: 1 })!]!.code).toBe("SC");
     expect(nodeForCursor(g, { rowId: "r2", offset: 5 })).toBe(12);
@@ -41,11 +41,25 @@ describe("nodeForCursor", () => {
     }
   });
 
-  it("returns null where there is no stitch", () => {
+  it("follows TellmeCrochet's cursor: offset = stitches done, so it marks the next stitch", () => {
+    // Fresh row: nothing done yet → the row's first stitch.
+    expect(nodeForCursor(g, { rowId: "r2", offset: 0 })).toBe(7);
+    // Row done (offset === row length) → the row's last stitch, the one just finished.
+    expect(nodeForCursor(g, { rowId: "r2", offset: 6 })).toBe(12);
+    expect(nodeForCursor(g, { rowId: "r1", offset: 7 })).toBe(6);
+  });
+
+  it("clamps stale offsets into the row like TellmeCrochet's resolveCursor", () => {
+    expect(nodeForCursor(g, { rowId: "r2", offset: 99 })).toBe(12); // after an edit shortened the row
+    expect(nodeForCursor(g, { rowId: "r2", offset: -1 })).toBe(7);
+    expect(nodeForCursor(g, { rowId: "r2", offset: 1.5 })).toBe(8);
+  });
+
+  it("returns null where there is no stitch to mark", () => {
     expect(nodeForCursor(g, { rowId: "note", offset: 0 })).toBeNull(); // free instruction
+    expect(nodeForCursor(g, { rowId: "note", offset: 1 })).toBeNull(); // …also when it is done
     expect(nodeForCursor(g, { rowId: "nope", offset: 0 })).toBeNull();
-    expect(nodeForCursor(g, { rowId: "r2", offset: 6 })).toBeNull();
-    expect(nodeForCursor(g, { rowId: "r2", offset: -1 })).toBeNull();
-    expect(nodeForCursor(g, { rowId: "r2", offset: 1.5 })).toBeNull();
+    expect(nodeForCursor(g, { rowId: "r2", offset: NaN })).toBeNull();
+    expect(nodeForCursor(g, { rowId: "r2", offset: Infinity })).toBeNull();
   });
 });
