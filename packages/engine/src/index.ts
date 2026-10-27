@@ -138,3 +138,17 @@ export type {
   RenderedRows,
   BuilderExport,
 } from "./export.js";
+
+export {
+  encodeShare,
+  decodeShare,
+  readShareFragment,
+  buildTmcImportUrl,
+  buildViewerUrl,
+  ShareDecodeError,
+  SHARE_VERSION,
+  MAX_SHARE_JSON_BYTES,
+  MAX_SHARE_CHARS,
+  TMC_IMPORT_URL,
+} from "./share.js";
+export type { ShareDecodeErrorCode } from "./share.js";

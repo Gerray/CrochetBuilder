@@ -1,0 +1,114 @@
+// @vitest-environment jsdom
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { encodeShare, type BuilderExport } from "@crochetbuilder/engine";
+import { prepareExport } from "../export/prepare.js";
+import { demoDocument } from "../state/document.js";
+import { fakeViews } from "../test/fakeModelView.js";
+import { isEmbed, loadViewerData } from "./load.js";
+import { ViewerApp } from "./ViewerApp.js";
+
+vi.mock("../three/modelView.js", async () => (await import("../test/fakeModelView.js")).fakeModule);
+
+function ids() {
+  let n = 0;
+  return () => `row-${++n}`;
+}
+
+const ballExport = (): BuilderExport => prepareExport(demoDocument(ids(), "ball"));
+const BASE = "https://gerray.github.io/CrochetBuilder/viewer/";
+
+function at(search: string, hash: string) {
+  return { href: `${BASE}${search}${hash}`, search, hash };
+}
+
+beforeEach(() => {
+  fakeViews.reset();
+  localStorage.clear();
+});
+afterEach(() => {
+  cleanup();
+  document.documentElement.classList.remove("is-embed");
+});
+
+describe("loadViewerData", () => {
+  it("missing, broken, invalid and valid fragments", async () => {
+    expect(await loadViewerData("")).toEqual({ status: "missing" });
+    expect(await loadViewerData("#other=1")).toEqual({ status: "missing" });
+    expect(await loadViewerData("#data=v1.%%%")).toMatchObject({ status: "error", message: expect.stringMatching(/beschädigt/) });
+    expect(await loadViewerData("#data=v9.abc")).toMatchObject({ status: "error" });
+    const payload = await encodeShare(ballExport());
+    const ok = await loadViewerData(`#data=${payload}`);
+    expect(ok).toMatchObject({ status: "ready", payload });
+    if (ok.status === "ready") expect(ok.exp).toEqual(ballExport());
+  });
+
+  it("embed flag", () => {
+    expect(isEmbed("?embed=1")).toBe(true);
+    expect(isEmbed("?x=2&embed=true")).toBe(true);
+    expect(isEmbed("")).toBe(false);
+    expect(isEmbed("?embed=0")).toBe(false);
+  });
+});
+
+describe("ViewerApp", () => {
+  it("without data: German message and a link to the builder", async () => {
+    render(<ViewerApp location={at("", "")} />);
+    const alert = await screen.findByRole("alert");
+    expect(within(alert).getByRole("heading").textContent).toBe("Keine Anleitung im Link");
+    expect((within(alert).getByRole("link", { name: "Zum CrochetBuilder" }) as HTMLAnchorElement).href).toBe(
+      "https://gerray.github.io/CrochetBuilder/",
+    );
+  });
+
+  it("with broken data: German error", async () => {
+    render(<ViewerApp location={at("", "#data=v1.AAAAkaputt")} />);
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toMatch(/Anleitung konnte nicht geöffnet werden/);
+    expect(alert.textContent).toMatch(/beschädigt oder unvollständig/);
+  });
+
+  it("shows title, model, size, materials and all rows; links to TellmeCrochet and the builder", async () => {
+    const payload = await encodeShare(ballExport());
+    render(<ViewerApp location={at("", `#data=${payload}`)} />);
+    expect((await screen.findByRole("heading", { level: 1 })).textContent).toBe("Amigurumi-Ball");
+    await waitFor(() => expect(fakeViews.last?.mesh?.rowIds).toHaveLength(11));
+    expect(fakeViews.last?.style.showGrid).toBe(true);
+    const rows = within(screen.getByRole("list", { name: "Reihen" })).getAllByRole("listitem");
+    expect(rows).toHaveLength(11);
+    expect(rows[2]!.textContent).toBe("Runde 3: 6× (1 fM, 1 Zun) (18)");
+    expect(screen.getByText("Garn: Baumwollgarn DK (Weiß), ca. 10 g")).toBeTruthy();
+    expect(screen.getByText("Garn: DK (leicht) · Nadel: 3 mm")).toBeTruthy();
+    expect(screen.getByText("In Spiralrunden häkeln. Vor Runde 11 fest füllen.")).toBeTruthy();
+    expect((await screen.findByLabelText("Maße")).textContent).toMatch(/\d+,\d × \d+,\d × \d+,\d cm \(B × H × T\), max\. Ø/);
+    const tmc = screen.getByRole("link", { name: "In TellmeCrochet öffnen" }) as HTMLAnchorElement;
+    expect(tmc.href).toBe(`https://tellmecrochet.de/import#data=${payload}`);
+    const edit = screen.getByRole("link", { name: "Im Builder bearbeiten" }) as HTMLAnchorElement;
+    expect(edit.href).toBe(`https://gerray.github.io/CrochetBuilder/#data=${payload}`);
+    expect(document.title).toBe("Amigurumi-Ball – CrochetBuilder");
+    // Read-only: nothing is stored.
+    expect(localStorage.length).toBe(0);
+  });
+
+  it("embed mode: model, title and a small TellmeCrochet link — no rows, no toolbar", async () => {
+    const payload = await encodeShare(ballExport());
+    render(<ViewerApp location={at("?embed=1", `#data=${payload}`)} />);
+    await waitFor(() => expect(fakeViews.last?.mesh?.rowIds).toHaveLength(11));
+    expect(screen.getByText("Amigurumi-Ball")).toBeTruthy();
+    const tmc = screen.getByRole("link", { name: "In TellmeCrochet öffnen" }) as HTMLAnchorElement;
+    expect(tmc.target).toBe("_blank");
+    expect(screen.queryByRole("list", { name: "Reihen" })).toBeNull();
+    expect(screen.queryByRole("radiogroup", { name: "Darstellung" })).toBeNull();
+    expect(screen.queryByRole("link", { name: "Im Builder bearbeiten" })).toBeNull();
+    expect(fakeViews.last?.style.showGrid).toBe(false);
+    expect(document.documentElement.classList.contains("is-embed")).toBe(true);
+  });
+
+  it("without WebGL the page still shows the pattern", async () => {
+    fakeViews.webgl = false;
+    const payload = await encodeShare(ballExport());
+    render(<ViewerApp location={at("", `#data=${payload}`)} />);
+    await screen.findByText("3D-Ansicht nicht verfügbar");
+    expect(within(screen.getByRole("list", { name: "Reihen" })).getAllByRole("listitem")).toHaveLength(11);
+  });
+});
