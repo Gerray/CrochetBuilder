@@ -41,6 +41,7 @@ Keep the repository's `.npmrc` — it works around an npm 10.9 bug with Vitest 4
 | `npm run build` | Production build of the builder (incl. viewer) into `apps/builder/dist` |
 | `npm run preview` | Serves that build locally |
 | `npm run check` | typecheck + test + build — run this before opening a pull request |
+| `npm run e2e` | End-to-end tests in headless Chromium (see below) |
 
 Run a single test file, or only tests whose name matches:
 
@@ -59,6 +60,26 @@ npx vitest run -t "stitch count"
 - Engine tests live next to the code (`foo.ts` → `foo.test.ts`). App tests use
   Testing Library with jsdom; the 3D view is replaced by a fake in tests.
 - Something without a test is not finished.
+
+### End-to-end tests
+
+A small Playwright suite in `e2e/` drives the real app in headless Chromium: typing a
+pattern, validation, saving across a reload, JSON/PDF export and import, share links, the
+viewer and its embed mode. It runs against the production build, served by `vite preview`
+under `/CrochetBuilder/` like on GitHub Pages.
+
+```bash
+npx playwright install chromium   # once, downloads the browser
+npm run e2e                       # builds, serves on port 4179, runs all tests
+E2E_SKIP_BUILD=1 npm run e2e      # reuse an existing apps/builder/dist (PowerShell: $env:E2E_SKIP_BUILD=1)
+```
+
+Use roles, labels and visible German text as selectors (`getByRole`, `getByLabel`), not CSS
+classes or test ids. Assert the 3D view by its reported size in cm and by the canvas being
+there — never by screenshots. Every test fails on a console error or an uncaught exception.
+On failure, traces and screenshots land in `e2e/test-results/`; `npx playwright show-report
+e2e/playwright-report` opens the report. CI runs the suite on every pull request and before
+each deployment.
 
 ### Where things live
 
