@@ -282,7 +282,7 @@ describe("share URLs", () => {
 
   it("returns the canonical payload: trimmed (also %-encoded and Unicode whitespace), without padding", async () => {
     const payload = await encodeShare(sphere());
-    for (const wrap of ["%20", "%0A", " ", "﻿", " ", " "]) {
+    for (const wrap of ["%20", "%0A", "\u00a0", "\ufeff", "\u2028", " "]) {
       expect(readShareFragment(`#data=${wrap}${payload}${wrap}`), JSON.stringify(wrap)).toBe(payload);
     }
     expect(readShareFragment("#data=v1.abc==")).toBe("v1.abc");
