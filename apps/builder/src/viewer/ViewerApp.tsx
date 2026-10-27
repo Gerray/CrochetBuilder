@@ -14,8 +14,9 @@ export interface ViewerAppProps {
 }
 
 const STYLES: Array<[MeshStyle, string]> = [
-  ["tube", "Garn"],
+  ["stitches", "Maschen"],
   ["surface", "Fläche"],
+  ["tube", "Garn"],
   ["points", "Punkte"],
 ];
 
@@ -141,7 +142,7 @@ function ViewerModel({
   previewOptions: PreviewOptions | undefined;
   loadView: ViewLoader;
 }) {
-  const [style, setStyle] = useState<MeshStyle>("tube");
+  const [style, setStyle] = useState<MeshStyle>("stitches");
   const [resetToken, setResetToken] = useState(0);
   const [webgl, setWebgl] = useState(true);
   const [attempt, setAttempt] = useState(0);

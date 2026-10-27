@@ -70,13 +70,43 @@ const SOURCE_TEXT = {
 } as const;
 
 const STYLES: Array<[MeshStyle, string, string]> = [
+  ["stitches", "Maschen", "Jede Masche aus Garn – Maschenköpfe, Beinchen und Löcher wie im echten Häkelstück"],
   ["surface", "Fläche", "Das Teil als geschlossene Fläche"],
   ["tube", "Garn", "Der Faden als Schlauch entlang des Arbeitswegs"],
   ["points", "Punkte", "Ein Punkt pro Masche"],
 ];
+const STYLE_VALUES = STYLES.map(([value]) => value);
+export const DEFAULT_PREVIEW_STYLE: MeshStyle = "stitches";
 
-const STYLE_KEY = "crochetbuilder:preview-style";
+/** Remembered style. Before "Maschen" existed it was kept under `LEGACY_STYLE_KEY`. */
+export const STYLE_KEY = "crochetbuilder:preview-style-v2";
+export const LEGACY_STYLE_KEY = "crochetbuilder:preview-style";
 const GRID_KEY = "crochetbuilder:preview-grid";
+const BACKING_KEY = "crochetbuilder:preview-backing";
+/** Opacity of the fabric behind the stitches when "Fläche dahinter" is on. */
+export const BACKING_OPACITY = 0.45;
+
+/**
+ * The style to start with: the remembered one; otherwise a deliberate old choice ("Fläche",
+ * "Punkte") carries over, while the old default "Garn" moves to the new default "Maschen".
+ */
+export function initialPreviewStyle(): MeshStyle {
+  try {
+    const store = globalThis.localStorage;
+    if (!store) return DEFAULT_PREVIEW_STYLE;
+    const current = store.getItem(STYLE_KEY);
+    if (STYLE_VALUES.includes(current as MeshStyle)) return current as MeshStyle;
+    const legacy = store.getItem(LEGACY_STYLE_KEY);
+    const style: MeshStyle = legacy === "surface" || legacy === "points" ? legacy : DEFAULT_PREVIEW_STYLE;
+    if (legacy !== null) {
+      store.setItem(STYLE_KEY, style);
+      store.removeItem(LEGACY_STYLE_KEY);
+    }
+    return style;
+  } catch {
+    return DEFAULT_PREVIEW_STYLE;
+  }
+}
 
 function readSetting<T extends string>(key: string, allowed: readonly T[], fallback: T): T {
   try {
@@ -148,10 +178,9 @@ export function PreviewPane({
   loadView = loadModelCanvas,
 }: PreviewPaneProps) {
   const resolved = resolveGauge(gauge);
-  const [style, setStyle] = useState<MeshStyle>(() =>
-    readSetting<MeshStyle>(STYLE_KEY, ["surface", "tube", "points"], "tube"),
-  );
+  const [style, setStyle] = useState<MeshStyle>(initialPreviewStyle);
   const [showGrid, setShowGrid] = useState(() => readSetting(GRID_KEY, ["on", "off"], "on") === "on");
+  const [showBacking, setShowBacking] = useState(() => readSetting(BACKING_KEY, ["on", "off"], "off") === "on");
   const [resetToken, setResetToken] = useState(0);
   const [webgl, setWebgl] = useState(true);
   // A new attempt gets a fresh lazy component: React.lazy caches a rejected import forever.
@@ -205,6 +234,22 @@ export function PreviewPane({
               </button>
             ))}
           </div>
+          {style === "stitches" && (
+            <button
+              type="button"
+              className="btn btn-small"
+              aria-pressed={showBacking}
+              title="Die Fläche des Teils halbtransparent hinter den Maschen zeigen – die Form liest sich leichter"
+              onClick={() => {
+                setShowBacking((b) => {
+                  writeSetting(BACKING_KEY, b ? "off" : "on");
+                  return !b;
+                });
+              }}
+            >
+              Fläche dahinter
+            </button>
+          )}
           <button
             type="button"
             className="btn btn-small"
@@ -244,6 +289,7 @@ export function PreviewPane({
                     highlightRowId={selectedRowId}
                     dimmed={stale}
                     showGrid={showGrid}
+                    backing={style === "stitches" && showBacking ? BACKING_OPACITY : 0}
                     resetToken={resetToken}
                     onPickRow={onSelectRow}
                     onUnavailable={onUnavailable}

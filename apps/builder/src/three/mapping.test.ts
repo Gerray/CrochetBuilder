@@ -2,10 +2,12 @@ import { describe, expect, it } from "vitest";
 import { buildModel, toMesh, type PartContent } from "@crochetbuilder/engine";
 import { nodeRows } from "../preview/protocol.js";
 import {
+  choosePick,
   flatAxis,
   frameCamera,
   gridPlacement,
   meshBounds,
+  pickFromBacking,
   pickFromHit,
   rowIndexOf,
   vertexColors,
@@ -75,6 +77,27 @@ describe("picking", () => {
   it("maps a points hit by its vertex index", () => {
     const points: ViewMesh = { ...MESH, primitive: "points" };
     expect(pickFromHit(points, { point: { x: 0, y: 0, z: 0 }, index: 1 })).toEqual({ rowId: "a", node: 1 });
+  });
+
+  it("maps a backing hit to its nearest node (vertex = node)", () => {
+    const withBacking: ViewMesh = {
+      ...MESH,
+      backing: { positions: MESH.positions.slice(0, 9), normals: MESH.normals.slice(0, 9), indices: new Uint32Array([0, 1, 2]) },
+    };
+    expect(pickFromBacking(withBacking, { point: { x: 1, y: 8, z: 0 }, face: { a: 0, b: 1, c: 2 } })).toEqual({ rowId: "b", node: 2 });
+    expect(pickFromBacking(MESH, { point: { x: 1, y: 8, z: 0 }, face: { a: 0, b: 1, c: 2 } })).toBeNull();
+  });
+
+  it("trusts the yarn unless the ray went through a hole (backing clearly nearer)", () => {
+    const front = { pick: { rowId: "a", node: 0 }, distance: 100 };
+    const far = { pick: { rowId: "b", node: 2 }, distance: 160 };
+    const surfaceNear = { pick: { rowId: "a", node: 1 }, distance: 101 };
+    const surfaceFront = { pick: { rowId: "a", node: 1 }, distance: 102 };
+    expect(choosePick(front, surfaceNear, 5)).toEqual(front.pick); // yarn in front of the fabric
+    expect(choosePick(far, surfaceFront, 5)).toEqual(surfaceFront.pick); // through a hole
+    expect(choosePick(null, surfaceFront, 5)).toEqual(surfaceFront.pick); // hole of a flat piece
+    expect(choosePick(far, null, 5)).toEqual(far.pick);
+    expect(choosePick(null, null, 5)).toBeNull();
   });
 
   it("returns null for hits it cannot map", () => {

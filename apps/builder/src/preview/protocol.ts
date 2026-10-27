@@ -11,13 +11,18 @@ import {
   buildModel,
   DEFAULT_MAX_STITCHES,
   isInstructionRow,
+  stitchYarnRadius,
   toMesh,
   type Gauge,
   type MeshStyle,
   type Model,
   type PartContent,
   type Size,
+  type StitchGraph,
 } from "@crochetbuilder/engine";
+import type { MeshBacking } from "../three/mapping.js";
+
+export type { MeshBacking };
 
 /** Main thread → worker. */
 export interface PreviewRequest {
@@ -56,6 +61,20 @@ export interface PreviewModel {
   stitchCount: number;
   stitchWidthMm: number;
   yarnDiameterMm: number;
+  /** `"stitches"` style: the fabric surface behind the lattice (picking, faint backing). */
+  backing?: MeshBacking;
+}
+
+/**
+ * The fabric surface behind the stitch lattice, moved back by about a yarn radius along its
+ * normals so the yarn always lies in front of it.
+ */
+export function backingOf(graph: StitchGraph): MeshBacking {
+  const surface = toMesh(graph, "surface");
+  const inset = 0.75 * stitchYarnRadius(graph.gauge);
+  const positions = surface.positions;
+  for (let i = 0; i < positions.length; i++) positions[i] = positions[i]! - inset * surface.normals[i]!;
+  return { positions, normals: surface.normals, indices: surface.indices };
 }
 
 /** Worker → main thread. */
@@ -71,7 +90,9 @@ export type PreviewResult =
 export function transferablesOf(result: PreviewResult): ArrayBuffer[] {
   if (result.kind !== "model") return [];
   const m = result.model;
-  return [m.positions, m.normals, m.indices, m.nodeIndex, m.nodeRow].map((a) => a.buffer as ArrayBuffer);
+  const arrays = [m.positions, m.normals, m.indices, m.nodeIndex, m.nodeRow];
+  if (m.backing) arrays.push(m.backing.positions, m.backing.normals, m.backing.indices);
+  return arrays.map((a) => a.buffer as ArrayBuffer);
 }
 
 /** Row of every node as an index into the list of row ids. */
@@ -136,6 +157,7 @@ export class PreviewComputer {
           stitchCount: graph.stitchCount,
           stitchWidthMm: graph.gauge.stitchWidthMm,
           yarnDiameterMm: graph.gauge.yarnDiameterMm,
+          ...(req.style === "stitches" ? { backing: backingOf(graph) } : {}),
         },
       };
     } catch (err) {

@@ -103,6 +103,33 @@ describe("PreviewComputer", () => {
     expect(buffers).toHaveLength(5);
     expect(new Set(buffers).size).toBe(5);
     expect(transferablesOf({ id: 1, kind: "empty" })).toEqual([]);
+    // The stitch lattice carries its backing surface, also transferred.
+    const stitches = transferablesOf(new PreviewComputer().compute(req(2, DISC, "stitches")));
+    expect(stitches).toHaveLength(8);
+    expect(new Set(stitches).size).toBe(8);
+  });
+
+  it("gives the stitch lattice a backing surface just behind the yarn, one vertex per stitch", () => {
+    const c = new PreviewComputer();
+    const r = c.compute(req(1, DISC, "stitches"));
+    const s = c.compute(req(2, DISC, "surface"));
+    if (r.kind !== "model" || s.kind !== "model") throw new Error("expected models");
+    expect(r.model.style).toBe("stitches");
+    expect(s.model.backing).toBeUndefined();
+    const b = r.model.backing!;
+    expect(b.positions.length).toBe(s.model.positions.length);
+    expect(Array.from(b.indices)).toEqual(Array.from(s.model.indices));
+    // Moved back along the fabric normal by less than a yarn diameter.
+    for (let v = 0; v < b.positions.length / 3; v++) {
+      let along = 0, off = 0;
+      for (let k = 0; k < 3; k++) {
+        const d = b.positions[3 * v + k]! - s.model.positions[3 * v + k]!;
+        along += d * s.model.normals[3 * v + k]!;
+        off += d * d;
+      }
+      expect(along).toBeLessThan(0);
+      expect(Math.sqrt(off)).toBeLessThan(r.model.yarnDiameterMm);
+    }
   });
 });
 

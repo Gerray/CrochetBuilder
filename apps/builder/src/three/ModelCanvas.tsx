@@ -17,6 +17,8 @@ export interface ModelCanvasProps {
   highlightRowId: string | null;
   dimmed: boolean;
   showGrid: boolean;
+  /** Opacity of the faint fabric behind the stitch lattice (0 = off; default 0). */
+  backing?: number;
   /** Changing this number frames the model again ("Ansicht zurücksetzen"). */
   resetToken: number;
   onPickRow: (rowId: string) => void;
@@ -46,7 +48,7 @@ export function themeColors(el: Element): Partial<ModelViewStyle> {
 const CLICK_SLOP = 5;
 
 export default function ModelCanvas(props: ModelCanvasProps) {
-  const { mesh, highlightRowId, dimmed, showGrid, resetToken } = props;
+  const { mesh, highlightRowId, dimmed, showGrid, resetToken, backing = 0 } = props;
   const hostRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<ModelView | null>(null);
   const callbacks = useRef(props);
@@ -64,7 +66,7 @@ export default function ModelCanvas(props: ModelCanvasProps) {
     host.prepend(canvas);
     let view: ModelView;
     try {
-      view = createModelView(canvas, { style: { ...themeColors(host), dimmed, showGrid } });
+      view = createModelView(canvas, { style: { ...themeColors(host), dimmed, showGrid, backing } });
     } catch (err) {
       canvas.remove();
       if (err instanceof WebGLUnavailableError) {
@@ -91,7 +93,7 @@ export default function ModelCanvas(props: ModelCanvasProps) {
 
   useEffect(() => viewRef.current?.setMesh(mesh), [mesh]);
   useEffect(() => viewRef.current?.setHighlight(highlightRowId), [highlightRowId, mesh]);
-  useEffect(() => viewRef.current?.setStyle({ dimmed, showGrid }), [dimmed, showGrid]);
+  useEffect(() => viewRef.current?.setStyle({ dimmed, showGrid, backing }), [dimmed, showGrid, backing]);
   useEffect(() => {
     if (resetToken > 0) viewRef.current?.resetView();
   }, [resetToken]);
