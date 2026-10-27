@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Try CrochetBuilder in your browser
+    url: https://gerray.github.io/CrochetBuilder/
+    about: The current version, nothing to install.
+  - name: Contributing guide and scope
+    url: https://github.com/Gerray/CrochetBuilder/blob/main/CONTRIBUTING.md
+    about: What fits the project, and how to work on it.

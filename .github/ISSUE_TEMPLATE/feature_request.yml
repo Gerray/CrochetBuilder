@@ -1,0 +1,32 @@
+name: Feature request
+description: Suggest an idea for the builder, the viewer or the engine.
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please check the roadmap in the README and the scope notes in CONTRIBUTING.md first —
+        some things are deliberately out of scope.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+      description: Describe the pattern or design task, and where CrochetBuilder gets in the way.
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would help?
+      description: Your idea of a solution. Sketches or example patterns are welcome.
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: How do you handle it today?
+      description: Workarounds, other tools, how the pattern is usually written.
+  - type: checkboxes
+    id: contribute
+    attributes:
+      label: Contributing
+      options:
+        - label: I would like to work on this myself.
