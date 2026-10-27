@@ -2,7 +2,8 @@ import { describe, it, expect } from "vitest";
 import { buildModel } from "./model.js";
 import { buildGraph } from "./graph.js";
 import { relax } from "./relax.js";
-import { measure, maxRoundDiameter } from "./measure.js";
+import { measure, maxRoundDiameter, measureRounds } from "./measure.js";
+import type { Gauge } from "./gauge.js";
 import type { Op, PartContent, StitchCode } from "./schema.js";
 
 const st = (code: StitchCode, count = 1): Op => ({ kind: "stitch", code, count });
@@ -67,4 +68,47 @@ describe("buildModel", () => {
     expect(Array.from(a.graph.positions)).toEqual(Array.from(b.graph.positions));
     expect(buildModel(CUP, { stitchesPer10cm: 10 }).estimated).toBe(false);
   });
+});
+
+/** Magic ring with `n` sc, then `n` evenly spaced increases in every round. */
+function disc(n: number, rounds: number): PartContent {
+  const rows: PartContent["rows"] = [{ id: "r1", type: "round", ops: [st("MR"), st("SC", n)], stitchCountTarget: n }];
+  for (let k = 2; k <= rounds; k++) {
+    const ops: Op[] = k === 2 ? [st("INC", n)] : [{ kind: "repeat", times: n, ops: [st("SC", k - 2), st("INC")] }];
+    rows.push({ id: `r${k}`, type: "round", ops, stitchCountTarget: n * k });
+  }
+  return { schemaVersion: 1, rows };
+}
+
+/** Angle (degrees) by which the outer rounds rise out of the plane of round 1. */
+function edgeRise(content: PartContent, gauge: Gauge): number {
+  const rounds = measureRounds(buildModel(content, gauge).graph);
+  const c0 = rounds[0]!.center;
+  const a = rounds[rounds.length - 4]!;
+  const b = rounds[rounds.length - 1]!;
+  const axis = b.center.map((v, i) => v - c0[i]!);
+  const len = Math.hypot(...axis);
+  const along = (c: number[]) => (len === 0 ? 0 : c.reduce((s, v, i) => s + (v - c0[i]!) * axis[i]!, 0) / len);
+  return (Math.atan2(along(b.center) - along(a.center), (b.diameter - a.diameter) / 2) * 180) / Math.PI;
+}
+
+describe("increases per round and cone angle", () => {
+  // A disc with n increases per round is a cone whose rounds grow by n·w/(2π) in radius
+  // per row of height h, so it rises out of the plane by arccos(n / n₀) with
+  // n₀ = 2π·h/w, the increase count that lies flat.
+  const cases: [string, Gauge, number[]][] = [
+    ["default gauge (h ≈ 0.95 w, flat at 6)", {}, [4, 5, 6]],
+    ["tall stitches (h = 1.25 w, flat at 8)", { stitchesPer10cm: 20, rowsPer10cm: 16 }, [5, 6, 8]],
+  ];
+  for (const [label, gauge, counts] of cases) {
+    it(`follows arccos(n / n₀) for ${label}`, () => {
+      const stitches = gauge.stitchesPer10cm ?? 20;
+      const rows = gauge.rowsPer10cm ?? 21;
+      const flat = (2 * Math.PI * stitches) / rows;
+      for (const n of counts) {
+        const expected = (Math.acos(Math.min(1, n / flat)) * 180) / Math.PI;
+        expect(Math.abs(edgeRise(disc(n, 10), gauge) - expected)).toBeLessThan(5);
+      }
+    });
+  }
 });
