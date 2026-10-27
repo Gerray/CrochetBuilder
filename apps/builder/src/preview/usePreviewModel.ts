@@ -23,6 +23,11 @@ export interface PreviewState {
   computing: boolean;
   overBudget?: { stitchCount: number; maxStitches: number };
   error?: string;
+  /**
+   * The model is computed on the main thread (no Worker): a smaller stitch budget applies
+   * (`MAIN_THREAD_MAX_STITCHES`).
+   */
+  mainThread?: boolean;
 }
 
 export const INITIAL_PREVIEW: PreviewState = { status: "pending", model: null, computing: true };
@@ -88,9 +93,17 @@ export function usePreviewModel(
         scheduled.current = false;
         const client = clientRef.current;
         if (!client) return;
-        void client.compute({ content, gauge, style }).then((result) => {
-          if (result) setState((s) => applyResult(s, result, scheduled.current || client.busy));
-        });
+        client
+          .compute({ content, gauge, style })
+          .then((result) => {
+            if (!result) return;
+            const mainThread = client.degraded;
+            setState((s) => ({ ...applyResult(s, result, scheduled.current || client.busy), ...(mainThread ? { mainThread } : {}) }));
+          })
+          .catch((err: unknown) => {
+            // compute() does not reject; a throwing state update must not go unhandled.
+            console.error(err);
+          });
       },
       edited ? debounceMs : 0,
     );

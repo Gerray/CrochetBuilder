@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { buildModel, type PartContent, type Row } from "@crochetbuilder/engine";
 import {
+  geometryKey,
   mainThreadBackend,
   PreviewClient,
   PreviewComputer,
@@ -71,6 +72,31 @@ describe("PreviewComputer", () => {
     expect(build).toHaveBeenCalledTimes(2);
   });
 
+  it("caches by geometry only: labels, notes and targets do not relax again", () => {
+    const build = vi.fn(buildModel);
+    const c = new PreviewComputer(build);
+    c.compute(req(1));
+    const relabelled: PartContent = {
+      ...DISC,
+      rows: DISC.rows.map((r) => ({ ...r, label: "Boden", note: "Faden markieren", stitchCountTarget: 99 })),
+    };
+    c.compute(req(2, relabelled));
+    expect(build).toHaveBeenCalledTimes(1);
+    c.compute({ ...req(3), gauge: { stitchesPer10cm: 18 } });
+    expect(build).toHaveBeenCalledTimes(2);
+  });
+
+  it("geometryKey tells instruction rows from empty stitch rows and ignores texts", () => {
+    const empty: PartContent = { schemaVersion: 1, rows: [row("x", [], 0)] };
+    const note: PartContent = { schemaVersion: 1, rows: [{ ...row("x", [], 0), note: "Augen einsetzen" }] };
+    const otherNote: PartContent = { schemaVersion: 1, rows: [{ ...row("x", [], 0), note: "Füllen" }] };
+    expect(geometryKey(empty, undefined, 10)).not.toBe(geometryKey(note, undefined, 10));
+    expect(geometryKey(note, undefined, 10)).toBe(geometryKey(otherNote, undefined, 10));
+    expect(geometryKey(DISC, undefined, 10)).not.toBe(geometryKey(DISC, undefined, 11));
+    const turned: PartContent = { ...DISC, rows: DISC.rows.map((r) => ({ ...r, type: "row" as const })) };
+    expect(geometryKey(DISC, undefined, 10)).not.toBe(geometryKey(turned, undefined, 10));
+  });
+
   it("lists every buffer of a model result for transfer, none otherwise", () => {
     const result = new PreviewComputer().compute(req(1));
     const buffers = transferablesOf(result);
@@ -133,16 +159,105 @@ describe("PreviewClient", () => {
     expect(await p).toEqual({ id: 1, kind: "empty" });
   });
 
-  it("falls back once when the backend fails and re-sends the pending request", async () => {
+  it("falls back once when the backend fails and re-sends the pending request with the smaller budget", async () => {
     const primary = manualBackend();
     const fallback = manualBackend();
-    const client = new PreviewClient(primary.factory, fallback.factory);
+    const onFallback = vi.fn();
+    const client = new PreviewClient(primary.factory, {
+      fallback: fallback.factory,
+      fallbackMaxStitches: 5000,
+      onFallback,
+    });
     const p = client.compute(input);
+    expect(primary.posted[0]!.maxStitches).toBeUndefined();
+    expect(client.degraded).toBe(false);
     primary.fail(new Error("no worker"));
     expect(primary.disposed).toBe(1);
+    expect(onFallback).toHaveBeenCalledTimes(1);
+    expect(client.degraded).toBe(true);
+    expect(fallback.posted.map((r) => [r.id, r.maxStitches])).toEqual([[1, 5000]]);
+    fallback.reply(1);
+    expect(await p).toEqual({ id: 1, kind: "empty" });
+    // Later requests keep the smaller budget (never raise a smaller requested one).
+    void client.compute({ ...input, maxStitches: 100 });
+    expect(fallback.posted[1]!.maxStitches).toBe(100);
+  });
+
+  it("a main-thread primary has its own budget and reports degraded mode", () => {
+    const primary = manualBackend();
+    const client = new PreviewClient(primary.factory, { maxStitches: 5000, mainThread: true });
+    void client.compute(input);
+    expect(primary.posted[0]!.maxStitches).toBe(5000);
+    expect(client.degraded).toBe(true);
+  });
+
+  it("a throwing post (DataCloneError) fails over instead of wedging the client", async () => {
+    const fallback = manualBackend();
+    const throwing: BackendFactory = () => ({
+      post() {
+        throw new DOMException("could not be cloned", "DataCloneError");
+      },
+      dispose() {},
+    });
+    const client = new PreviewClient(throwing, { fallback: fallback.factory });
+    const p = client.compute(input);
     expect(fallback.posted.map((r) => r.id)).toEqual([1]);
     fallback.reply(1);
     expect(await p).toEqual({ id: 1, kind: "empty" });
+    expect(client.busy).toBe(false);
+  });
+
+  it("a throwing post without fallback resolves with an error, and the client stays usable", async () => {
+    const throwing: BackendFactory = () => ({
+      post() {
+        throw new Error("could not be cloned");
+      },
+      dispose() {},
+    });
+    const client = new PreviewClient(throwing);
+    expect(await client.compute(input)).toEqual({ id: 1, kind: "error", message: "could not be cloned" });
+    expect(await client.compute(input)).toEqual({ id: 2, kind: "error", message: "could not be cloned" });
+    expect(client.busy).toBe(false);
+  });
+
+  it("a backend that never answers is given up after the watchdog timeout", async () => {
+    vi.useFakeTimers();
+    try {
+      const silent = manualBackend();
+      const fallback = manualBackend();
+      const client = new PreviewClient(silent.factory, { fallback: fallback.factory, watchdogMs: 1000 });
+      const p = client.compute(input);
+      vi.advanceTimersByTime(999);
+      expect(fallback.posted).toHaveLength(0);
+      vi.advanceTimersByTime(1);
+      expect(silent.disposed).toBe(1);
+      expect(fallback.posted.map((r) => r.id)).toEqual([1]);
+      fallback.reply(1);
+      expect(await p).toEqual({ id: 1, kind: "empty" });
+      // An answered request clears the watchdog: no failover of the fallback.
+      vi.advanceTimersByTime(5000);
+      expect(fallback.disposed).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("the watchdog of a waiting request restarts when it is sent", () => {
+    vi.useFakeTimers();
+    try {
+      const backend = manualBackend();
+      const client = new PreviewClient(backend.factory, { watchdogMs: 1000 });
+      void client.compute(input);
+      void client.compute(input);
+      vi.advanceTimersByTime(900);
+      backend.reply(1); // sends request 2 and restarts the watchdog
+      vi.advanceTimersByTime(900);
+      expect(backend.disposed).toBe(0);
+      vi.advanceTimersByTime(100);
+      expect(backend.disposed).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("without a fallback, a failure answers with an error result", async () => {
@@ -185,6 +300,7 @@ describe("backends", () => {
       terminated: false,
       onmessage: null,
       onerror: null,
+      onmessageerror: null,
       postMessage(m) {
         this.sent.push(m);
       },
@@ -203,8 +319,11 @@ describe("backends", () => {
     fake.onerror?.({ message: "", preventDefault } as unknown as ErrorEvent);
     expect(preventDefault).toHaveBeenCalled();
     expect((failures[0] as Error).message).toBe("Worker konnte nicht starten");
+    fake.onmessageerror?.({} as MessageEvent);
+    expect((failures[1] as Error).message).toBe("Antwort der Vorschau-Berechnung unlesbar");
     backend.dispose();
     expect(fake.terminated).toBe(true);
     expect(fake.onmessage).toBeNull();
+    expect(fake.onmessageerror).toBeNull();
   });
 });

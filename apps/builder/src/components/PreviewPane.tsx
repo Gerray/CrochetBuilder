@@ -7,6 +7,7 @@ import {
   type MeshStyle,
   type PartContent,
 } from "@crochetbuilder/engine";
+import { MAIN_THREAD_MAX_STITCHES } from "../preview/protocol.js";
 import { usePreviewModel, type PreviewOptions, type PreviewState } from "../preview/usePreviewModel.js";
 import { displayRowLabels } from "../state/labels.js";
 import { findingMessage } from "../state/messages.js";
@@ -182,6 +183,11 @@ export function PreviewPane({ content, gauge, findings, selectedRowId, onSelectR
         </div>
 
         <Dimensions preview={preview} />
+        {preview.mainThread && (
+          <p className="model-note" title="Der Browser erlaubt hier keinen Hintergrund-Thread (Web Worker).">
+            Vorschau rechnet ohne Hintergrund-Thread – höchstens {count(MAIN_THREAD_MAX_STITCHES)} Maschen.
+          </p>
+        )}
       </section>
 
       <section className="preview-section" aria-label="Kennzahlen">

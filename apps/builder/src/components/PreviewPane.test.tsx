@@ -120,7 +120,9 @@ describe("PreviewPane", () => {
     };
     rerenderWith({ content: huge, findings: validate(huge, { maxStitches: 20000 }) });
     expect(await screen.findByText("Zu viele Maschen für die 3D-Vorschau")).toBeTruthy();
-    expect(screen.getByText(/Das Teil hat 29\.983 Maschen, die Vorschau zeigt höchstens 20\.000/)).toBeTruthy();
+    // jsdom has no Worker: the main-thread budget (5,000) applies and is explained.
+    expect(screen.getByText(/Das Teil hat 29\.983 Maschen, die Vorschau zeigt höchstens 5\.000/)).toBeTruthy();
+    expect(screen.getByText(/ohne Hintergrund-Thread – höchstens 5\.000 Maschen/)).toBeTruthy();
     expect(fakeViews.last!.style.dimmed).toBe(true);
     expect(fakeViews.last!.mesh!.rowIds).toEqual(["r1", "r2"]);
     expect(screen.getByText("(letzter Stand)")).toBeTruthy();
