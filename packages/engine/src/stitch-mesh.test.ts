@@ -58,14 +58,20 @@ function expectWellFormed(m: MeshData, g: StitchGraph) {
   expect(m.nodeIndex.length).toBe(verts);
   expect(m.indices.length % 3).toBe(0);
   expect(verts).toBeGreaterThan(0);
-  for (const v of m.positions) expect(Number.isFinite(v)).toBe(true);
+  // Plain loops, one assertion each: these meshes have tens of thousands of vertices.
+  expect(m.positions.every(Number.isFinite)).toBe(true);
   let maxIndex = 0;
   for (const i of m.indices) maxIndex = Math.max(maxIndex, i);
   expect(maxIndex).toBeLessThan(verts);
-  for (const v of m.nodeIndex) expect(v).toBeLessThan(g.nodes.length);
+  let maxNode = 0;
+  for (const v of m.nodeIndex) maxNode = Math.max(maxNode, v);
+  expect(maxNode).toBeLessThan(g.nodes.length);
+  let worstNormal = 0;
   for (let v = 0; v < verts; v++) {
-    expect(Math.hypot(m.normals[3 * v]!, m.normals[3 * v + 1]!, m.normals[3 * v + 2]!)).toBeCloseTo(1, 5);
+    const l = Math.hypot(m.normals[3 * v]!, m.normals[3 * v + 1]!, m.normals[3 * v + 2]!);
+    worstNormal = Math.max(worstNormal, Math.abs(l - 1));
   }
+  expect(worstNormal).toBeLessThan(1e-5);
   // Every stitch is drawn.
   expect(new Set(m.nodeIndex).size).toBe(g.nodes.length);
 }
@@ -164,6 +170,23 @@ describe("toMesh — stitches", () => {
       dz += def.positions[3 * s + 2]! / 6;
     }
     expect(Math.hypot(def.positions[0]! - dx, def.positions[1]! - dy, def.positions[2]! - dz)).toBeCloseTo(r, 4);
+  });
+
+  it("follows a yarn thickness typed in mm (resolved gauge)", () => {
+    for (const yarnDiameterMm of [1, 4]) {
+      const g = relax(buildGraph(SAMPLER, { yarnDiameterMm, stitchesPer10cm: 16 }));
+      expect(g.gauge.yarnDiameterMm).toBe(yarnDiameterMm);
+      const r = stitchYarnRadius(g.gauge);
+      expect(r).toBeCloseTo(Math.min(STITCH_YARN_SCALE * yarnDiameterMm / 2, STITCH_YARN_MAX_WIDTH * g.gauge.stitchWidthMm), 9);
+      const m = toMesh(g, "stitches");
+      let cx = 0, cy = 0, cz = 0;
+      for (let s = 0; s < 6; s++) {
+        cx += m.positions[3 * s]! / 6;
+        cy += m.positions[3 * s + 1]! / 6;
+        cz += m.positions[3 * s + 2]! / 6;
+      }
+      expect(Math.hypot(m.positions[0]! - cx, m.positions[1]! - cy, m.positions[2]! - cz)).toBeCloseTo(r, 4);
+    }
   });
 
   it("returns empty arrays for an empty graph", () => {
@@ -299,8 +322,8 @@ describe("stitch yarn — per stitch code", () => {
     expectWellFormed(toMesh(ring, "stitches"), ring);
     const squashed = { ...sphere, positions: new Float64Array(sphere.positions.length) };
     const m = toMesh(squashed, "stitches");
-    for (const v of m.positions) expect(Number.isFinite(v)).toBe(true);
-    for (const v of m.normals) expect(Number.isFinite(v)).toBe(true);
+    expect(m.positions.every(Number.isFinite)).toBe(true);
+    expect(m.normals.every(Number.isFinite)).toBe(true);
   });
 });
 
