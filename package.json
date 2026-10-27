@@ -10,7 +10,7 @@
   ],
   "scripts": {
     "start": "npm run dev --workspace @crochetbuilder/builder -- --open",
-    "dev": "npm run dev --workspace @crochetbuilder/builder",
+    "dev": "npm run dev --workspace @crochetbuilder/builder --",
     "build": "npm run build --workspace @crochetbuilder/builder",
     "preview": "npm run preview --workspace @crochetbuilder/builder -- --open",
     "test": "vitest run",
