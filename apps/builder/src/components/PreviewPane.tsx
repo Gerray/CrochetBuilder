@@ -19,6 +19,7 @@ import {
 import { MAIN_THREAD_MAX_STITCHES } from "../preview/protocol.js";
 import type { ModelCanvasProps } from "../three/ModelCanvas.js";
 import { usePreviewModel, type PreviewOptions, type PreviewState } from "../preview/usePreviewModel.js";
+import { sizeBasisText } from "../export/labels.js";
 import { displayRowLabels } from "../state/labels.js";
 import { findingMessage } from "../state/messages.js";
 
@@ -62,12 +63,6 @@ export interface PreviewPaneProps {
 const mm = (value: number) => value.toLocaleString("de-DE", { maximumFractionDigits: 1 });
 const cm = (valueMm: number) => (valueMm / 10).toLocaleString("de-DE", { minimumFractionDigits: 1, maximumFractionDigits: 1 });
 const count = (value: number) => value.toLocaleString("de-DE");
-
-const SOURCE_TEXT = {
-  swatch: "aus der Maschenprobe",
-  "yarn-weight": "geschätzt aus Garn und Nadel",
-  default: "Standardwerte (DK, 4 mm) – Garn oder Maschenprobe angeben",
-} as const;
 
 const STYLES: Array<[MeshStyle, string, string]> = [
   ["stitches", "Maschen", "Jede Masche aus Garn – Maschenköpfe, Beinchen und Löcher wie im echten Häkelstück"],
@@ -330,7 +325,7 @@ export function PreviewPane({
             </dd>
           </div>
         </dl>
-        <p className="muted small">Maschengröße {SOURCE_TEXT[resolved.source]}.</p>
+        <p className="muted small">{sizeBasisText(gauge)}.</p>
       </section>
 
       <section className="preview-section" aria-labelledby="findings-title">
