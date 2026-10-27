@@ -78,7 +78,8 @@ function expandOp(op: Op): RowStitch[] {
   }
   const body = op.ops.flatMap(expandOp);
   const out: RowStitch[] = [];
-  for (let i = 0; i < op.times; i++) out.push(...body);
+  // Element-wise: `out.push(...body)` overflows the call stack for very large bodies.
+  for (let i = 0; i < op.times; i++) for (let k = 0; k < body.length; k++) out.push(body[k]!);
   return out;
 }
 
@@ -86,6 +87,21 @@ function expandOp(op: Op): RowStitch[] {
 export function expandRow(row: Row): RowStitch[] {
   if (isInstructionRow(row)) return [{ code: INSTRUCTION_CODE }];
   return row.ops.flatMap(expandOp);
+}
+
+/** Atoms one op expands to, computed arithmetically (no expansion). */
+function countOpAtoms(op: Op): number {
+  if (op.kind === "stitch") return op.count;
+  return op.times * op.ops.reduce((sum, inner) => sum + countOpAtoms(inner), 0);
+}
+
+/**
+ * Number of atomic steps of a row — always equal to `expandRow(row).length`, but computed
+ * without expanding, so it is cheap even for absurdly large repeat counts.
+ */
+export function countRowAtoms(row: Row): number {
+  if (isInstructionRow(row)) return 1;
+  return row.ops.reduce((sum, op) => sum + countOpAtoms(op), 0);
 }
 
 /**
