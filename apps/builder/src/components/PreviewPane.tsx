@@ -1,4 +1,13 @@
-import { Component, lazy, Suspense, useCallback, useMemo, useState, type ReactNode } from "react";
+import {
+  Component,
+  lazy,
+  Suspense,
+  useCallback,
+  useMemo,
+  useState,
+  type ComponentType,
+  type ReactNode,
+} from "react";
 import {
   computeRowStitches,
   resolveGauge,
@@ -8,12 +17,26 @@ import {
   type PartContent,
 } from "@crochetbuilder/engine";
 import { MAIN_THREAD_MAX_STITCHES } from "../preview/protocol.js";
+import type { ModelCanvasProps } from "../three/ModelCanvas.js";
 import { usePreviewModel, type PreviewOptions, type PreviewState } from "../preview/usePreviewModel.js";
 import { displayRowLabels } from "../state/labels.js";
 import { findingMessage } from "../state/messages.js";
 
+/** The 3D view's code could not be fetched (e.g. an old chunk after a redeploy: 404). */
+export class ViewLoadError extends Error {
+  constructor(cause: unknown) {
+    super(cause instanceof Error ? cause.message : String(cause));
+    this.name = "ViewLoadError";
+  }
+}
+
+export type ViewLoader = () => Promise<{ default: ComponentType<ModelCanvasProps> }>;
+
 // Three.js is large: load the 3D view after the editor has painted.
-const ModelCanvas = lazy(() => import("../three/ModelCanvas.js"));
+const loadModelCanvas: ViewLoader = () =>
+  import("../three/ModelCanvas.js").catch((err: unknown) => {
+    throw new ViewLoadError(err);
+  });
 
 /**
  * Props of the right-hand pane: the live 3D preview of `content` (built off the main
@@ -32,6 +55,8 @@ export interface PreviewPaneProps {
   onSelectRow: (rowId: string) => void;
   /** Preview computation options (tests: a fake client, no debounce). */
   previewOptions?: PreviewOptions;
+  /** Loads the 3D view component (tests: a failing loader). */
+  loadView?: ViewLoader;
 }
 
 const mm = (value: number) => value.toLocaleString("de-DE", { maximumFractionDigits: 1 });
@@ -71,17 +96,57 @@ function writeSetting(key: string, value: string) {
 }
 
 /** Catches a failed lazy load or a crash inside the 3D view; the rest of the pane stays. */
-class ViewBoundary extends Component<{ children: ReactNode; fallback: ReactNode }, { failed: boolean }> {
-  state = { failed: false };
-  static getDerivedStateFromError() {
-    return { failed: true };
+class ViewBoundary extends Component<
+  { children: ReactNode; fallback: (error: unknown) => ReactNode },
+  { error: unknown; failed: boolean }
+> {
+  state = { error: null as unknown, failed: false };
+  static getDerivedStateFromError(error: unknown) {
+    return { error, failed: true };
   }
   render() {
-    return this.state.failed ? this.props.fallback : this.props.children;
+    return this.state.failed ? this.props.fallback(this.state.error) : this.props.children;
   }
 }
 
-export function PreviewPane({ content, gauge, findings, selectedRowId, onSelectRow, previewOptions }: PreviewPaneProps) {
+function reloadPage() {
+  globalThis.location.reload();
+}
+
+/** Message for a 3D view that failed to load or start, with a way to try again. */
+function ViewError({ error, onRetry }: { error: unknown; onRetry: () => void }) {
+  const chunk = error instanceof ViewLoadError;
+  return (
+    <div className="model-message model-error" role="alert">
+      <span className="model-message-title">3D-Ansicht konnte nicht geladen werden</span>
+      <span>
+        {chunk
+          ? "Vermutlich gibt es inzwischen eine neue Version. Lade die Seite neu – deine Anleitung bleibt gespeichert."
+          : `Fehler: ${error instanceof Error ? error.message : String(error)}`}
+      </span>
+      <span className="model-error-actions">
+        <button type="button" className="btn btn-small" onClick={onRetry}>
+          Erneut versuchen
+        </button>
+        {chunk && (
+          <button type="button" className="btn btn-small" onClick={reloadPage}>
+            Seite neu laden
+          </button>
+        )}
+      </span>
+    </div>
+  );
+}
+
+export function PreviewPane({
+  content,
+  gauge,
+  findings,
+  selectedRowId,
+  onSelectRow,
+  previewOptions,
+  loadView = loadModelCanvas,
+}: PreviewPaneProps) {
   const resolved = resolveGauge(gauge);
   const [style, setStyle] = useState<MeshStyle>(() =>
     readSetting<MeshStyle>(STYLE_KEY, ["surface", "tube", "points"], "tube"),
@@ -89,6 +154,10 @@ export function PreviewPane({ content, gauge, findings, selectedRowId, onSelectR
   const [showGrid, setShowGrid] = useState(() => readSetting(GRID_KEY, ["on", "off"], "on") === "on");
   const [resetToken, setResetToken] = useState(0);
   const [webgl, setWebgl] = useState(true);
+  // A new attempt gets a fresh lazy component: React.lazy caches a rejected import forever.
+  const [attempt, setAttempt] = useState(0);
+  const ModelCanvas = useMemo(() => lazy(loadView), [loadView, attempt]);
+  const retry = useCallback(() => setAttempt((a) => a + 1), []);
   const preview = usePreviewModel(content, gauge, style, previewOptions);
 
   const stats = useMemo(() => {
@@ -109,7 +178,11 @@ export function PreviewPane({ content, gauge, findings, selectedRowId, onSelectR
 
   const onUnavailable = useCallback(() => setWebgl(false), []);
   const stale = preview.status === "overBudget" || preview.status === "error";
-  const unavailable = <ModelMessage title="3D-Ansicht nicht verfügbar">Dein Browser kann hier kein WebGL anzeigen. Maße und Prüfung funktionieren trotzdem.</ModelMessage>;
+  const unavailable = (
+    <ModelMessage title="3D-Ansicht nicht verfügbar">
+      Dein Browser kann hier kein WebGL anzeigen. Maße und Prüfung funktionieren trotzdem.
+    </ModelMessage>
+  );
 
   return (
     <aside className="preview-pane" aria-label="Vorschau">
@@ -164,7 +237,7 @@ export function PreviewPane({ content, gauge, findings, selectedRowId, onSelectR
             unavailable
           ) : (
             preview.model && (
-              <ViewBoundary fallback={unavailable}>
+              <ViewBoundary key={attempt} fallback={(error) => <ViewError error={error} onRetry={retry} />}>
                 <Suspense fallback={<ModelMessage>Lade 3D-Ansicht …</ModelMessage>}>
                   <ModelCanvas
                     mesh={preview.model}

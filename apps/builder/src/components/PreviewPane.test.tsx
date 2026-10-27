@@ -4,7 +4,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { validate, type PartContent, type Row } from "@crochetbuilder/engine";
 import { fakeViews } from "../test/fakeModelView.js";
 import { PreviewClient, type BackendFactory } from "../preview/protocol.js";
-import { PreviewPane, type PreviewPaneProps } from "./PreviewPane.js";
+import { PreviewPane, ViewLoadError, type PreviewPaneProps } from "./PreviewPane.js";
 
 vi.mock("../three/modelView.js", async () => (await import("../test/fakeModelView.js")).fakeModule);
 
@@ -34,6 +34,17 @@ function renderPane(props: Partial<PreviewPaneProps> = {}) {
 }
 
 const status = () => screen.getByRole("status").textContent;
+
+/** React and jsdom report errors caught by an error boundary; keep the expected ones quiet. */
+function silenceExpectedErrors(): () => void {
+  const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+  const onError = (e: ErrorEvent) => e.preventDefault();
+  window.addEventListener("error", onError);
+  return () => {
+    window.removeEventListener("error", onError);
+    spy.mockRestore();
+  };
+}
 
 beforeEach(() => {
   fakeViews.reset();
@@ -137,6 +148,38 @@ describe("PreviewPane", () => {
     // Size and findings still work.
     expect(screen.getByLabelText("Maße")).toBeTruthy();
     expect(screen.getByText(/Keine Befunde/)).toBeTruthy();
+  });
+
+  it("a failed chunk load offers a retry and a reload, not the no-WebGL message", async () => {
+    const quiet = silenceExpectedErrors();
+    let calls = 0;
+    const loadView: PreviewPaneProps["loadView"] = async () => {
+      calls++;
+      if (calls === 1) throw new ViewLoadError(new TypeError("Failed to fetch dynamically imported module"));
+      return import("../three/ModelCanvas.js");
+    };
+    renderPane({ loadView });
+    expect(await screen.findByText("3D-Ansicht konnte nicht geladen werden")).toBeTruthy();
+    expect(screen.getByText(/Lade die Seite neu/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Seite neu laden" })).toBeTruthy();
+    expect(screen.queryByText("3D-Ansicht nicht verfügbar")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Erneut versuchen" }));
+    await waitFor(() => expect(fakeViews.last?.mesh).toBeTruthy());
+    expect(calls).toBe(2);
+    expect(screen.queryByText("3D-Ansicht konnte nicht geladen werden")).toBeNull();
+    quiet();
+  });
+
+  it("a crash while starting the view is an error with retry, not missing WebGL", async () => {
+    const quiet = silenceExpectedErrors();
+    fakeViews.failWith = new Error("kaputt");
+    renderPane();
+    expect(await screen.findByText("Fehler: kaputt")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Seite neu laden" })).toBeNull();
+    fakeViews.failWith = null;
+    fireEvent.click(screen.getByRole("button", { name: "Erneut versuchen" }));
+    await waitFor(() => expect(fakeViews.last?.mesh).toBeTruthy());
+    quiet();
   });
 
   it("disposes the view on unmount", async () => {

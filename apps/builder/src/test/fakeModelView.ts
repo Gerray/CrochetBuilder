@@ -21,9 +21,12 @@ export interface FakeView extends ModelView {
 
 export const fakeViews = {
   webgl: true,
+  /** When set, `createModelView` throws this (a start-up bug, not missing WebGL). */
+  failWith: null as Error | null,
   created: [] as FakeView[],
   reset() {
     this.webgl = true;
+    this.failWith = null;
     this.created = [];
   },
   get last(): FakeView | undefined {
@@ -40,6 +43,7 @@ class WebGLUnavailableError extends Error {
 
 function createModelView(_canvas: HTMLCanvasElement, opts: { style?: Partial<ModelViewStyle> } = {}): ModelView {
   if (!fakeViews.webgl) throw new WebGLUnavailableError();
+  if (fakeViews.failWith) throw fakeViews.failWith;
   const view: FakeView = {
     mesh: null,
     highlight: null,

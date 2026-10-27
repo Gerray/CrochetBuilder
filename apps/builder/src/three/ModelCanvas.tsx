@@ -4,7 +4,13 @@
  */
 
 import { useEffect, useRef } from "react";
-import { createModelView, type ModelView, type ModelViewStyle, type ViewMesh } from "./modelView.js";
+import {
+  createModelView,
+  WebGLUnavailableError,
+  type ModelView,
+  type ModelViewStyle,
+  type ViewMesh,
+} from "./modelView.js";
 
 export interface ModelCanvasProps {
   mesh: ViewMesh | null;
@@ -14,8 +20,8 @@ export interface ModelCanvasProps {
   /** Changing this number frames the model again ("Ansicht zurücksetzen"). */
   resetToken: number;
   onPickRow: (rowId: string) => void;
-  /** No WebGL (or the view failed to start). */
-  onUnavailable: (error: unknown) => void;
+  /** No WebGL. Any other start-up error is thrown to the nearest error boundary. */
+  onUnavailable: (error: WebGLUnavailableError) => void;
   /** The view, once created (and null on unmount) — e.g. for snapshots. */
   onView?: (view: ModelView | null) => void;
 }
@@ -61,8 +67,11 @@ export default function ModelCanvas(props: ModelCanvasProps) {
       view = createModelView(canvas, { style: { ...themeColors(host), dimmed, showGrid } });
     } catch (err) {
       canvas.remove();
-      callbacks.current.onUnavailable(err);
-      return;
+      if (err instanceof WebGLUnavailableError) {
+        callbacks.current.onUnavailable(err);
+        return;
+      }
+      throw err; // a bug, not a missing feature: the boundary offers a retry
     }
     viewRef.current = view;
     callbacks.current.onView?.(view);
