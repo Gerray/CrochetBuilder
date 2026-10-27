@@ -33,7 +33,7 @@
 import { expandRow, isInstructionRow } from "./expand.js";
 import { resolveGauge, STITCH_HEIGHT_FACTOR, type Gauge, type ResolvedGauge } from "./gauge.js";
 import { STITCH_PROPERTIES, type Mod, type PartContent, type StitchCode } from "./schema.js";
-import { consumesOfAtom } from "./validate.js";
+import { consumesOfAtom, countPartAtoms, DEFAULT_MAX_STITCHES } from "./validate.js";
 
 /** Index of a node in `StitchGraph.nodes` (equal to its position in working order). */
 export type NodeId = number;
@@ -58,7 +58,11 @@ export interface StitchNode {
   span: number;
   /** Vertical rest length in mm: `stitchHeightMm × STITCH_HEIGHT_FACTOR[code]`. */
   height: number;
-  /** A leading chain of a stitch row (turning / standing chain): it lifts the yarn to row height. */
+  /**
+   * A turning / standing chain: chains before the first worked stitch of a row or round, or
+   * chains after the last worked stitch of a `type: "row"` row ("6 sc, ch 1, turn"). It lifts
+   * the yarn to the next stitch's height instead of adding width.
+   */
   lift: boolean;
 }
 
@@ -109,6 +113,18 @@ export interface StitchGraph {
   estimated: boolean;
   /** `true` once `relax` has run. */
   relaxed: boolean;
+  /** Atomic stitches of the part (NOTE excluded), also when the graph was not built. */
+  stitchCount: number;
+  /** `true` when the part exceeded the stitch budget and the graph was left empty. */
+  overBudget: boolean;
+}
+
+export interface BuildGraphOptions {
+  /**
+   * Stitch budget (default `DEFAULT_MAX_STITCHES`, 20,000). Above it no graph is built — the
+   * result is empty with `overBudget: true` — so a runaway repeat cannot hang the app.
+   */
+  maxStitches?: number;
 }
 
 /** One anchor slot offered to the next row, in the consumer's frame. */
@@ -128,9 +144,25 @@ function spanOf(code: StitchCode): number {
  * Build the stitch graph of a part. Never throws for well-shaped content; see the module doc
  * for how invalid patterns degrade.
  */
-export function buildGraph(content: PartContent, gauge?: Gauge): StitchGraph {
+export function buildGraph(content: PartContent, gauge?: Gauge, opts: BuildGraphOptions = {}): StitchGraph {
   const g = resolveGauge(gauge ?? {});
   const w = g.stitchWidthMm;
+  const stitchCount = countPartAtoms(content);
+  const maxStitches = Number.isFinite(opts.maxStitches) ? opts.maxStitches! : DEFAULT_MAX_STITCHES;
+  if (stitchCount > maxStitches) {
+    return {
+      nodes: [],
+      edges: [],
+      rows: [],
+      triangles: new Uint32Array(0),
+      positions: new Float64Array(0),
+      gauge: g,
+      estimated: g.estimated,
+      relaxed: false,
+      stitchCount,
+      overBudget: true,
+    };
+  }
   const nodes: StitchNode[] = [];
   const rows: GraphRow[] = [];
   const parentDx: number[][] = []; // per node: horizontal offset to each parent (mm)
@@ -183,8 +215,19 @@ export function buildGraph(content: PartContent, gauge?: Gauge): StitchGraph {
     globalIndex += atomCount;
     const nodeCount = nodes.length - firstNode;
 
-    // Parents.
-    const reversed = prevRow !== null && prevRow.type === "row" && kind !== "ring";
+    // Trailing turning chain of a row that turns: "6 sc, ch 1, turn".
+    if (row.type === "row" && kind !== "chain" && seenConsumer) {
+      for (let id = firstNode + nodeCount - 1; id >= firstNode; id--) {
+        const n = nodes[id]!;
+        if (n.code !== "CH" || consumes[id]! > 0) break;
+        n.lift = true;
+      }
+    }
+
+    // Parents. The work turns after a row; a foundation chain is always worked back from the
+    // hook end (the last chain made is next to the hook), whatever its declared type.
+    const reversed =
+      prevRow !== null && kind !== "ring" && (prevRow.type === "row" || prevRow.kind === "chain");
     if (kind === "ring") {
       const mr = nodes.slice(firstNode).find((n) => n.code === "MR")!;
       for (let id = firstNode; id < firstNode + nodeCount; id++) {
@@ -266,7 +309,18 @@ export function buildGraph(content: PartContent, gauge?: Gauge): StitchGraph {
   const positions = layout(nodes, rows, g);
   const edges = buildEdges(nodes, rows, parentDx, positions, g);
   const triangles = triangulate(nodes, rows);
-  return { nodes, edges, rows, triangles, positions, gauge: g, estimated: g.estimated, relaxed: false };
+  return {
+    nodes,
+    edges,
+    rows,
+    triangles,
+    positions,
+    gauge: g,
+    estimated: g.estimated,
+    relaxed: false,
+    stitchCount,
+    overBudget: false,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -290,6 +344,19 @@ function buildEdges(
   const rowOf = new Int32Array(n);
   rows.forEach((r, i) => rowOf.fill(i, r.firstNode, r.firstNode + r.nodeCount));
 
+  // Lift runs (turning/standing chains, possibly a trailing run followed by a leading one):
+  // the run plus the step into the next real stitch climb that stitch's height together.
+  const liftRest = new Map<NodeId, number>();
+  for (let s = 0; s < n; s++) {
+    if (!nodes[s]!.lift || (s > 0 && nodes[s - 1]!.lift)) continue;
+    let e = s;
+    while (e + 1 < n && nodes[e + 1]!.lift) e++;
+    const next = nodes[e + 1];
+    const climb = next && next.height > 0 ? next.height : g.stitchHeightMm;
+    const rest = climb / (e - s + 2);
+    for (let id = s; id <= e + 1 && id < n; id++) liftRest.set(id, rest);
+  }
+
   // Parent edges first: they dominate the shape, and prev edges that duplicate them are dropped.
   for (const node of nodes) {
     node.parents.forEach((p, k) => {
@@ -306,20 +373,8 @@ function buildEdges(
     seen.add(key(a, node.id));
     const prev = nodes[a]!;
     let rest: number;
-    if (node.lift || (prev.lift && rowOf[a] === rowOf[node.id])) {
-      // Turning/standing chain: the lift chains plus the first real stitch climb one row height.
-      const row = rows[rowOf[node.id]!]!;
-      let lifts = 0;
-      let firstReal: StitchNode | undefined;
-      for (let id = row.firstNode; id < row.firstNode + row.nodeCount; id++) {
-        if (nodes[id]!.lift) lifts++;
-        else {
-          firstReal = nodes[id];
-          break;
-        }
-      }
-      const climb = firstReal && firstReal.height > 0 ? firstReal.height : g.stitchHeightMm;
-      rest = climb / (lifts + 1);
+    if (liftRest.has(node.id)) {
+      rest = liftRest.get(node.id)!;
     } else if (rowOf[a] === rowOf[node.id]) {
       rest = ((prev.span + node.span) / 2) * w;
       if (rest === 0) rest = w;
@@ -370,7 +425,13 @@ function triangulate(nodes: StitchNode[], rows: GraphRow[]): Uint32Array {
       for (let k = 0; k + 1 < c.parents.length; k++) tri(c.id, c.parents[k]!, c.parents[k + 1]!);
       if (i + 1 < children.length) zip(c, children[i + 1]!);
     }
-    if (row.closed && children.length > 2) zip(children[children.length - 1]!, children[0]!);
+    // Close the ring around the magic ring (a fan), or around at least three distinct parents:
+    // on a parent ring of two the seam would reuse the edge between them a third time and
+    // break the surface's orientation.
+    const ringOk = row.kind === "ring" || new Set(children.flatMap((c) => c.parents)).size > 2;
+    if (row.closed && children.length > 2 && ringOk) {
+      zip(children[children.length - 1]!, children[0]!);
+    }
   }
   return Uint32Array.from(out);
 }
@@ -453,7 +514,13 @@ function layout(nodes: StitchNode[], rows: GraphRow[], g: ResolvedGauge): Float6
         if (i > 0) x += row.direction * ((nodes[real[i - 1]!]!.span + n.span) / 2) * w;
         set(id, x, y0 + (n.height > 0 ? n.height : hv), 0);
       });
-      lifts.forEach((id, i) => set(id, x0, y0 + (hv * (i + 1)) / (lifts.length + 1), 0));
+      // Leading lifts climb from the previous row at the row start; trailing lifts climb from
+      // this row at its end, towards the next row.
+      const firstReal = real.length > 0 ? real[0]! : Infinity;
+      const leading = lifts.filter((id) => id < firstReal);
+      const trailing = lifts.filter((id) => id > firstReal);
+      leading.forEach((id, i) => set(id, x0, y0 + (hv * (i + 1)) / (leading.length + 1), 0));
+      trailing.forEach((id, i) => set(id, x, y0 + hv + (hv * (i + 1)) / (trailing.length + 1), 0));
       for (const id of ids) {
         if (nodes[id]!.code === "MR") set(id, x0, y0, 0);
       }

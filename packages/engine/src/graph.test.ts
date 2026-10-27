@@ -2,6 +2,8 @@ import { describe, it, expect } from "vitest";
 import { buildGraph, nodesOfRow, type StitchGraph } from "./graph.js";
 import { expandPart } from "./expand.js";
 import { resolveGauge } from "./gauge.js";
+import { createRandom } from "./random.js";
+import { checkConsumes } from "./validate.js";
 import type { Mod, Op, PartContent, Row, StitchCode } from "./schema.js";
 
 function st(code: StitchCode, count = 1, modifiers?: Mod[]): Op {
@@ -141,6 +143,66 @@ describe("buildGraph — parents", () => {
   });
 });
 
+describe("buildGraph — chains", () => {
+  it("works a foundation chain back from the hook end even when it is declared a round", () => {
+    const g = buildGraph(part([row("f", [st("CH", 7)], 0), row("1", [st("SC", 5)], 5)]));
+    const chain = nodesIn(g, "f");
+    // Chain 6 is next to the hook. The two surplus chains are skipped there (6, 5), then the
+    // row works back 4 … 0 — not 0 … 4 from the far end.
+    expect(nodesIn(g, "1").map((n) => n.parents[0])).toEqual([4, 3, 2, 1, 0].map((k) => chain[k]!.id));
+    expect(g.rows[1]!.reversed).toBe(true);
+  });
+
+  it("treats a trailing chain of a turned row as turning chain: no width, climbs vertically", () => {
+    const gauge = { stitchesPer10cm: 20, rowsPer10cm: 25 }; // w 5, h 4
+    const g = buildGraph(
+      part([
+        row("f", [st("CH", 7)], 0, { type: "row" }),
+        row("1", [st("SC", 6), st("CH")], 6, { type: "row" }),
+        row("2", [st("SC", 6), st("CH")], 6, { type: "row" }),
+      ]),
+      gauge,
+    );
+    const r1 = nodesIn(g, "1");
+    const turn = r1[6]!;
+    expect(turn.code).toBe("CH");
+    expect(turn.lift).toBe(true);
+    expect(g.rows.map((r) => r.widthStitches)).toEqual([7, 6, 6]);
+    // Last SC → CH → first SC of row 2: two steps climbing one SC height together.
+    expect(edge(g, r1[5]!.id, turn.id)!.restLength).toBeCloseTo(2);
+    expect(edge(g, turn.id, nodesIn(g, "2")[0]!.id)!.restLength).toBeCloseTo(2);
+    // Laid out above the row's last stitch, not beside it.
+    expect(g.positions[3 * turn.id]).toBeCloseTo(g.positions[3 * r1[5]!.id]!);
+    expect(g.positions[3 * turn.id + 1]!).toBeGreaterThan(g.positions[3 * r1[5]!.id + 1]!);
+  });
+
+  it("keeps a trailing chain of a round as an ordinary stitch", () => {
+    const g = buildGraph(part([row("a", [st("MR"), st("SC", 6)], 6), row("b", [st("SC", 6), st("CH")], 6)]));
+    expect(nodesIn(g, "b")[6]!.lift).toBe(false);
+  });
+});
+
+describe("buildGraph — stitch budget", () => {
+  it("builds nothing above the budget and reports the stitch count, quickly", () => {
+    const content = part([row("a", [rep(1000, [st("SC", 1000)])], 1_000_000, { type: "row" })]);
+    const t0 = performance.now();
+    const g = buildGraph(content);
+    expect(performance.now() - t0).toBeLessThan(200);
+    expect(g.overBudget).toBe(true);
+    expect(g.stitchCount).toBe(1_000_000);
+    expect(g.nodes).toEqual([]);
+    expect(g.positions).toHaveLength(0);
+  });
+
+  it("honours a custom budget and builds at or below it", () => {
+    expect(buildGraph(SPHERE, undefined, { maxStitches: 50 }).overBudget).toBe(true);
+    const g = buildGraph(SPHERE, undefined, { maxStitches: 103 });
+    expect(g.overBudget).toBe(false);
+    expect(g.stitchCount).toBe(103);
+    expect(g.nodes).toHaveLength(103);
+  });
+});
+
 describe("buildGraph — degrades gracefully on invalid patterns", () => {
   it("attaches surplus stitches to the last anchor when a row works into too many", () => {
     const g = buildGraph(part([row("a", [st("MR"), st("SC", 6)], 6), row("b", [st("SC", 9)], 9)]));
@@ -263,6 +325,66 @@ describe("buildGraph — surface and layout", () => {
       if (c === 1) expect(last.has(a) && last.has(b), key).toBe(true);
       else expect(c, key).toBe(2);
     }
+  });
+
+  it("winds the surface consistently on random valid patterns (no directed edge twice)", () => {
+    // Patterns whose every row consumes exactly what the previous row offers, mixing rows and
+    // rounds, turning chains, INC and DEC — including tiny rounds of 2–4 stitches.
+    let tested = 0;
+    for (let seed = 1; seed <= 1500; seed++) {
+      const r = createRandom(seed);
+      const rows: Row[] = [];
+      let offered: number;
+      if (r() < 0.5) {
+        rows.push(row("a", [st("MR"), st("SC", 6)], 6, { type: r() < 0.7 ? "round" : "row" }));
+        offered = 6;
+      } else {
+        offered = 4 + Math.floor(r() * 10);
+        rows.push(row("a", [st("CH", offered)], 0, { type: "row" }));
+        offered -= 1; // the first row skips the chain next to the hook
+      }
+      const n = 1 + Math.floor(r() * 7);
+      for (let i = 0; i < n; i++) {
+        const ops: Op[] = [];
+        if (r() < 0.4) ops.push(st("CH"));
+        let need = offered;
+        let produced = 0;
+        while (need > 0) {
+          const x = r();
+          if (x < 0.3 && need >= 2) {
+            ops.push(st("DEC"));
+            need -= 2;
+            produced += 1;
+          } else if (x < 0.6) {
+            ops.push(st("INC"));
+            need -= 1;
+            produced += 2;
+          } else {
+            ops.push(st("SC"));
+            need -= 1;
+            produced += 1;
+          }
+        }
+        rows.push(row("x" + i, ops, produced, { type: r() < 0.5 ? "row" : "round" }));
+        offered = produced;
+      }
+      const content = part(rows);
+      if (checkConsumes(content).some((f) => f.severity === "error")) continue;
+      tested++;
+      const t = buildGraph(content).triangles;
+      const directed = new Set<number>();
+      const n3 = t.length + 1;
+      let duplicates = 0;
+      for (let k = 0; k < t.length; k += 3) {
+        for (let j = 0; j < 3; j++) {
+          const key = t[k + j]! * n3 * 4 + t[k + ((j + 1) % 3)]!;
+          if (directed.has(key)) duplicates++;
+          directed.add(key);
+        }
+      }
+      expect(duplicates, "seed " + seed).toBe(0);
+    }
+    expect(tested).toBeGreaterThan(1000);
   });
 
   it("lays rounds out on circles of their circumference and rows as a flat grid", () => {
