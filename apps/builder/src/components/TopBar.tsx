@@ -1,26 +1,11 @@
 import { useEffect, useRef, useState, type Dispatch } from "react";
 import type { Gauge, Material, MaterialKind, YarnWeight } from "@crochetbuilder/engine";
+import { MATERIAL_KINDS, YARN_WEIGHTS } from "../export/labels.js";
 import { DEMOS, type BuilderDoc, type DemoKind } from "../state/document.js";
 import type { EditorAction } from "../state/editor.js";
 import type { SaveStatus } from "../state/usePersistence.js";
+import { ExportMenu, type ExportActions } from "./ExportMenu.js";
 import { ListField, NumberField } from "./fields.js";
-
-const YARN_WEIGHTS: Array<[YarnWeight, string]> = [
-  ["lace", "Lace (sehr fein)"],
-  ["fingering", "Fingering / Sockengarn"],
-  ["sport", "Sport (fein)"],
-  ["dk", "DK (leicht)"],
-  ["worsted", "Worsted (mittel)"],
-  ["aran", "Aran (mitteldick)"],
-  ["bulky", "Bulky (dick)"],
-  ["jumbo", "Jumbo (sehr dick)"],
-];
-
-const MATERIAL_KINDS: Array<[MaterialKind, string]> = [
-  ["yarn", "Garn"],
-  ["hook", "Nadel"],
-  ["accessory", "Zubehör"],
-];
 
 const STATUS_TEXT: Record<SaveStatus, string> = {
   loading: "Lade …",
@@ -40,9 +25,13 @@ interface TopBarProps {
   onNew: () => void;
   /** Load a demo pattern (the button itself loads the sphere). */
   onDemo: (kind: DemoKind) => void;
+  /** Replace the document with an imported one ("JSON öffnen…"). */
+  onReplace: (doc: BuilderDoc, pinned: string[]) => void;
+  /** Export side effects (tests). */
+  exportActions?: Partial<ExportActions>;
 }
 
-export function TopBar({ doc, dispatch, canUndo, canRedo, status, onNew, onDemo }: TopBarProps) {
+export function TopBar({ doc, dispatch, canUndo, canRedo, status, onNew, onDemo, onReplace, exportActions }: TopBarProps) {
   const [overviewOpen, setOverviewOpen] = useState(false);
   const materialCount = doc.overview.materials?.length ?? 0;
 
@@ -99,6 +88,7 @@ export function TopBar({ doc, dispatch, canUndo, canRedo, status, onNew, onDemo 
           <span className={`save-status save-${status}`} role="status">
             {STATUS_TEXT[status]}
           </span>
+          <ExportMenu doc={doc} onReplace={onReplace} {...(exportActions ? { actions: exportActions } : {})} />
         </div>
       </div>
       {overviewOpen && <OverviewPanel doc={doc} dispatch={dispatch} />}
