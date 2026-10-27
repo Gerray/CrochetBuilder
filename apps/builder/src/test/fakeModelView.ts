@@ -68,7 +68,10 @@ function createModelView(_canvas: HTMLCanvasElement, opts: { style?: Partial<Mod
       return view.nextPick;
     },
     snapshot() {
-      return "data:image/png;base64,";
+      return view.disposed ? null : "data:image/png;base64,";
+    },
+    cameraState() {
+      return { position: [0, 0, 100], target: [0, 0, 0], following: true };
     },
     dispose() {
       view.disposed = true;

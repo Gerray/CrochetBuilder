@@ -10,12 +10,14 @@
  *   view.setMesh(mesh);            // first mesh frames the camera
  *   view.setHighlight(rowId);      // colours that row's stitches
  *   const hit = view.pick(e.clientX, e.clientY); // → { rowId, node } | null
- *   const png = view.snapshot();   // data URL of the current view
+ *   const png = view.snapshot({ width: 1200 }); // data URL; size optional
  *   view.dispose();
  *
  * Camera: while the user has not moved the camera the view follows the piece — each new
- * mesh is framed (smoothly). Orbiting, zooming or panning stops that; `resetView()` frames
- * again and resumes following.
+ * mesh is framed (smoothly). Dragging or zooming stops that (a click does not, nor do the
+ * view's own camera moves); `resetView()` frames again and resumes following. A mesh that
+ * no longer fits the view is framed anyway. Pixel-ratio changes (another screen) are
+ * picked up automatically.
  *
  * Throws `WebGLUnavailableError` when no WebGL context can be created.
  * Units: millimetres. Rendering is on demand (only when something changed).
@@ -45,6 +47,7 @@ import {
 } from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { createGrid, linearRgb, toBufferGeometry } from "./geometry.js";
+import { CameraFollow, snapshotSize, watchPixelRatio, type SnapshotOptions } from "./viewport.js";
 import {
   frameCamera,
   gridPlacement,
@@ -59,6 +62,7 @@ import {
 } from "./mapping.js";
 
 export type { PickResult, ViewMesh } from "./mapping.js";
+export type { SnapshotOptions } from "./viewport.js";
 
 /** Visual settings; every field can be changed later with `setStyle`. */
 export interface ModelViewStyle {
@@ -108,8 +112,13 @@ export interface ModelView {
   resize(): void;
   /** Stitch under a client (viewport) coordinate, or null. */
   pick(clientX: number, clientY: number): PickResult | null;
-  /** The current view as a data URL (default PNG). */
-  snapshot(type?: string, quality?: number): string;
+  /**
+   * The current view as a data URL (default PNG), optionally rendered at another pixel size
+   * (e.g. for a PDF). Null after `dispose()`.
+   */
+  snapshot(opts?: SnapshotOptions): string | null;
+  /** Camera state (for tests and to restore a view). */
+  cameraState(): { position: [number, number, number]; target: [number, number, number]; following: boolean };
   /** Release GPU resources, listeners and the WebGL context. The view is unusable after. */
   dispose(): void;
 }
@@ -201,7 +210,7 @@ export function createModelView(canvas: HTMLCanvasElement, opts: ModelViewOption
   let bounds: Bounds | null = null;
   let grid: GridHelper | null = null;
   let highlightRowId: string | null = null;
-  let following = true;
+  const follow = new CameraFollow();
   let animation: { from: Framing & { start: number }; to: Framing } | null = null;
   let dirty = true;
   let frame = 0;
@@ -211,19 +220,23 @@ export function createModelView(canvas: HTMLCanvasElement, opts: ModelViewOption
     dirty = true;
   };
   controls.addEventListener("change", invalidate);
-  // The user takes over the camera (an actual orbit/zoom/pan, not a click): stop following.
-  let interacting = false;
-  controls.addEventListener("start", () => {
-    interacting = true;
-  });
-  controls.addEventListener("change", () => {
-    if (!interacting) return;
-    following = false;
+
+  // Following ends only when the user really moves the camera (drag or wheel) — not on a
+  // click, and not through the "change" events the framing animation itself causes.
+  const onPointerDown = (e: PointerEvent) => follow.pointerDown(e.clientX, e.clientY);
+  const onPointerMove = (e: PointerEvent) => {
+    if (follow.pointerMove(e.clientX, e.clientY)) animation = null;
+  };
+  const onPointerUp = () => follow.pointerUp();
+  const onWheel = () => {
+    follow.wheel();
     animation = null;
-  });
-  controls.addEventListener("end", () => {
-    interacting = false;
-  });
+  };
+  canvas.addEventListener("pointerdown", onPointerDown);
+  canvas.addEventListener("pointermove", onPointerMove);
+  canvas.addEventListener("pointerup", onPointerUp);
+  canvas.addEventListener("pointercancel", onPointerUp);
+  canvas.addEventListener("wheel", onWheel, { passive: true });
 
   function applyBackground() {
     renderer.setClearColor(style.background, 1);
@@ -357,6 +370,8 @@ export function createModelView(canvas: HTMLCanvasElement, opts: ModelViewOption
   const observer =
     opts.autoResize !== false && typeof ResizeObserver !== "undefined" ? new ResizeObserver(() => resize()) : null;
   observer?.observe(canvas);
+  // Moving the window to a screen with another pixel density changes no size: watch it.
+  const stopPixelRatio = watchPixelRatio(() => resize());
 
   applyBackground();
   applyMaterials();
@@ -394,7 +409,7 @@ export function createModelView(canvas: HTMLCanvasElement, opts: ModelViewOption
         applyMaterials();
         // Frame the first mesh; later ones while following, or when the piece left the view
         // or shrank to a fraction of it (a different pattern was loaded).
-        if (!hadMesh || following || !fitsView(bounds)) frameMesh(hadMesh);
+        if (follow.shouldFrame(hadMesh, fitsView(bounds))) frameMesh(hadMesh);
       }
       rebuildGrid();
       invalidate();
@@ -419,7 +434,7 @@ export function createModelView(canvas: HTMLCanvasElement, opts: ModelViewOption
 
     resetView() {
       if (disposed) return;
-      following = true;
+      follow.reset();
       frameMesh(true);
     },
 
@@ -430,6 +445,8 @@ export function createModelView(canvas: HTMLCanvasElement, opts: ModelViewOption
       const rect = canvas.getBoundingClientRect();
       if (rect.width === 0 || rect.height === 0) return null;
       ndc.set(((clientX - rect.left) / rect.width) * 2 - 1, -((clientY - rect.top) / rect.height) * 2 + 1);
+      camera.updateMatrixWorld(); // also valid before the first frame was rendered
+      object.updateMatrixWorld();
       raycaster.setFromCamera(ndc, camera);
       raycaster.params.Points = { threshold: (mesh.stitchWidthMm ?? 5) * 0.45 };
       const hits: Intersection[] = raycaster.intersectObject(object, false);
@@ -444,9 +461,38 @@ export function createModelView(canvas: HTMLCanvasElement, opts: ModelViewOption
       return null;
     },
 
-    snapshot(type = "image/png", quality) {
-      render(); // toDataURL needs the frame in the same task (no preserveDrawingBuffer).
-      return canvas.toDataURL(type, quality);
+    snapshot(snap = {}) {
+      if (disposed) return null;
+      const { type = "image/png", quality } = snap;
+      const size = snapshotSize(snap, { width: canvas.clientWidth, height: canvas.clientHeight });
+      if (!size) {
+        render(); // toDataURL needs the frame in the same task (no preserveDrawingBuffer).
+        return canvas.toDataURL(type, quality);
+      }
+      // Render once at the requested pixel size, then restore the on-screen size.
+      const ratio = renderer.getPixelRatio();
+      const prev = renderer.getSize(new Vector2());
+      const aspect = camera.aspect;
+      renderer.setPixelRatio(1);
+      renderer.setSize(size.width, size.height, false);
+      camera.aspect = size.width / size.height;
+      camera.updateProjectionMatrix();
+      render();
+      const url = canvas.toDataURL(type, quality);
+      renderer.setPixelRatio(ratio);
+      renderer.setSize(prev.x, prev.y, false);
+      camera.aspect = aspect;
+      camera.updateProjectionMatrix();
+      invalidate();
+      return url;
+    },
+
+    cameraState() {
+      return {
+        position: [camera.position.x, camera.position.y, camera.position.z],
+        target: [controls.target.x, controls.target.y, controls.target.z],
+        following: follow.following,
+      };
     },
 
     dispose() {
@@ -454,6 +500,12 @@ export function createModelView(canvas: HTMLCanvasElement, opts: ModelViewOption
       disposed = true;
       cancelAnimationFrame(frame);
       observer?.disconnect();
+      stopPixelRatio();
+      canvas.removeEventListener("pointerdown", onPointerDown);
+      canvas.removeEventListener("pointermove", onPointerMove);
+      canvas.removeEventListener("pointerup", onPointerUp);
+      canvas.removeEventListener("pointercancel", onPointerUp);
+      canvas.removeEventListener("wheel", onWheel);
       controls.dispose();
       if (object) scene.remove(object);
       geometry?.dispose();
