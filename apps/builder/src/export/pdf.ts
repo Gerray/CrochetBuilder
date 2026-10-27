@@ -18,8 +18,13 @@ import { exportFileName, downloadBlob, prepareExport } from "./prepare.js";
  * to the model, which keeps well over 300 dpi at the ~70 mm it is printed at.
  */
 export const SNAPSHOT_SIZE = { width: 1600, height: 1600 } as const;
-/** Mesh style of the PDF image — always the closed surface, whatever the preview shows. */
-export const SNAPSHOT_STYLE: MeshStyle = "surface";
+/**
+ * Mesh style of the PDF image, whatever the preview shows: the stitch lattice — at print
+ * size it still reads as crocheted rows, where the closed surface is a featureless blob.
+ */
+export const SNAPSHOT_STYLE: MeshStyle = "stitches";
+/** Opacity of the fabric behind the stitches in the PDF image (calms the see-through parts). */
+export const SNAPSHOT_BACKING = 0.45;
 /** Background of the PDF image (the page is white). */
 export const SNAPSHOT_BACKGROUND = "#ffffff";
 /** Space kept around the model when cropping, as a share of its larger side. */
@@ -190,7 +195,7 @@ export async function snapshotModel(model: PreviewModel): Promise<PdfImage | nul
     canvas.width = SNAPSHOT_SIZE.width;
     canvas.height = SNAPSHOT_SIZE.height;
     const view = createModelView(canvas, {
-      style: { background: SNAPSHOT_BACKGROUND, showGrid: false, yarn: "#e7b48f" },
+      style: { background: SNAPSHOT_BACKGROUND, showGrid: false, yarn: "#e7b48f", backing: SNAPSHOT_BACKING },
       autoResize: false,
       maxPixelRatio: 1,
     });

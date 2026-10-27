@@ -94,6 +94,8 @@ export type { StitchCursor } from "./cursor.js";
 
 export { toMesh } from "./mesh.js";
 export type { MeshData, MeshOptions, MeshStyle } from "./mesh.js";
+export { STITCH_YARN_MAX_WIDTH, STITCH_YARN_SCALE, stitchDetail, stitchYarn, stitchYarnRadius } from "./stitch-mesh.js";
+export type { YarnArc, YarnLoop, YarnPiece, YarnPost } from "./stitch-mesh.js";
 
 export { buildModel } from "./model.js";
 export type { Model, ModelOptions } from "./model.js";

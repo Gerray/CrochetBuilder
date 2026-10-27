@@ -25,6 +25,7 @@
 
 import {
   AmbientLight,
+  BufferAttribute,
   BufferGeometry,
   DataTexture,
   DirectionalLight,
@@ -33,6 +34,7 @@ import {
   HemisphereLight,
   Mesh,
   MeshPhysicalMaterial,
+  MeshStandardMaterial,
   PerspectiveCamera,
   Points,
   PointsMaterial,
@@ -52,6 +54,8 @@ import {
   frameCamera,
   gridPlacement,
   meshBounds,
+  choosePick,
+  pickFromBacking,
   pickFromHit,
   rowIndexOf,
   vertexColors,
@@ -78,6 +82,11 @@ export interface ModelViewStyle {
   showGrid: boolean;
   /** Grey the model out (e.g. it is outdated because the pattern exceeds the budget). */
   dimmed: boolean;
+  /**
+   * Opacity of the faint fabric surface drawn behind an open style (the stitch lattice),
+   * 0–1; 0 hides it. Only meshes that carry a `backing` have one.
+   */
+  backing: number;
 }
 
 export const DEFAULT_STYLE: ModelViewStyle = {
@@ -87,6 +96,7 @@ export const DEFAULT_STYLE: ModelViewStyle = {
   grid: "#cfc8bd",
   showGrid: true,
   dimmed: false,
+  backing: 0,
 };
 
 export interface ModelViewOptions {
@@ -194,6 +204,18 @@ export function createModelView(canvas: HTMLCanvasElement, opts: ModelViewOption
     sheenColor: 0xffffff,
     side: DoubleSide, // open pieces and tube ends show their inside
   });
+  // The fabric behind the stitch lattice: matte, translucent, never hides yarn in
+  // front of it (no depth writes; the yarn is opaque and drawn first).
+  const backingMaterial = new MeshStandardMaterial({
+    roughness: 1,
+    metalness: 0,
+    transparent: true,
+    depthWrite: false,
+    side: DoubleSide,
+    polygonOffset: true,
+    polygonOffsetFactor: 1,
+    polygonOffsetUnits: 1,
+  });
   const sprite = discTexture();
   const pointsMaterial = new PointsMaterial({
     vertexColors: true,
@@ -207,6 +229,7 @@ export function createModelView(canvas: HTMLCanvasElement, opts: ModelViewOption
   let mesh: ViewMesh | null = null;
   let object: Mesh | Points | null = null;
   let geometry: BufferGeometry | null = null;
+  let backingObject: Mesh | null = null;
   let bounds: Bounds | null = null;
   let grid: GridHelper | null = null;
   let highlightRowId: string | null = null;
@@ -240,6 +263,16 @@ export function createModelView(canvas: HTMLCanvasElement, opts: ModelViewOption
 
   function applyBackground() {
     renderer.setClearColor(style.background, 1);
+  }
+
+  function applyBacking() {
+    const c = linearRgb(style.yarn);
+    // A darker shade of the yarn, like the shadowed inside of the fabric.
+    backingMaterial.color.setRGB(c[0] * 0.55, c[1] * 0.5, c[2] * 0.48);
+    backingMaterial.opacity = Math.min(1, Math.max(0, style.backing));
+    backingMaterial.needsUpdate = true;
+    if (backingObject) backingObject.visible = style.backing > 0 && !style.dimmed;
+    invalidate();
   }
 
   function applyMaterials() {
@@ -391,6 +424,11 @@ export function createModelView(canvas: HTMLCanvasElement, opts: ModelViewOption
       }
       geometry?.dispose();
       geometry = null;
+      if (backingObject) {
+        scene.remove(backingObject);
+        backingObject.geometry.dispose();
+        backingObject = null;
+      }
       mesh = next;
       bounds = null;
       if (next && next.positions.length > 0) {
@@ -405,6 +443,17 @@ export function createModelView(canvas: HTMLCanvasElement, opts: ModelViewOption
           object = new Mesh(geometry, surfaceMaterial);
         }
         scene.add(object);
+        if (next.backing && next.backing.indices.length > 0) {
+          const g = new BufferGeometry();
+          g.setAttribute("position", new BufferAttribute(next.backing.positions, 3));
+          g.setAttribute("normal", new BufferAttribute(next.backing.normals, 3));
+          g.setIndex(new BufferAttribute(next.backing.indices, 1));
+          g.computeBoundingSphere();
+          backingObject = new Mesh(g, backingMaterial);
+          backingObject.renderOrder = 1; // after the opaque yarn
+          scene.add(backingObject);
+          applyBacking();
+        }
         applyColors();
         applyMaterials();
         // Frame the first mesh; later ones while following, or when the piece left the view
@@ -428,6 +477,7 @@ export function createModelView(canvas: HTMLCanvasElement, opts: ModelViewOption
       if (prev.background !== style.background) applyBackground();
       if (prev.yarn !== style.yarn || prev.highlight !== style.highlight) applyColors();
       if (prev.dimmed !== style.dimmed) applyMaterials();
+      if (prev.dimmed !== style.dimmed || prev.backing !== style.backing || prev.yarn !== style.yarn) applyBacking();
       if (prev.showGrid !== style.showGrid || prev.grid !== style.grid) rebuildGrid();
       invalidate();
     },
@@ -450,15 +500,27 @@ export function createModelView(canvas: HTMLCanvasElement, opts: ModelViewOption
       raycaster.setFromCamera(ndc, camera);
       raycaster.params.Points = { threshold: (mesh.stitchWidthMm ?? 5) * 0.45 };
       const hits: Intersection[] = raycaster.intersectObject(object, false);
+      let yarn: { pick: PickResult; distance: number } | null = null;
       for (const hit of hits) {
         const picked = pickFromHit(mesh, {
           point: hit.point,
           face: hit.face ?? null,
           ...(hit.index !== undefined ? { index: hit.index } : {}),
         });
-        if (picked) return picked;
+        if (picked) {
+          yarn = { pick: picked, distance: hit.distance };
+          break;
+        }
       }
-      return null;
+      let backing: { pick: PickResult; distance: number } | null = null;
+      if (backingObject) {
+        // Raycasting ignores visibility: the backing is picked even when it is not drawn.
+        backingObject.updateMatrixWorld();
+        const hit = raycaster.intersectObject(backingObject, false)[0];
+        const picked = hit ? pickFromBacking(mesh, { point: hit.point, face: hit.face ?? null }) : null;
+        if (hit && picked) backing = { pick: picked, distance: hit.distance };
+      }
+      return choosePick(yarn, backing, 2 * (mesh.yarnDiameterMm ?? 2.5));
     },
 
     snapshot(snap = {}) {
@@ -509,6 +571,8 @@ export function createModelView(canvas: HTMLCanvasElement, opts: ModelViewOption
       controls.dispose();
       if (object) scene.remove(object);
       geometry?.dispose();
+      backingObject?.geometry.dispose();
+      backingMaterial.dispose();
       if (grid) {
         grid.geometry.dispose();
         (grid.material as Material).dispose();

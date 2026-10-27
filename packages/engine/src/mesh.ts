@@ -9,6 +9,9 @@
  *   - `points`: one vertex per stitch (for `gl.POINTS` / sprites; cheap on mobile).
  *   - `surface`: the fabric as a triangle mesh — one vertex per stitch, triangles between
  *     each row and the stitches it is worked into. Closed pieces are wound outwards.
+ *   - `stitches`: every stitch as the yarn it is made of — post loop, back loop, wraps for tall
+ *     stitches, chain links, the magic ring — so the piece reads as a crocheted lattice.
+ *     See stitch-mesh.ts.
  *
  * Every vertex carries the node it belongs to (`nodeIndex`), so the app can highlight a row
  * or the stitch under the guided cursor (`graph.nodes[nodeIndex[v]].rowId`).
@@ -16,21 +19,27 @@
 
 import type { StitchGraph } from "./graph.js";
 import { signedVolume } from "./relax.js";
+import { stitchMesh } from "./stitch-mesh.js";
 
-export type MeshStyle = "tube" | "points" | "surface";
+export type MeshStyle = "stitches" | "tube" | "points" | "surface";
 
 export interface MeshOptions {
-  /** Tube radius in mm. Default: half the yarn diameter of the resolved gauge. */
+  /**
+   * Tube radius in mm. Default: half the yarn diameter of the resolved gauge (`stitches`:
+   * see `stitchYarnRadius`).
+   */
   radius?: number;
-  /** Vertices around the tube. Default 6, minimum 3. */
+  /** Vertices around the tube. Default 6, minimum 3 (`stitches`: by piece size, 6/5/4). */
   radialSegments?: number;
   /** Spline points per stitch-to-stitch segment of the tube. Default 2, minimum 1. */
   subdivisions?: number;
+  /** `stitches` only: samples along each yarn arc. Default by piece size (5/4/3), minimum 2. */
+  arcSamples?: number;
 }
 
 export interface MeshData {
   style: MeshStyle;
-  /** `"triangles"` for tube and surface, `"points"` for points. */
+  /** `"triangles"` for stitches, tube and surface, `"points"` for points. */
   primitive: "triangles" | "points";
   /** xyz per vertex, mm. */
   positions: Float32Array;
@@ -51,6 +60,10 @@ export function toMesh(graph: StitchGraph, style: MeshStyle, opts: MeshOptions =
   for (let i = 0; i < n; i++) nodeIndex[i] = i;
   const tris = outwardTriangles(graph);
   const normals = vertexNormals(graph, tris);
+  if (style === "stitches") {
+    const arrays = stitchMesh(graph, normals, opts);
+    return { style, primitive: "triangles", ...arrays };
+  }
   if (style === "points") {
     return { style, primitive: "points", positions, normals, indices: nodeIndex.slice(), nodeIndex };
   }

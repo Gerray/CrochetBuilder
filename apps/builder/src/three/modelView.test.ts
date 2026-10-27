@@ -5,7 +5,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildModel, toMesh, type PartContent } from "@crochetbuilder/engine";
-import { nodeRows } from "../preview/protocol.js";
+import { backingOf, nodeRows } from "../preview/protocol.js";
 import type { ViewMesh } from "./mapping.js";
 
 const renderers: FakeRenderer[] = [];
@@ -182,6 +182,25 @@ describe("createModelView (fake renderer)", () => {
     expect(hit).not.toBeNull();
     expect(["r1", "r2", "r3"]).toContain(hit!.rowId);
     expect(view.pick(0, 0)).toBeNull(); // corner: background
+    view.dispose();
+  });
+
+  it("picks the stitch lattice through its backing; the backing can be shown and hidden", () => {
+    const rows = [round("r1", [MR, sc(6)], 6), round("r2", [inc(6)], 12), round("r3", [{ kind: "repeat" as const, times: 6, ops: [sc(1), inc(1)] }], 18)];
+    const model = buildModel({ schemaVersion: 1, rows });
+    const lattice: ViewMesh = { ...toMesh(model.graph, "stitches"), ...nodeRows(model), stitchWidthMm: model.graph.gauge.stitchWidthMm };
+    const view = createModelView(makeCanvas());
+    view.setMesh({ ...lattice, backing: backingOf(model.graph) });
+    // Sweep a line of pointer positions across the disc: with the backing every one inside
+    // the piece finds a stitch, holes included.
+    let withBacking = 0;
+    for (let x = 160; x <= 240; x += 4) if (view.pick(x, 150)) withBacking++;
+    view.setMesh(lattice);
+    let without = 0;
+    for (let x = 160; x <= 240; x += 4) if (view.pick(x, 150)) without++;
+    expect(withBacking).toBeGreaterThanOrEqual(without);
+    expect(withBacking).toBe(21);
+    expect(() => view.setStyle({ backing: 0.45 })).not.toThrow();
     view.dispose();
   });
 

@@ -4,7 +4,15 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { validate, type PartContent, type Row } from "@crochetbuilder/engine";
 import { fakeViews } from "../test/fakeModelView.js";
 import { PreviewClient, type BackendFactory } from "../preview/protocol.js";
-import { PreviewPane, ViewLoadError, type PreviewPaneProps } from "./PreviewPane.js";
+import {
+  BACKING_OPACITY,
+  initialPreviewStyle,
+  LEGACY_STYLE_KEY,
+  PreviewPane,
+  STYLE_KEY,
+  ViewLoadError,
+  type PreviewPaneProps,
+} from "./PreviewPane.js";
 
 vi.mock("../three/modelView.js", async () => (await import("../test/fakeModelView.js")).fakeModule);
 
@@ -109,7 +117,7 @@ describe("PreviewPane", () => {
     await waitFor(() => expect(fakeViews.last?.mesh?.primitive).toBe("triangles"));
     fireEvent.click(screen.getByRole("radio", { name: "Punkte" }));
     await waitFor(() => expect(fakeViews.last!.mesh!.primitive).toBe("points"));
-    expect(localStorage.getItem("crochetbuilder:preview-style")).toBe("points");
+    expect(localStorage.getItem("crochetbuilder:preview-style-v2")).toBe("points");
 
     expect(fakeViews.last!.style.showGrid).toBe(true);
     fireEvent.click(screen.getByRole("button", { name: "1-cm-Raster" }));
@@ -117,6 +125,37 @@ describe("PreviewPane", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Ansicht zurücksetzen" }));
     expect(fakeViews.last!.resets).toBe(1);
+  });
+
+  it("starts with \"Maschen\" and migrates the remembered style of older versions", async () => {
+    expect(initialPreviewStyle()).toBe("stitches");
+    renderPane();
+    expect(screen.getByRole("radio", { name: "Maschen" }).getAttribute("aria-checked")).toBe("true");
+    expect(screen.getAllByRole("radio").map((r) => r.textContent)).toEqual(["Maschen", "Fläche", "Garn", "Punkte"]);
+    // The old default "Garn" moves to the new default; a deliberate other choice stays.
+    for (const [legacy, expected] of [["tube", "stitches"], ["surface", "surface"], ["points", "points"], ["bogus", "stitches"]] as const) {
+      localStorage.clear();
+      localStorage.setItem(LEGACY_STYLE_KEY, legacy);
+      expect(initialPreviewStyle()).toBe(expected);
+      expect(localStorage.getItem(STYLE_KEY)).toBe(expected);
+      expect(localStorage.getItem(LEGACY_STYLE_KEY)).toBeNull();
+    }
+    localStorage.setItem(STYLE_KEY, "tube");
+    expect(initialPreviewStyle()).toBe("tube");
+  });
+
+  it("offers the fabric behind the stitches only in the \"Maschen\" style, off by default", async () => {
+    renderPane();
+    await waitFor(() => expect(fakeViews.last?.mesh?.primitive).toBe("triangles"));
+    const toggle = screen.getByRole("button", { name: "Fläche dahinter" });
+    expect(toggle.getAttribute("aria-pressed")).toBe("false");
+    expect(fakeViews.last!.style.backing ?? 0).toBe(0);
+    fireEvent.click(toggle);
+    expect(fakeViews.last!.style.backing).toBe(BACKING_OPACITY);
+    expect(localStorage.getItem("crochetbuilder:preview-backing")).toBe("on");
+    fireEvent.click(screen.getByRole("radio", { name: "Fläche" }));
+    expect(screen.queryByRole("button", { name: "Fläche dahinter" })).toBeNull();
+    await waitFor(() => expect(fakeViews.last!.style.backing).toBe(0));
   });
 
   it("over the stitch budget: message, last model greyed out", async () => {
