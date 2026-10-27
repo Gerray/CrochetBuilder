@@ -85,3 +85,6 @@ export type { StitchCursor } from "./cursor.js";
 
 export { toMesh } from "./mesh.js";
 export type { MeshData, MeshOptions, MeshStyle } from "./mesh.js";
+
+export { buildModel } from "./model.js";
+export type { Model } from "./model.js";
