@@ -19,7 +19,8 @@ nothing is left hanging.
 
 - **Row-by-row editor** — structured, or type free-text notation such as
   `6× (1 sc, 1 inc)` (German: `6× (1 fM, 1 Zun)`).
-- **Live 3D model in real size** — from your gauge swatch, or from yarn weight and hook size.
+- **Live 3D model in real size** — from your gauge swatch, or from yarn weight or yarn
+  thickness in mm and hook size.
 - **Validation while you type** — stitch counts per row and whether every stitch of the
   previous row is worked into exactly as often as the pattern says.
 - **Export** — open the pattern in [TellmeCrochet](https://tellmecrochet.de) (the companion

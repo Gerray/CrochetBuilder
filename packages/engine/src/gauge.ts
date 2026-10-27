@@ -1,10 +1,13 @@
 /**
  * Gauge — turns "what yarn and hook" or "my swatch" into stitch dimensions in millimetres.
  *
- * Resolution order (see docs/FORMAT.md):
+ * Resolution order for the stitch size (see docs/FORMAT.md):
  *   1. an explicit swatch (`stitchesPer10cm` / `rowsPer10cm`) wins;
- *   2. otherwise defaults derived from `yarnWeight` + `hookMm`;
- *   3. otherwise the engine default (DK, 4 mm) — flagged as estimated.
+ *   2. otherwise defaults derived from the yarn thickness `yarnDiameterMm` (interpolated over
+ *      the yarn weight table) + `hookMm`;
+ *   3. otherwise defaults derived from `yarnWeight` + `hookMm`;
+ *   4. otherwise the engine default (DK, 4 mm) — flagged as estimated.
+ * The rendered yarn thickness always follows `yarnDiameterMm` when it is given.
  *
  * The default table is deliberately coarse: it exists so a pattern without a swatch still
  * renders at a plausible size. Designers who care about size enter their swatch.
@@ -25,6 +28,9 @@ export const YarnWeightSchema = z.enum([
 ]);
 export type YarnWeight = z.infer<typeof YarnWeightSchema>;
 
+/** Thickest yarn the format accepts (mm). Anything above is a typo, not a yarn. */
+export const MAX_YARN_DIAMETER_MM = 30;
+
 /** Optional gauge information carried alongside a pattern. All fields optional. */
 export const GaugeSchema = z
   .object({
@@ -32,6 +38,8 @@ export const GaugeSchema = z
     rowsPer10cm: z.number().positive().optional(),
     yarnWeight: YarnWeightSchema.optional(),
     hookMm: z.number().positive().optional(),
+    /** Yarn thickness in mm (since engine 0.2.0). More specific than `yarnWeight`. */
+    yarnDiameterMm: z.number().positive().max(MAX_YARN_DIAMETER_MM).optional(),
   })
   .strict();
 export type Gauge = z.infer<typeof GaugeSchema>;
@@ -92,7 +100,11 @@ export interface ResolvedGauge {
   yarnDiameterMm: number;
   /** `true` when no swatch was given and the numbers come from defaults. */
   estimated: boolean;
-  /** Where the numbers came from. */
+  /**
+   * Where the stitch size came from. `"yarn-weight"` covers every estimate from the yarn
+   * (`yarnWeight` and/or `yarnDiameterMm`) and the hook; whether the thickness in mm drove
+   * it is visible on the input (`gauge.yarnDiameterMm !== undefined`).
+   */
   source: "swatch" | "yarn-weight" | "default";
 }
 
@@ -101,17 +113,90 @@ function clamp(x: number, lo: number, hi: number): number {
   return Math.min(hi, Math.max(lo, x));
 }
 
+/** Stitch size and standard hook the yarn weight table suggests for one yarn thickness. */
+export interface YarnSizeDefaults {
+  /** Single-crochet width at the standard hook (mm). */
+  stitchWidthMm: number;
+  /** Single-crochet height at the standard hook (mm). */
+  stitchHeightMm: number;
+  /** Standard hook for this thickness (mm). */
+  hookMm: number;
+}
+
+interface TablePoint extends YarnSizeDefaults {
+  yarnDiameterMm: number;
+}
+
+/** The weight table as points over yarn thickness, thinnest first. */
+const TABLE_BY_DIAMETER: readonly TablePoint[] = Object.values(YARN_WEIGHT_DEFAULTS)
+  .map((d) => ({
+    yarnDiameterMm: d.yarnDiameterMm,
+    stitchWidthMm: 100 / d.stitchesPer10cm,
+    stitchHeightMm: 100 / d.rowsPer10cm,
+    hookMm: d.hookMm,
+  }))
+  .sort((a, b) => a.yarnDiameterMm - b.yarnDiameterMm);
+
+/**
+ * Outside the table, sizes scale proportionally with the thickness — down to `below` × the
+ * thinnest and up to `above` × the thickest table yarn; beyond that they stay constant.
+ */
+export const YARN_DIAMETER_EXTRAPOLATION = { below: 0.5, above: 1.5 } as const;
+
+function scaled(p: TablePoint, factor: number): YarnSizeDefaults {
+  return {
+    stitchWidthMm: p.stitchWidthMm * factor,
+    stitchHeightMm: p.stitchHeightMm * factor,
+    hookMm: p.hookMm * factor,
+  };
+}
+
+/**
+ * Stitch size and standard hook for a yarn thickness, interpolated piecewise linearly over
+ * `YARN_WEIGHT_DEFAULTS`: stitch width (100 / stitchesPer10cm), row height (100 / rowsPer10cm)
+ * and hook, each between the two neighbouring weights. Exact at the table's thicknesses,
+ * monotonic, proportional outside the table and clamped as `YARN_DIAMETER_EXTRAPOLATION`
+ * says. Interpolating width and height separately keeps their ratio between the
+ * neighbours' ratios, so the E15 calibration (h ≈ 0.95 · w) carries over.
+ */
+export function yarnDefaultsForDiameter(diameterMm: number): YarnSizeDefaults {
+  const first = TABLE_BY_DIAMETER[0]!;
+  const last = TABLE_BY_DIAMETER[TABLE_BY_DIAMETER.length - 1]!;
+  const d = clamp(
+    diameterMm,
+    first.yarnDiameterMm * YARN_DIAMETER_EXTRAPOLATION.below,
+    last.yarnDiameterMm * YARN_DIAMETER_EXTRAPOLATION.above,
+  );
+  if (d <= first.yarnDiameterMm) return scaled(first, d / first.yarnDiameterMm);
+  if (d >= last.yarnDiameterMm) return scaled(last, d / last.yarnDiameterMm);
+  let i = 1;
+  while (TABLE_BY_DIAMETER[i]!.yarnDiameterMm < d) i++;
+  const lo = TABLE_BY_DIAMETER[i - 1]!;
+  const hi = TABLE_BY_DIAMETER[i]!;
+  const t = (d - lo.yarnDiameterMm) / (hi.yarnDiameterMm - lo.yarnDiameterMm);
+  const lerp = (a: number, b: number) => a + t * (b - a);
+  return {
+    stitchWidthMm: lerp(lo.stitchWidthMm, hi.stitchWidthMm),
+    stitchHeightMm: lerp(lo.stitchHeightMm, hi.stitchHeightMm),
+    hookMm: lerp(lo.hookMm, hi.hookMm),
+  };
+}
+
 /**
  * Resolve a (possibly empty) gauge into millimetre dimensions.
  *
  * With a swatch, width = 100 / stitchesPer10cm and height = 100 / rowsPer10cm; a missing
  * rows value falls back to the width (single crochet is roughly square). Without a swatch,
- * the yarn-weight table applies, scaled by the hook: a bigger hook than the weight's
- * standard makes stitches proportionally larger (factor clamped to 0.6–1.6).
+ * the size comes from the yarn — its thickness in mm when given (see
+ * `yarnDefaultsForDiameter`; it wins over the weight class), else its weight class — scaled
+ * by the hook: a bigger hook than the yarn's standard makes stitches proportionally larger
+ * (factor clamped to 0.6–1.6). `yarnDiameterMm`, when given, is always the rendered yarn
+ * thickness, also with a swatch.
  */
 export function resolveGauge(gauge: Gauge | undefined = {}): ResolvedGauge {
   const weight = gauge.yarnWeight ?? DEFAULT_YARN_WEIGHT;
   const defaults = YARN_WEIGHT_DEFAULTS[weight];
+  const yarnDiameterMm = gauge.yarnDiameterMm ?? defaults.yarnDiameterMm;
 
   if (gauge.stitchesPer10cm !== undefined || gauge.rowsPer10cm !== undefined) {
     const stitchWidthMm =
@@ -123,19 +208,28 @@ export function resolveGauge(gauge: Gauge | undefined = {}): ResolvedGauge {
     return {
       stitchWidthMm,
       stitchHeightMm,
-      yarnDiameterMm: defaults.yarnDiameterMm,
+      yarnDiameterMm,
       estimated: false,
       source: "swatch",
     };
   }
 
-  const hookScale = gauge.hookMm !== undefined ? clamp(gauge.hookMm / defaults.hookMm, 0.6, 1.6) : 1;
-  const fromWeight = gauge.yarnWeight !== undefined || gauge.hookMm !== undefined;
+  const base: YarnSizeDefaults =
+    gauge.yarnDiameterMm !== undefined
+      ? yarnDefaultsForDiameter(gauge.yarnDiameterMm)
+      : {
+          stitchWidthMm: 100 / defaults.stitchesPer10cm,
+          stitchHeightMm: 100 / defaults.rowsPer10cm,
+          hookMm: defaults.hookMm,
+        };
+  const hookScale = gauge.hookMm !== undefined ? clamp(gauge.hookMm / base.hookMm, 0.6, 1.6) : 1;
+  const fromYarn =
+    gauge.yarnWeight !== undefined || gauge.yarnDiameterMm !== undefined || gauge.hookMm !== undefined;
   return {
-    stitchWidthMm: (100 / defaults.stitchesPer10cm) * hookScale,
-    stitchHeightMm: (100 / defaults.rowsPer10cm) * hookScale,
-    yarnDiameterMm: defaults.yarnDiameterMm,
+    stitchWidthMm: base.stitchWidthMm * hookScale,
+    stitchHeightMm: base.stitchHeightMm * hookScale,
+    yarnDiameterMm,
     estimated: true,
-    source: fromWeight ? "yarn-weight" : "default",
+    source: fromYarn ? "yarn-weight" : "default",
   };
 }

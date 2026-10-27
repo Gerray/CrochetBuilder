@@ -5,6 +5,10 @@ coverage/
 *.tmp
 .DS_Store
 
+# Playwright (npm run e2e)
+e2e/test-results/
+e2e/playwright-report/
+
 # Lokale Werkzeug-Konfiguration
 .claude/
 
