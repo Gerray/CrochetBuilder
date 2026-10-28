@@ -6,7 +6,7 @@ import {
   type Gauge,
   type YarnWeight,
 } from "@crochetbuilder/engine";
-import { num, sizeBasisText, yarnWeightOption } from "../export/labels.js";
+import { flatCircleHint, num, sizeBasisText, yarnWeightOption } from "../export/labels.js";
 import type { EditorAction } from "../state/editor.js";
 import { NumberField } from "./fields.js";
 
@@ -21,6 +21,7 @@ export function GaugeEditor({ gauge = {}, dispatch }: { gauge: Gauge | undefined
   const effective = hasSwatch ? "swatch" : mode;
   const set = (patch: Partial<Gauge>) => dispatch({ type: "setGauge", gauge: { ...gauge, ...patch } });
   const typicalMm = YARN_WEIGHT_DEFAULTS[gauge.yarnWeight ?? "dk"].yarnDiameterMm;
+  const flat = hasSwatch ? flatCircleHint(gauge) : null;
 
   return (
     <div className="gauge" role="group" aria-label="Größe">
@@ -120,6 +121,11 @@ export function GaugeEditor({ gauge = {}, dispatch }: { gauge: Gauge | undefined
             />
           </label>
           <span className="unit">pro 10 cm</span>
+          {flat && (
+            <span className="gauge-hint" aria-live="polite" title={flat.exact}>
+              {flat.text}
+            </span>
+          )}
         </>
       )}
     </div>

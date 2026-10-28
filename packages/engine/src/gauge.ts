@@ -233,3 +233,15 @@ export function resolveGauge(gauge: Gauge | undefined = {}): ResolvedGauge {
     source: fromYarn ? "yarn-weight" : "default",
   };
 }
+
+/**
+ * Increases per round that make a circle of `code` stitches lie flat: each round must grow
+ * the circumference by 2π × its height, so n₀ = 2π · h / w. Fewer increases cup the piece
+ * into a cone that rises by arccos(n / n₀) out of the plane, more make the edge ruffle. For
+ * single crochet this is the crocheter's "six increases" with roughly square stitches and
+ * about eight with stitches 1.25 × as tall as wide. Not rounded.
+ */
+export function flatIncreasesPerRound(gauge?: Gauge, code: StitchCode = "SC"): number {
+  const g = resolveGauge(gauge);
+  return (2 * Math.PI * g.stitchHeightMm * STITCH_HEIGHT_FACTOR[code]) / g.stitchWidthMm;
+}

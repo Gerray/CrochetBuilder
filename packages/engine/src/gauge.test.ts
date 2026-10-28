@@ -8,6 +8,7 @@ import {
   MAX_YARN_DIAMETER_MM,
   resolveGauge,
   yarnDefaultsForDiameter,
+  flatIncreasesPerRound,
 } from "./gauge.js";
 import { StitchCodeSchema } from "./schema.js";
 import { BuilderExportSchema } from "./export.js";
@@ -227,5 +228,23 @@ describe("STITCH_HEIGHT_FACTOR", () => {
     expect(STITCH_HEIGHT_FACTOR.DC).toBeGreaterThan(STITCH_HEIGHT_FACTOR.HDC);
     expect(STITCH_HEIGHT_FACTOR.TR).toBeGreaterThan(STITCH_HEIGHT_FACTOR.DC);
     expect(STITCH_HEIGHT_FACTOR.MR).toBe(0);
+  });
+});
+
+describe("flatIncreasesPerRound", () => {
+  it("gives the crocheter's rules: about 6 for sc, 9 for hdc and 12 for dc by default", () => {
+    expect(flatIncreasesPerRound()).toBeCloseTo(6, 0);
+    expect(flatIncreasesPerRound(undefined, "HDC")).toBeCloseTo(9, 0);
+    expect(flatIncreasesPerRound({}, "DC")).toBeCloseTo(12, 0);
+    for (const weight of YarnWeightSchema.options) {
+      expect(Math.round(flatIncreasesPerRound({ yarnWeight: weight }))).toBe(6);
+    }
+  });
+
+  it("follows the swatch: taller stitches need more increases", () => {
+    expect(flatIncreasesPerRound({ stitchesPer10cm: 20, rowsPer10cm: 16 })).toBeCloseTo((2 * Math.PI * 20) / 16, 10);
+    expect(flatIncreasesPerRound({ stitchesPer10cm: 20, rowsPer10cm: 16 })).toBeCloseTo(7.85, 2);
+    // Without rows, sc is taken as square.
+    expect(flatIncreasesPerRound({ stitchesPer10cm: 20 })).toBeCloseTo(2 * Math.PI, 10);
   });
 });

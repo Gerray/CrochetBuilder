@@ -85,3 +85,28 @@ describe("GaugeEditor: Garndicke", () => {
     expect(screen.getByText("Größe aus Garn Worsted (mittel) geschätzt")).toBeTruthy();
   });
 });
+
+describe("GaugeEditor: Maschenprobe", () => {
+  const stitchesField = () => screen.getByLabelText("Maschen") as HTMLInputElement;
+  const rowsField = () => screen.getByLabelText("Reihen") as HTMLInputElement;
+
+  it("shows how many increases per round lie flat with the swatch", () => {
+    render(<Harness gauge={{ stitchesPer10cm: 20, rowsPer10cm: 16 }} />);
+    const hint = screen.getByText("Flacher Kreis in fM: ca. 8 Zunahmen pro Runde");
+    expect(hint.getAttribute("title")).toBe(
+      "Genau 7,9 – mit weniger Zunahmen wölbt sich der Kreis, mit mehr wird der Rand wellig.",
+    );
+
+    fireEvent.change(rowsField(), { target: { value: "20" } });
+    expect(latest).toEqual({ stitchesPer10cm: 20, rowsPer10cm: 20 });
+    expect(screen.getByText("Flacher Kreis in fM: ca. 6 Zunahmen pro Runde")).toBeTruthy();
+  });
+
+  it("hides the hint until a swatch is entered", () => {
+    render(<Harness />);
+    fireEvent.click(screen.getByRole("radio", { name: "Maschenprobe" }));
+    expect(screen.queryByText(/Flacher Kreis/)).toBeNull();
+    fireEvent.change(stitchesField(), { target: { value: "18" } });
+    expect(screen.getByText("Flacher Kreis in fM: ca. 6 Zunahmen pro Runde")).toBeTruthy();
+  });
+});

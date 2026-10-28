@@ -53,6 +53,7 @@ export {
   YARN_DIAMETER_EXTRAPOLATION,
   resolveGauge,
   yarnDefaultsForDiameter,
+  flatIncreasesPerRound,
 } from "./gauge.js";
 export type { Gauge, YarnWeight, ResolvedGauge, YarnSizeDefaults } from "./gauge.js";
 

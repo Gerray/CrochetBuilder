@@ -18,6 +18,9 @@ All notable changes to this project are documented here. The format follows
   yarn loop with its V top, posts and wraps; increases, decreases, chains and the magic ring
   have their own shapes. It is the default "Maschen" view in the builder, the viewer and
   the PDF image.
+- `flatIncreasesPerRound(gauge, code)`: the increases per round that make a circle lie
+  flat (2π · stitch height / width). The builder shows it next to the swatch fields
+  ("Flacher Kreis in fM: ca. 8 Zunahmen pro Runde").
 - Share links are documented in [`docs/FORMAT.md`](docs/FORMAT.md#share-links);
   `ShareDecodeError` gains the code `unsupported` (browser without deflate-raw streams).
 - `toMesh` options `smooth` (surface: 0–2 subdivision steps or `"auto"`, which keeps the

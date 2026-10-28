@@ -1,6 +1,7 @@
 /** German display labels shared by the editor, the PDF and the viewer. */
 
 import {
+  flatIncreasesPerRound,
   resolveGauge,
   YARN_WEIGHT_DEFAULTS,
   type Gauge,
@@ -72,6 +73,19 @@ export function sizeBasisText(gauge: Gauge | undefined): string {
   let text = `Größe aus ${basis} geschätzt`;
   if (g.yarnDiameterMm !== undefined && g.yarnWeight) text += " – die Garndicke hat Vorrang vor der Garnstärke";
   return text;
+}
+
+/**
+ * How many single-crochet increases per round lie flat with this gauge, as a hint for the
+ * swatch fields: "Flacher Kreis in fM: ca. 8 Zunahmen pro Runde". `exact` is the unrounded
+ * value for a tooltip.
+ */
+export function flatCircleHint(gauge: Gauge | undefined): { text: string; exact: string } {
+  const n = flatIncreasesPerRound(gauge);
+  return {
+    text: `Flacher Kreis in fM: ca. ${num(Math.round(n), 0)} Zunahmen pro Runde`,
+    exact: `Genau ${num(n)} – mit weniger Zunahmen wölbt sich der Kreis, mit mehr wird der Rand wellig.`,
+  };
 }
 
 /**
