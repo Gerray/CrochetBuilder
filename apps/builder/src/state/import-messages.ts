@@ -13,18 +13,22 @@ export function importIssueMessage(issue: Pick<ImportIssue, "code" | "message">)
   switch (issue.code) {
     case "UNREADABLE":
       return "Nicht lesbar – bleibt als Hinweis mit dem Originaltext stehen.";
-    case "UNSUPPORTED_GROUP":
-      return "Mehrere Maschen in eine Einstichstelle kann der Builder noch nicht darstellen – bleibt als Hinweis stehen.";
     case "UNSUPPORTED_SPECIAL_STITCH":
-      return "Spezialmaschen (Noppe, Puff, Büschel, Relief, Picot) kann der Builder noch nicht darstellen – bleibt als Hinweis stehen.";
+      return "Diese Spezialmasche (z. B. zusammen abgemaschte Maschen, Bullion, Muschel oder V-Masche ohne Ausschreibung) kann der Builder nicht darstellen – bleibt als Hinweis stehen. Muschel und V-Masche lassen sich als Gruppe ausschreiben, z. B. „(2 Stb, 1 Lm, 2 Stb) in dieselbe M“.";
     case "UNSUPPORTED_JOIN":
       return "Teile beim Häkeln verbinden geht noch nicht – bleibt als Hinweis stehen.";
     case "UNSUPPORTED_CHAIN_SPACE":
       return "Häkeln in Luftmaschenbögen geht noch nicht – bleibt als Hinweis stehen.";
     case "UNSUPPORTED_FOUNDATION_OVAL":
       return "Ovaler Anfang um eine Luftmaschenkette geht noch nicht – bleibt als Hinweis stehen.";
-    case "UNSUPPORTED_COLOR":
-      return "Farbwechsel speichert der Builder noch nicht – der Text bleibt als Hinweis erhalten.";
+    case "COLOR_UNNAMED":
+      return "Farbwechsel ohne Farbangabe – bitte die Farbe an der Runde selbst setzen.";
+    case "ASSEMBLY_ANGLE_GUESSED":
+      return "Annähstelle übernommen; die Richtung steht nicht im Text – vorne (0°) gesetzt, bitte prüfen.";
+    case "DETAIL_UNASSIGNED":
+      return "Kein Teil der Anleitung genannt – Füllung, Abschluss oder Montage nicht übernommen, der Text bleibt als Hinweis stehen.";
+    case "PLACEMENT_ROUND_UNKNOWN":
+      return "Diese Runde gibt es im Teil nicht (oder sie wurde nicht gelesen) – Montage nicht übernommen, der Text bleibt als Hinweis stehen.";
     case "UNSUPPORTED_ROUND_JOIN":
       return "Runde mit Kettmasche geschlossen – als Spiralrunde übernommen.";
     case "NEEDS_PREVIOUS_COUNT":
@@ -45,12 +49,13 @@ export function importIssueMessage(issue: Pick<ImportIssue, "code" | "message">)
       return "Wiederholung anhand der angegebenen Maschenzahl gedeutet – bitte kurz prüfen.";
     case "AMBIGUOUS_REPEAT":
       return "Die Wiederholung lässt sich zweifach lesen – bleibt als Hinweis stehen, bitte ausschreiben.";
+    case "AMBIGUOUS_INCREASE":
+      return "„3 hStb Zun“ kann drei hStb-Zunahmen oder „3 hStb, 1 Zun“ heißen – ohne Maschenzahl als Zunahmen gelesen, bitte prüfen.";
   }
 }
 
 /** Codes that turn a row into an instruction because the format cannot hold it yet. */
 const UNSUPPORTED: ReadonlySet<ImportIssueCode> = new Set([
-  "UNSUPPORTED_GROUP",
   "UNSUPPORTED_SPECIAL_STITCH",
   "UNSUPPORTED_JOIN",
   "UNSUPPORTED_CHAIN_SPACE",

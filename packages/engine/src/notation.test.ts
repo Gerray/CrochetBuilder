@@ -546,9 +546,11 @@ describe("parseRowText — to the end of the round", () => {
     expect(parseRowText("dec around", "en_us", { previousCount: 7 })).toMatchObject({ ok: false, code: "fill-mismatch" });
   });
 
-  it("does not resolve more than one fill or 3+ stitches into one", () => {
+  it("does not resolve more than one fill, and reads 3+ stitches into each stitch as groups", () => {
     expect(parseRowText("sc around, (sc, inc)*", "en_us", { previousCount: 12 }).ok).toBe(false);
-    expect(parseRowText("3 sc in each st", "en_us", { previousCount: 12 }).ok).toBe(false);
+    const group: Op = { kind: "group", ops: [{ kind: "stitch", code: "SC", count: 3 }] };
+    expectRow("3 sc in each st", [rep(12, [group])], undefined, "en_us", 12);
+    expect(parseRowText("3 sc in each st", "en_us")).toMatchObject({ ok: false, code: "needs-context" });
   });
 });
 
@@ -646,7 +648,7 @@ describe("parseRowText — spelling tolerances", () => {
   });
 
   it("still fails on what it cannot read", () => {
-    expect(parseRowText("3 sc in one st", "en_us").ok).toBe(false);
+    expect(parseRowText("3 sc in next 3 sts", "en_us").ok).toBe(false);
     expect(parseRowText("6 sc with left leg", "en_us").ok).toBe(false);
     expect(parseRowText("Stuff the head", "en_us").ok).toBe(false);
   });
@@ -674,10 +676,11 @@ describe("parseRowText — no silent misreadings", () => {
     expectRow("sc 5 (18)", [st("SC", 5)], 18);
   });
 
-  it("keeps 'in next st' only for a single stitch", () => {
-    expect(parseRowText("2 hdc in next st", "en_us").ok).toBe(false);
-    expect(parseRowText("3 sc in next st", "en_us").ok).toBe(false);
-    expect(parseRowText("2 tr in next st", "en_uk").ok).toBe(false);
+  it("drops 'in next st' only for a single stitch; more stitches are a group", () => {
+    const group = (code: StitchCode, count: number): Op => ({ kind: "group", ops: [{ kind: "stitch", code, count }] });
+    expectRow("2 hdc in next st", [group("HDC", 2)]);
+    expectRow("3 sc in next st", [group("SC", 3)]);
+    expectRow("2 tr in next st", [group("DC", 2)], undefined, "en_uk");
     expectRow("sc in next st, inc", [st("SC", 1), st("INC", 1)]);
     expectRow("1 hdc in next st, 5 sc", [st("HDC", 1), st("SC", 5)]);
     expectRow("2 dc in next st", [st("INC", 1)], undefined, "en_uk");

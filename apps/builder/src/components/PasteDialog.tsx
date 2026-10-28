@@ -1,8 +1,10 @@
-import { memo, useCallback, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { Fragment, memo, useCallback, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import type { NotationLocale } from "@crochetbuilder/engine";
 import {
   applyPaste,
+  droppedPlacements,
   effectiveMode,
+  paletteNotes,
   partEdit,
   pasteBlocker,
   type PartEdit,
@@ -10,6 +12,9 @@ import {
   type PasteResult,
 } from "../paste/apply.js";
 import {
+  assemblySummary,
+  FINISH_LABELS,
+  STUFFING_LABELS,
   summaryText,
   type LineStatus,
   type PastePreview,
@@ -149,6 +154,16 @@ export function PasteDialog({ initialText, doc, onImport, onClose, previewOption
 
   const close = () => onClose(text);
   // Both actions are checked up front, so a button is disabled with its reason before a click.
+  // Colours that keep the pattern's own shade when parts are added; placements left out.
+  const notes = useMemo(() => {
+    if (!preview) return [];
+    const out = paletteNotes(preview, doc, "append");
+    const dropped = droppedPlacements(preview);
+    if (dropped > 0) {
+      out.push(`${dropped} ${dropped === 1 ? "Montageangabe" : "Montageangaben"} ohne Teil oder Runde – ${dropped === 1 ? "wird" : "werden"} nicht übernommen`);
+    }
+    return out;
+  }, [preview, doc]);
   const blockers = useMemo(() => {
     if (!preview) return { replace: null, append: null };
     const check = (mode: PasteMode) => pasteBlocker(preview, { mode, edits: indexEdits, includePreamble }, doc);
@@ -288,6 +303,7 @@ export function PasteDialog({ initialText, doc, onImport, onClose, previewOption
                 onlyProblems={onlyProblems}
                 onOnlyProblems={setOnlyProblems}
                 edits={indexEdits}
+                notes={notes}
                 onEdit={setEdit}
                 onSelectLine={selectLine}
               />
@@ -349,16 +365,19 @@ interface PreviewContentProps {
   edits: ReadonlyMap<number, Partial<PartEdit>>;
   onEdit: (index: number, patch: Partial<PartEdit>) => void;
   onSelectLine: (line: number | undefined) => void;
+  /** Remarks on taking the colours and placements over ("Rosa: vorhandener Farbton bleibt"). */
+  notes: readonly string[];
 }
 
 const percent = (confidence: number) => `${Math.round(confidence * 100)} %`;
 
 const PreviewContent = memo(function PreviewContent(props: PreviewContentProps) {
-  const { preview, computing, choice, onChoice, onlyProblems, onOnlyProblems, edits, onEdit, onSelectLine } = props;
+  const { preview, computing, choice, onChoice, onlyProblems, onOnlyProblems, edits, onEdit, onSelectLine, notes } = props;
   // The notation has its own box above; skipped lines are no problem.
   const general = preview.general.filter(
     (g) => g.code !== "LOCALE_UNCERTAIN" && (!onlyProblems || g.code !== "IGNORED"),
   );
+  const assembly = assemblySummary(preview, (i) => partEdit(preview, i, edits).quantity);
   let budget = MAX_PREVIEW_LINES;
 
   return (
@@ -373,6 +392,27 @@ const PreviewContent = memo(function PreviewContent(props: PreviewContentProps) 
           <input type="checkbox" checked={onlyProblems} onChange={(e) => onOnlyProblems(e.target.checked)} />
           nur Problemstellen
         </label>
+        {(preview.colors.length > 0 || assembly || notes.length > 0) && (
+          <p className="paste-details muted small">
+            {preview.colors.length > 0 && (
+              <span>
+                Farben:
+                {preview.colors.map((c) => (
+                  <Fragment key={c.id}>
+                    {" "}
+                    <ColorChip color={c} />
+                  </Fragment>
+                ))}
+              </span>
+            )}
+            {assembly && <span>{assembly}</span>}
+            {notes.map((note) => (
+              <span key={note} className="paste-detail-note">
+                {note}
+              </span>
+            ))}
+          </p>
+        )}
       </div>
 
       {general.length > 0 && (
@@ -426,6 +466,16 @@ const PreviewContent = memo(function PreviewContent(props: PreviewContentProps) 
               <span className="muted small">
                 {part.stitchRows} {part.stitchRows === 1 ? "Runde" : "Runden"}
               </span>
+              {part.finish && (
+                <span className="paste-badge" title="Abschluss laut Text">
+                  {FINISH_LABELS[part.finish]}
+                </span>
+              )}
+              {part.stuffing && (
+                <span className="paste-badge" title="Füllung laut Text">
+                  {STUFFING_LABELS[part.stuffing]}
+                </span>
+              )}
             </div>
             {shown.length > 0 && (
               <ol className="paste-lines">
@@ -465,6 +515,20 @@ const PreviewContent = memo(function PreviewContent(props: PreviewContentProps) 
   );
 });
 
+/** A colour as a chip: swatch (when the text names a known colour) and name. */
+function ColorChip({ color }: { color: { name: string; hex?: string } }) {
+  return (
+    <span className="paste-color" title={`Farbe: ${color.name}`}>
+      <span
+        className={`paste-swatch${color.hex ? "" : " is-unknown"}`}
+        style={color.hex ? { backgroundColor: color.hex } : undefined}
+        aria-hidden="true"
+      />
+      {color.name}
+    </span>
+  );
+}
+
 function StatusIcon({ status }: { status: LineStatus }) {
   return (
     <span className={`paste-status is-${status}`} role="img" aria-label={STATUS[status].label}>
@@ -488,7 +552,13 @@ function LineView({
       <StatusIcon status={line.status} />
       <span className="paste-line-main">
         <span className="paste-line-text">
-          <strong>{line.label}:</strong> {line.text}
+          <strong>{line.label}:</strong>{" "}
+          {line.color && (
+            <>
+              <ColorChip color={line.color} />{" "}
+            </>
+          )}
+          {line.text}
         </span>
         {line.messages.map((m, i) => (
           <span key={i} className={`paste-message is-${m.severity}`}>

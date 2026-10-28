@@ -73,7 +73,7 @@ test("paste a whole pattern: preview, fix in place, import as parts, undo", asyn
   // Unread text stays visible as a marked instruction with the original text.
   await partTab(page, "Ohren").click();
   await expect(rowCard(page, "Nicht unterstützt").getByRole("textbox", { name: "Hinweistext von Nicht unterstützt" })).toHaveValue(
-    "Runde 3: 3 Noppen, 7 fM (10)",
+    "Runde 3: 3 Krebsmaschen, 7 fM (10)",
   );
   await expect(rowCard(page, "Nicht gelesen")).toBeVisible();
 
