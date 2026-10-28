@@ -49,6 +49,11 @@ All notable changes to this project are documented here. The format follows
 - **Assembly:** `BuilderPart.id` and `BuilderExport.assembly` (placements `attach`, `eyes`,
   `embroidery` on a row and angle of a target part). `placementAnchor(graph, rowId, angle)`
   gives the point and outward normal of a placement on a relaxed part.
+  `composeAssembly(doc, models)` puts the parts together: a rigid transform per part copy
+  (attached parts sewn on with their last row, pointing outwards, mirrored second copy for a
+  part ×2 with one placement), safety eyes and embroidery positions, and findings for
+  unknown references and cycles. `anchorOfNode(graph, node)` is the inverse of
+  `placementAnchor` (row and angle of a stitch) for creating placements by clicking.
 - Validation: `INVALID_MODIFIER` (FP/BP on a stitch without a post), `UNKNOWN_COLOR` (with a
   palette), `EMPTY_GROUP` (a group with nothing worked into its stitch), `INVALID_GROUP` (MR,
   DEC, INVDEC or TOG inside a group); `validateExport` checks a whole export — part findings,
@@ -68,6 +73,14 @@ All notable changes to this project are documented here. The format follows
   apart). The 3D preview closes a part as its finish says and relaxes again when finish or
   stuffing change. Importing duplicate row ids renames them and moves the placements that
   point at them; a duplicated part gets no part id of its own.
+- **Montage in the builder.** The preview switches between "Teil" and "Montage": all parts
+  assembled in 3D (computed in a worker, eyes as glossy spheres) with a placement list in
+  words ("Ohr ×2 an Kopf, zwischen Runde 4 und 5, ±45°"). "+ Annähen", "+ Augen" and
+  "+ Stickerei" take one click on the target in the 3D view (the round under the pointer
+  lights up, Escape cancels); small fields fine-tune round, angle, spacing and size; every
+  edit is undoable, deleting a part removes its placements. The PDF lists the assembly and
+  shows the assembled toy, the viewer has a "Teil | Montage" switch. The bunny demo comes
+  sewn together.
 - `ParseRowContext.rowColor`: a leading colour mark (`[Farbe: Weiß] 6 fM`) comes back as the
   row's colour (`result.color`) instead of on the first stitch, so `renderRow` text reads
   back into `Row.color`.

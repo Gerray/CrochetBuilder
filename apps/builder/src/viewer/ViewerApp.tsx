@@ -8,12 +8,17 @@ import { partsTotal, totalText } from "../state/parts.js";
 import { builderBaseUrl } from "../export/share.js";
 import { usePreviewModel, type PreviewOptions } from "../preview/usePreviewModel.js";
 import { isEmbed, loadViewerData, type ViewerData } from "./load.js";
+import { AssemblyWorkspace } from "../assembly/AssemblyWorkspace.js";
+import type { AssemblySceneOptions } from "../assembly/useAssemblyScene.js";
+import { assemblyLines } from "../assembly/wording.js";
 
 export interface ViewerAppProps {
   /** Page location (tests pass their own). */
   location?: Pick<Location, "hash" | "search" | "href">;
   previewOptions?: PreviewOptions;
   loadView?: ViewLoader;
+  /** "Montage" computation options (tests: a main-thread client). */
+  assemblySceneOptions?: AssemblySceneOptions;
 }
 
 const NO_COLORS: readonly PaletteColor[] = [];
@@ -30,9 +35,16 @@ const STYLES: Array<[MeshStyle, string]> = [
  * several parts, tabs pick the part whose model is shown and scroll to its rows; the text
  * always lists every part (so printing the page prints the whole pattern).
  */
-export function ViewerApp({ location = globalThis.location, previewOptions, loadView = loadModelCanvas }: ViewerAppProps) {
+export function ViewerApp({
+  location = globalThis.location,
+  previewOptions,
+  loadView = loadModelCanvas,
+  assemblySceneOptions,
+}: ViewerAppProps) {
   const [data, setData] = useState<ViewerData>({ status: "loading" });
   const [part, setPart] = useState(0);
+  // "Montage": all parts put together (patterns with an assembly).
+  const [montage, setMontage] = useState(false);
   const [hash, setHash] = useState(location.hash);
   const embed = isEmbed(location.search);
   const builderUrl = builderBaseUrl(location.href);
@@ -93,11 +105,22 @@ export function ViewerApp({ location = globalThis.location, previewOptions, load
   const editUrl = `${builderUrl}#data=${data.payload}`;
   const title = data.exp.title.trim() || "Häkelanleitung";
   const shown = Math.min(part, data.exp.parts.length - 1);
+  const hasAssembly = (data.exp.assembly ?? []).length > 0;
   const model = (
-    <ViewerModel exp={data.exp} part={shown} embed={embed} previewOptions={previewOptions} loadView={loadView} />
+    <ViewerModel
+      exp={data.exp}
+      part={shown}
+      embed={embed}
+      previewOptions={previewOptions}
+      loadView={loadView}
+      montage={hasAssembly && montage}
+      onMontage={hasAssembly && !embed ? setMontage : undefined}
+      {...(assemblySceneOptions ? { assemblySceneOptions } : {})}
+    />
   );
   const selectPart = (index: number) => {
     setPart(index);
+    setMontage(false);
     // The text lists every part: bring the chosen one's rows into view (no text in embeds).
     if (!embed) {
       setTimeout(() => {
@@ -246,12 +269,20 @@ function ViewerModel({
   embed,
   previewOptions,
   loadView,
+  montage,
+  onMontage,
+  assemblySceneOptions,
 }: {
   exp: BuilderExport;
   part: number;
   embed: boolean;
   previewOptions: PreviewOptions | undefined;
   loadView: ViewLoader;
+  /** Show all parts assembled instead of the part. */
+  montage: boolean;
+  /** Offer the "Teil | Montage" switch (patterns with an assembly). */
+  onMontage: ((montage: boolean) => void) | undefined;
+  assemblySceneOptions?: AssemblySceneOptions;
 }) {
   const [style, setStyle] = useState<MeshStyle>("stitches");
   const [resetToken, setResetToken] = useState(0);
@@ -263,7 +294,7 @@ function ViewerModel({
   const ignorePick = useCallback(() => {}, []);
   const part = exp.parts[index]!;
   const palette = usePaletteColors(exp.overview.colors ?? NO_COLORS);
-  const preview = usePreviewModel(part.content, exp.overview.gauge, style, previewOptions, palette.ids);
+  const preview = usePreviewModel(part.content, exp.overview.gauge, style, { ...previewOptions, paused: montage }, palette.ids);
   const size = preview.model;
 
   let overlay: ReactNode = null;
@@ -286,6 +317,16 @@ function ViewerModel({
     >
       {!embed && (
         <div className="model-toolbar">
+          {onMontage && (
+            <div className="segmented segmented-small" role="radiogroup" aria-label="Ansicht">
+              <button type="button" role="radio" aria-checked={!montage} onClick={() => onMontage(false)}>
+                Teil
+              </button>
+              <button type="button" role="radio" aria-checked={montage} onClick={() => onMontage(true)}>
+                Montage
+              </button>
+            </div>
+          )}
           <div className="segmented segmented-small" role="radiogroup" aria-label="Darstellung">
             {STYLES.map(([value, label]) => (
               <button key={value} type="button" role="radio" aria-checked={style === value} onClick={() => setStyle(value)}>
@@ -303,6 +344,20 @@ function ViewerModel({
           </button>
         </div>
       )}
+      {montage ? (
+        <AssemblyWorkspace
+          doc={exp}
+          dispatch={ignoreEdit}
+          selectedPart={0}
+          style={style}
+          showGrid={!embed}
+          backing={0}
+          resetToken={resetToken}
+          readOnly
+          {...(assemblySceneOptions ? { sceneOptions: assemblySceneOptions } : {})}
+        />
+      ) : (
+        <>
       <div className="viewer-stage">
         {webgl && preview.model && (
           <ViewBoundary key={attempt} fallback={(error) => <ViewError error={error} onRetry={retry} />}>
@@ -330,9 +385,14 @@ function ViewerModel({
           {size.estimated && <span className="estimate-hint">geschätzt</span>}
         </p>
       )}
+        </>
+      )}
     </div>
   );
 }
+
+/** The viewer is read-only: the assembly view never edits. */
+const ignoreEdit = () => {};
 
 function Message({ title, children }: { title?: string; children: ReactNode }) {
   return (
@@ -349,6 +409,7 @@ function PatternText({ exp, part: index }: { exp: BuilderExport; part: number })
   const estimate = estimateNote(exp.overview.gauge);
   const notes = exp.overview.notes?.trim();
   const several = exp.parts.length > 1;
+  const assembly = assemblyLines(exp);
   return (
     <div className="viewer-text">
       {(materials.length > 0 || colors.length > 0) && (
@@ -416,6 +477,18 @@ function PatternText({ exp, part: index }: { exp: BuilderExport; part: number })
           );
         })}
       </section>
+      {assembly.length > 0 && (
+        <section aria-labelledby="viewer-assembly">
+          <h2 id="viewer-assembly" className="section-title">
+            Montage
+          </h2>
+          <ul className="viewer-list">
+            {assembly.map((line, i) => (
+              <li key={i}>{line}</li>
+            ))}
+          </ul>
+        </section>
+      )}
     </div>
   );
 }

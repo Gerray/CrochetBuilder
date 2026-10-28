@@ -103,6 +103,47 @@ export type { PaletteEntry } from "./color.js";
 export { PlacementSchema, PlacementKindSchema, placementAnchor } from "./assembly.js";
 export type { Placement, PlacementKind, Anchor, Vec3 } from "./assembly.js";
 
+export {
+  composeAssembly,
+  anchorOfNode,
+  nodeAnchorAngles,
+  applyTransform,
+  composeTransforms,
+  transformMatrix4,
+  rotate,
+  IDENTITY_TRANSFORM,
+  DEFAULT_EYE_MM,
+  DEFAULT_MARK_MM,
+} from "./assembly-scene.js";
+export {
+  placementText,
+  assemblyLines,
+  rowPositionText,
+  rowWord,
+  angleText,
+  degreesText,
+  isMirroredPair,
+  isUsableAttach,
+  partIndexById,
+  partNameById,
+  placementPartName,
+} from "./assembly-text.js";
+export type { PlacementTextDoc } from "./assembly-text.js";
+export type {
+  AssemblyScene,
+  AssemblyDocument,
+  AssemblyPartModel,
+  AssemblyFinding,
+  AssemblyFindingCode,
+  ComposeOptions,
+  EyeInstance,
+  MarkInstance,
+  Mat3,
+  NodeAnchor,
+  PartInstance,
+  RigidTransform,
+} from "./assembly-scene.js";
+
 export { buildGraph, nodesOfRow, isFabricNode, LEG_LEAN } from "./graph.js";
 export type {
   StitchGraph,

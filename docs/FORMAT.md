@@ -301,7 +301,30 @@ part into:
 ```
 
 `placementAnchor(graph, rowId, angle)` returns the point and the outward normal of a
-placement on a relaxed part.
+placement on a relaxed part; `anchorOfNode(graph, node)` is its inverse (the row and angle of
+a stitch).
+
+`composeAssembly(doc, models)` builds the assembled scene from the relaxed parts. How the
+engine reads a placement in 3D:
+
+- The part nothing is attached *with* (no `attach` placement of its own) stays in its own
+  pose; with several such parts the one that has something attached to it, then the largest,
+  is the centre and the others are set beside it.
+- An attached part is sewn on with its **last row** (the open end, the flat seam or the
+  gathered end). Its centre goes to the placement's point, the part points outwards along
+  the surface normal (its first row is the tip). Its front (angle 0) turns towards the
+  target's front; a flat-finished part (or a piece in rows) lays its seam along the target's
+  round instead. A placement on the target's last row is centred on that end (a head on the
+  open top of a body); the angle then only turns the part.
+- `attach` placements of the same part apply to its copies in order. A part with quantity 2
+  or more and a single placement gets its second copy mirrored: same row, angle `-angle`
+  (ears, arms, legs). Copy *k* of an attached part goes onto copy *k* of its target when the
+  target has one.
+- `eyes`: two eyes at `angle ± spacing / 2` stitches along the row (one eye without
+  `spacing`), `size` mm across (10 mm when missing), half sunk into the surface.
+
+Placements whose part, target or row does not exist, parts attached to themselves and
+cycles (A on B, B on A) are reported; the parts concerned are set beside the scene.
 
 ## Share links
 

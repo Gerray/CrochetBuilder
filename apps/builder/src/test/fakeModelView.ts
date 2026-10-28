@@ -7,7 +7,7 @@
  * like a browser without WebGL.
  */
 
-import type { ModelView, ModelViewStyle, PickResult, ViewMesh } from "../three/modelView.js";
+import type { ModelView, ModelViewStyle, PickResult, ViewMesh, ViewSphere } from "../three/modelView.js";
 
 export interface FakeView extends ModelView {
   mesh: ViewMesh | null;
@@ -17,6 +17,8 @@ export interface FakeView extends ModelView {
   disposed: boolean;
   /** What `pick` returns. */
   nextPick: PickResult | null;
+  /** Assembly spheres (eyes, embroidery) last set. */
+  spheres: readonly ViewSphere[];
 }
 
 export const fakeViews = {
@@ -75,6 +77,10 @@ function createModelView(_canvas: HTMLCanvasElement, opts: { style?: Partial<Mod
     },
     dispose() {
       view.disposed = true;
+    },
+    spheres: [],
+    setSpheres(spheres) {
+      view.spheres = spheres;
     },
   };
   fakeViews.created.push(view);

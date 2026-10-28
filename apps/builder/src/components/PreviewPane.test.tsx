@@ -237,3 +237,23 @@ describe("PreviewPane", () => {
     expect(onSelectRow).toHaveBeenCalledWith("bad");
   });
 });
+
+describe("PreviewPane: Montage", () => {
+  it("pauses the part preview while Montage is shown and resumes it after", async () => {
+    const posted: unknown[] = [];
+    const counting: BackendFactory = (onResult) => ({
+      post: (req) => {
+        posted.push(req);
+        queueMicrotask(() => onResult({ id: req.id, kind: "empty" }));
+      },
+      dispose: () => {},
+    });
+    localStorage.setItem("crochetbuilder:preview-mode", "assembly");
+    renderPane({ previewOptions: { debounceMs: 0, createClient: () => new PreviewClient(counting) }, renderAssembly: () => <p>Montage-Ansicht</p> });
+    expect(screen.getByText("Montage-Ansicht")).toBeTruthy();
+    await new Promise((r) => setTimeout(r, 20));
+    expect(posted).toHaveLength(0);
+    fireEvent.click(screen.getByRole("radio", { name: "Teil" }));
+    await waitFor(() => expect(posted).toHaveLength(1));
+  });
+});

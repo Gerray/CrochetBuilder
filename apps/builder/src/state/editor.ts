@@ -30,6 +30,7 @@ import {
   type StitchOp,
   type Stuffing,
 } from "@crochetbuilder/engine";
+import { applyAssemblyAction, assemblyCoalesceKey, withoutPlacementsOf, type AssemblyAction } from "./assembly.js";
 import { emptyRow, instructionRow, type BuilderDoc } from "./document.js";
 import * as tree from "./op-tree.js";
 import type { OpPath } from "./op-tree.js";
@@ -155,6 +156,8 @@ export type EditorAction =
   | { type: "unpinTarget"; rowId: string }
   // pattern paste ("Anleitung einfügen", see the block at the end of `applyEdit`)
   | AppendPartsAction
+  // assembly (B4, "Montage"): placements, see `state/assembly.ts` and the block below
+  | AssemblyAction
   // document
   /** `source`: where the new document comes from (provenance, E25). */
   | { type: "replaceDocument"; doc: BuilderDoc; pinned?: readonly string[]; source?: DocumentSource }
@@ -634,7 +637,8 @@ function applyEdit(state: EditorState, action: EditorAction): DocResult {
       const gone = new Set(part.content.rows.map((r) => r.id));
       const parts = doc.parts.filter((_, i) => i !== action.index);
       return {
-        doc: { ...doc, parts },
+        // Placements on or of the deleted part go with it (undo brings both back).
+        doc: withoutPlacementsOf({ ...doc, parts }, part.id),
         pinned: pinned.some((id) => gone.has(id)) ? pinned.filter((id) => !gone.has(id)) : pinned,
         scope: action.index,
         // The next part takes its place in view (the previous one after the last part).
@@ -675,6 +679,14 @@ function applyEdit(state: EditorState, action: EditorAction): DocResult {
     case "setRunLength":
     case "unpinTarget":
       return applyAssist(state, action);
+
+    // Assembly (B4): document-wide, no part scope.
+    case "addPlacement":
+    case "updatePlacement":
+    case "removePlacement": {
+      const next = applyAssemblyAction(doc, action);
+      return next === doc ? same : { doc: next, pinned };
+    }
 
     case "addColor":
     case "updateColor":
@@ -958,6 +970,8 @@ function coalesceKey(action: EditorAction): string | undefined {
       return `op:${action.rowId}:${action.path.join(".")}`;
     case "batch":
       return action.key;
+    case "updatePlacement":
+      return assemblyCoalesceKey(action);
     default:
       return undefined;
   }

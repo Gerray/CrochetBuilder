@@ -60,6 +60,11 @@ export interface PreviewOptions {
   debounceMs?: number;
   /** Client factory (tests pass a fake). Must be stable. */
   createClient?: () => PreviewClient;
+  /**
+   * Compute nothing while true (the "Montage" view is shown and builds the parts itself);
+   * the last state is kept and the current pattern is computed as soon as it is false again.
+   */
+  paused?: boolean;
 }
 
 /**
@@ -71,7 +76,7 @@ export function usePreviewModel(
   content: PartContent,
   gauge: Gauge | undefined,
   style: MeshStyle,
-  { debounceMs = 200, createClient = createPreviewClient }: PreviewOptions = {},
+  { debounceMs = 200, createClient = createPreviewClient, paused = false }: PreviewOptions = {},
   palette: readonly string[] = [],
 ): PreviewState {
   // Only the ids matter (renaming or recolouring a colour needs no new model).
@@ -94,6 +99,7 @@ export function usePreviewModel(
   }, [createClient]);
 
   useEffect(() => {
+    if (paused) return;
     const edited = last.current !== null && (last.current.content !== content || last.current.gauge !== gauge);
     last.current = { content, gauge };
     // The mesh shown has this shape already: only its colours (or nothing visible) changed.
@@ -127,7 +133,7 @@ export function usePreviewModel(
       clearTimeout(timer);
       scheduled.current = false;
     };
-  }, [content, gauge, style, debounceMs, paletteKey, shape]);
+  }, [content, gauge, style, debounceMs, paletteKey, shape, paused]);
 
   return state;
 }

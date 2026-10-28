@@ -219,14 +219,35 @@ export class PreviewComputer {
 // Client side: one request in flight, newest wins
 // ---------------------------------------------------------------------------
 
-/** Where requests are computed: a Worker, the main thread, or a fake in tests. */
-export interface PreviewBackend {
-  post(req: PreviewRequest): void;
+/**
+ * Where requests are computed: a Worker, the main thread, or a fake in tests. Generic over
+ * the request/result pair so another computation (the assembly, see `assembly/`) reuses the
+ * client; the defaults are the part preview's.
+ */
+export interface PreviewBackend<Req = PreviewRequest> {
+  post(req: Req): void;
   dispose(): void;
 }
 
 /** Creates a backend that reports results (and fatal backend failures) through callbacks. */
-export type BackendFactory = (onResult: (r: PreviewResult) => void, onFailure: (err: unknown) => void) => PreviewBackend;
+export type BackendFactory<Req = PreviewRequest, Res = PreviewResult> = (
+  onResult: (r: Res) => void,
+  onFailure: (err: unknown) => void,
+) => PreviewBackend<Req>;
+
+/** What every request carries: the client's id and an optional stitch budget. */
+export interface ClientRequest {
+  id: number;
+  maxStitches?: number;
+}
+
+/**
+ * What every result carries. A result type must also allow `{ id, kind: "error", message }`:
+ * the client answers with it when no backend is left.
+ */
+export interface ClientResult {
+  id: number;
+}
 
 export type PreviewInput = Omit<PreviewRequest, "id">;
 
@@ -236,13 +257,15 @@ export const MAIN_THREAD_MAX_STITCHES = 5_000;
 /** A request without an answer after this long counts as a dead backend (ms). */
 export const WATCHDOG_MS = 15_000;
 
-export interface PreviewClientOptions {
+export interface PreviewClientOptions<Req = PreviewRequest, Res = PreviewResult> {
   /** Backend to switch to once the primary one fails (a Worker that cannot load). */
-  fallback?: BackendFactory;
+  fallback?: BackendFactory<Req, Res>;
   /** Budget for requests computed by the fallback (it runs on the main thread). */
   fallbackMaxStitches?: number;
   /** Treat the backend as dead when a request has no answer after this long. */
   watchdogMs?: number;
+  /** Per request instead of `watchdogMs`: big requests (many stitches) may take longer. */
+  watchdogFor?: (req: Req) => number;
   /** Budget for requests computed by the primary backend (default: as requested). */
   maxStitches?: number;
   /** The primary backend already runs on the main thread (no Worker available). */
@@ -263,21 +286,21 @@ export interface PreviewClientOptions {
  *   then switches to `fallback` (with the smaller `fallbackMaxStitches` budget) and re-sends
  *   the pending request; without a fallback left the request ends with an error result.
  */
-export class PreviewClient {
+export class PreviewClient<Req extends ClientRequest = PreviewRequest, Res extends ClientResult = PreviewResult> {
   private latestId = 0;
-  private inFlight: PreviewRequest | null = null;
-  private queued: PreviewRequest | null = null;
-  private waiters = new Map<number, (r: PreviewResult | null) => void>();
-  private backend: PreviewBackend;
-  private fallback: BackendFactory | undefined;
+  private inFlight: Req | null = null;
+  private queued: Req | null = null;
+  private waiters = new Map<number, (r: Res | null) => void>();
+  private backend: PreviewBackend<Req>;
+  private fallback: BackendFactory<Req, Res> | undefined;
   private budget: number | undefined;
   private watchdog: ReturnType<typeof setTimeout> | null = null;
   private disposed = false;
   private usingFallback = false;
 
   constructor(
-    primary: BackendFactory,
-    private readonly options: PreviewClientOptions = {},
+    primary: BackendFactory<Req, Res>,
+    private readonly options: PreviewClientOptions<Req, Res> = {},
   ) {
     this.fallback = options.fallback;
     this.budget = options.maxStitches;
@@ -285,12 +308,12 @@ export class PreviewClient {
     this.backend = this.connect(primary);
   }
 
-  compute(input: PreviewInput): Promise<PreviewResult | null> {
+  compute(input: Omit<Req, "id">): Promise<Res | null> {
     if (this.disposed) return Promise.resolve(null);
     const id = ++this.latestId;
     for (const resolve of this.waiters.values()) resolve(null);
     this.waiters.clear();
-    const req: PreviewRequest = { ...input, id };
+    const req = { ...input, id } as Req;
     return new Promise((resolve) => {
       this.waiters.set(id, resolve);
       if (this.inFlight) this.queued = req;
@@ -318,21 +341,21 @@ export class PreviewClient {
     this.backend.dispose();
   }
 
-  private connect(factory: BackendFactory): PreviewBackend {
+  private connect(factory: BackendFactory<Req, Res>): PreviewBackend<Req> {
     return factory(
       (r) => this.onResult(r),
       (err) => this.onFailure(err),
     );
   }
 
-  private send(req: PreviewRequest): void {
+  private send(req: Req): void {
     const sent =
       this.budget === undefined
         ? req
         : { ...req, maxStitches: Math.min(req.maxStitches ?? DEFAULT_MAX_STITCHES, this.budget) };
     this.inFlight = sent;
     this.clearWatchdog();
-    const ms = this.options.watchdogMs ?? WATCHDOG_MS;
+    const ms = this.options.watchdogFor?.(sent) ?? this.options.watchdogMs ?? WATCHDOG_MS;
     if (Number.isFinite(ms) && ms > 0) {
       this.watchdog = setTimeout(() => this.onFailure(new Error("Keine Antwort von der Vorschau-Berechnung")), ms);
     }
@@ -348,7 +371,7 @@ export class PreviewClient {
     this.watchdog = null;
   }
 
-  private onResult(result: PreviewResult): void {
+  private onResult(result: Res): void {
     if (this.disposed || !this.inFlight || result.id !== this.inFlight.id) return;
     this.clearWatchdog();
     this.inFlight = null;
@@ -373,7 +396,7 @@ export class PreviewClient {
     const retry = this.queued ?? this.inFlight;
     this.inFlight = null;
     this.queued = null;
-    let next: BackendFactory;
+    let next: BackendFactory<Req, Res>;
     if (this.fallback) {
       next = this.fallback;
       this.fallback = undefined;
@@ -381,7 +404,7 @@ export class PreviewClient {
       this.budget = this.options.fallbackMaxStitches;
       this.options.onFallback?.(err);
     } else {
-      next = failingBackend(err);
+      next = failingBackend<Req, Res>(err);
     }
     this.backend = this.connect(next);
     if (retry) this.send(retry);
@@ -389,19 +412,22 @@ export class PreviewClient {
 }
 
 /** A backend that answers every request with an error (no fallback left). */
-function failingBackend(err: unknown): BackendFactory {
+function failingBackend<Req extends ClientRequest, Res>(err: unknown): BackendFactory<Req, Res> {
   const message = err instanceof Error ? err.message : String(err);
   return (onResult) => ({
-    post: (req) => queueMicrotask(() => onResult({ id: req.id, kind: "error", message })),
+    // Every result type has this error shape (see `ClientResult`).
+    post: (req) => queueMicrotask(() => onResult({ id: req.id, kind: "error", message } as unknown as Res)),
     dispose: () => {},
   });
 }
 
 /** Computes on the main thread, asynchronously (one macrotask later), skipping stale work. */
-export function mainThreadBackend(computer = new PreviewComputer()): BackendFactory {
+export function mainThreadBackend<Req = PreviewRequest, Res = PreviewResult>(
+  computer: { compute(req: Req): Res } = new PreviewComputer() as unknown as { compute(req: Req): Res },
+): BackendFactory<Req, Res> {
   return (onResult) => {
     let timer: ReturnType<typeof setTimeout> | null = null;
-    let pending: PreviewRequest | null = null;
+    let pending: Req | null = null;
     return {
       post(req) {
         pending = req;
@@ -431,10 +457,10 @@ export interface WorkerLike {
 }
 
 /** Computes in a Worker created by `create`; a load or runtime failure is reported once. */
-export function workerBackend(create: () => WorkerLike): BackendFactory {
+export function workerBackend<Req = PreviewRequest, Res = PreviewResult>(create: () => WorkerLike): BackendFactory<Req, Res> {
   return (onResult, onFailure) => {
     const worker = create();
-    worker.onmessage = (e) => onResult(e.data as PreviewResult);
+    worker.onmessage = (e) => onResult(e.data as Res);
     worker.onerror = (e) => {
       e.preventDefault?.();
       onFailure(new Error(e.message || "Worker konnte nicht starten"));

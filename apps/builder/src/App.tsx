@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import type { PaletteColor, Row } from "@crochetbuilder/engine";
 import { createPortal } from "react-dom";
+import { AssemblyWorkspace } from "./assembly/AssemblyWorkspace.js";
+import type { AssemblySceneOptions } from "./assembly/useAssemblyScene.js";
 import type { ExportActions } from "./components/ExportMenu.js";
 import { focusLater } from "./components/focus.js";
 import { PaletteContext, type PaletteInfo } from "./components/palette.js";
@@ -53,6 +55,8 @@ export interface AppProps {
   exportActions?: Partial<ExportActions>;
   /** "Anleitung einfügen" preview options (tests: no debounce). */
   pastePreviewOptions?: PastePreviewOptions;
+  /** "Montage" computation options (tests: a main-thread client). */
+  assemblySceneOptions?: AssemblySceneOptions;
 }
 
 /** The notice after a pasted pattern was imported (German). */
@@ -67,7 +71,7 @@ export function pasteNotice({ mode, parts, unread }: Pick<PasteImport, "mode" | 
 }
 
 /** The builder: top bar, row editor (left) and preview (right). */
-export function App({ exportActions, pastePreviewOptions }: AppProps = {}) {
+export function App({ exportActions, pastePreviewOptions, assemblySceneOptions }: AppProps = {}) {
   const [state, dispatch] = useReducer(editorReducer, undefined, () => initEditorState(emptyDocument()));
   const persistence = usePersistence(state, dispatch);
   const [selectedRowId, setSelectedRowId] = useState<string | null>(null);
@@ -431,6 +435,15 @@ export function App({ exportActions, pastePreviewOptions }: AppProps = {}) {
                 pinned={state.pinned}
                 groups={groups.items}
                 onApplyFix={(action) => dispatch(action)}
+                renderAssembly={(view) => (
+                  <AssemblyWorkspace
+                    doc={state.doc}
+                    dispatch={dispatch}
+                    selectedPart={state.part}
+                    {...view}
+                    {...(assemblySceneOptions ? { sceneOptions: assemblySceneOptions } : {})}
+                  />
+                )}
               />
             }
           />
