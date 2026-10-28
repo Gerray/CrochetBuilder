@@ -43,7 +43,7 @@
  * Pure function, no I/O, no framework imports.
  */
 
-import { detectNotationLocale } from "./detect-locale.js";
+import { LOCALE_CONFIDENCE_THRESHOLD, detectNotationLocale } from "./detect-locale.js";
 import { parseRowText, resolveStitchTerm, type NotationLocale, type ParseRowResult } from "./notation.js";
 import type { Op, Row } from "./schema.js";
 import { computeRowStitches } from "./stitch-count.js";
@@ -80,7 +80,13 @@ export type ImportIssueCode =
   /** The line was moved to `preamble` (materials, abbreviations, intro …). */
   | "PREAMBLE"
   /** The line was ignored (page number, "… continued"). */
-  | "IGNORED";
+  | "IGNORED"
+  /** The notation (DE/US/UK) was guessed with low confidence; the user should confirm it. */
+  | "LOCALE_UNCERTAIN"
+  /** A repeat's scope or count was decided by the written stitch count (informational). */
+  | "REPEAT_GUESSED"
+  /** A repeat can be read two ways and the written count does not decide it. */
+  | "AMBIGUOUS_REPEAT";
 
 export type ImportIssueSeverity = "info" | "warning";
 
@@ -134,6 +140,9 @@ const SEVERITY: Record<ImportIssueCode, ImportIssueSeverity> = {
   LABEL_GAP: "info",
   PREAMBLE: "info",
   IGNORED: "info",
+  LOCALE_UNCERTAIN: "warning",
+  REPEAT_GUESSED: "info",
+  AMBIGUOUS_REPEAT: "warning",
 };
 
 // ---------------------------------------------------------------------------
@@ -253,8 +262,22 @@ const JOIN =
 const SPECIAL =
   /\b(?:bobble|puff|popcorn|cluster|bubble|picot|bullion|FP(?:sc|hdc|dc|tr)|BP(?:sc|hdc|dc|tr)|front\s+post|back\s+post|Noppen?|Büschel\w*|Puff\w*|Relief\w*|Pikot|lump\s+of|unbound)\b/iu;
 const CHAIN_SPACE = /\b(?:ch-?sp(?:ace)?s?|chain[- ]spaces?|ch\s+spaces?|ch-loops?|Luftmaschenbogen|Lm-?Bogen|LmB)\b/iu;
-const GROUP =
-  /\b(?:\d+|two|three|four|five|six|zwei|drei|vier|fünf)\s*(?:sc|hdc|dc|tr|fM|hStb|Stb|DStb|sts?|M|ch|Lm)\s+(?:in|into)\s+(?:the\s+|die\s+|eine\s+)?(?:same|one|1|last|next|first|this|that|a|single|dieselbe|gleiche|letzte|nächste|erste)?\s*(?:st|stitch|ch|chain|loop|sc|M|Masche|Lm|Luftmasche|Einstichstelle)\b|(?<![a-z])(?:hdc|dc|tr|hStb|Stb|DStb)[\s-]+(?:inc|Zun|increase|Zunahme)\b|\bshells?\b|\bMuschel\w*|\bcorners?\b|\bEcken?\b|\bV-?st(?:itch)?\b/iu;
+/** "3 sc in one st", "2 hdc in next st" — several stitches into one (count and term captured). */
+const GROUP_INTO =
+  /\b(\d+|two|three|four|five|six|zwei|drei|vier|fünf)\s*(sc|hdc|dc|tr|htr|fM|hStb|Stb|DStb|sts?|M|ch|Lm)\s+(?:in|into)\s+(?:the\s+|die\s+|eine\s+)?(?:same|one|1|last|next|first|this|that|a|single|dieselbe|gleiche|letzte|nächste|erste)?\s*(?:st|stitch|ch|chain|loop|sc|M|Masche|Lm|Luftmasche|Einstichstelle)\b/giu;
+const GROUP_OTHER =
+  /(?<![a-z])(?:hdc|dc|tr|htr|hStb|Stb|DStb)[\s-]+(?:inc|Zun|increase|Zunahme)\b|\bshells?\b|\bMuschel\w*|\bcorners?\b|\bEcken?\b|\bV-?st(?:itch)?\b/iu;
+
+/** Several stitches into one stitch — except two single crochets, which are an increase. */
+function hasGroup(text: string, locale: NotationLocale): boolean {
+  if (GROUP_OTHER.test(text)) return true;
+  for (const m of text.matchAll(GROUP_INTO)) {
+    const count = numberOf(m[1]!);
+    if (count === 1 || (count === 2 && resolveStitchTerm(m[2]!, locale) === "SC")) continue;
+    return true;
+  }
+  return false;
+}
 
 /** A slip-stitch join that closes a round — dropped from the row, reported as info. */
 const ROUND_JOIN =
@@ -506,7 +529,10 @@ function cutPoints(text: string): number[] {
   const cuts = new Set<number>([text.length]);
   for (const m of text.matchAll(COUNT_TERMINATOR)) cuts.add(m.index + m[0].length);
   for (const m of text.matchAll(new RegExp(ROUNDS_NOTE.source, "giu"))) cuts.add(m.index + m[0].length);
-  for (const m of text.matchAll(/[.!?;](?=\s+[\p{Lu}\d*([]|\s*\n|\s*$)|\n/gu)) cuts.add(m.index + 1);
+  // After a sentence end; at a line break (so what follows starts on its own line).
+  for (const m of text.matchAll(/[.!?;](?=\s+[\p{Lu}\d*([]|\s*\n|\s*$)|\n/gu)) {
+    cuts.add(m[0] === "\n" ? m.index : m.index + 1);
+  }
   for (const m of text.matchAll(/\s(?=\p{Lu}\p{Ll})/gu)) cuts.add(m.index);
   return [...cuts].sort((a, b) => b - a).slice(0, 40);
 }
@@ -703,7 +729,7 @@ class Importer {
     if (blockingOnly) return codes;
     if (SPECIAL.test(text)) codes.push("UNSUPPORTED_SPECIAL_STITCH");
     if (CHAIN_SPACE.test(text)) codes.push("UNSUPPORTED_CHAIN_SPACE");
-    if (GROUP.test(text)) codes.push("UNSUPPORTED_GROUP");
+    if (hasGroup(text, this.locale)) codes.push("UNSUPPORTED_GROUP");
     return codes;
   }
 
@@ -728,6 +754,7 @@ class Importer {
       this.pushRow({ type, ops: [head], stitchCountTarget: 0 });
       ops = ops.slice(1);
     }
+    const firstIndex = part.rows.length;
     for (let n = first; n <= last; n++) {
       const row: Omit<Row, "id"> = { type, ops: JSON.parse(JSON.stringify(ops)) as Op[], stitchCountTarget: 0 };
       row.stitchCountTarget = result.stitchCountTarget ?? computeRowStitches({ id: "", ...row });
@@ -735,11 +762,27 @@ class Importer {
       part.lastCount = row.stitchCountTarget;
     }
     part.lastType = type;
+    for (const warning of result.warnings ?? []) {
+      const code: ImportIssueCode = warning.endsWith("-guessed") ? "REPEAT_GUESSED" : "AMBIGUOUS_REPEAT";
+      const message =
+        warning === "repeat-scope-guessed"
+          ? "Read the repeat as covering the whole row, because only that matches the stitch count."
+          : warning === "repeat-count-guessed"
+            ? "Chose the number of repeats that matches the stitch count."
+            : "The repeat can be read two ways; please check this row.";
+      this.issue(code, line, raw, message, firstIndex);
+    }
     if (COLOR.test(raw)) this.issue("UNSUPPORTED_COLOR", line, raw, undefined, part.rows.length - 1);
   }
 
-  /** Longest prefix of `text` (at a cut point) that reads as a row. */
-  private splitPrefix(text: string, requireSubstance: boolean): Split | { fill?: ImportIssueCode } {
+  /**
+   * Longest prefix of `text` (at a cut point) that reads as a row. A readable prefix that
+   * still names something the format cannot represent is `blocked` instead of accepted.
+   */
+  private splitPrefix(
+    text: string,
+    requireSubstance: boolean,
+  ): Split | { fill?: ImportIssueCode; blocked?: ImportIssueCode[] } {
     let fill: ImportIssueCode | undefined;
     for (const cut of cutPoints(text)) {
       const prefix = text.slice(0, cut).trim();
@@ -748,6 +791,8 @@ class Importer {
       const result = parseRowText(prefix, this.locale, { previousCount: this.part().lastCount });
       if (result.ok) {
         if (result.ops.length === 0) continue;
+        const blocked = this.unsupported(prefix, false);
+        if (blocked.length > 0) return { blocked };
         return { result, end: cut };
       }
       if (!fill && result.code === "needs-context") fill = "NEEDS_PREVIOUS_COUNT";
@@ -886,6 +931,9 @@ class Importer {
     if (rangeMismatch) this.issue("RANGE_MISMATCH", line, noteText, rangeMismatch, firstRow);
 
     const type: Row["type"] = label.rowWord || /\b(?:turn|wenden)\b/iu.test(raw) ? "row" : "round";
+    for (const m of raw.matchAll(COUNT_NOTE)) {
+      this.issue("IGNORED", line, m[0], "Note on what counts as a stitch removed; check the stitch count.");
+    }
     raw = raw.replace(COUNT_NOTE, "");
     const joined = raw.replace(ROUND_JOIN, "");
     const roundJoin = joined !== raw;
@@ -904,23 +952,50 @@ class Importer {
     }
 
     const split = this.splitPrefix(raw, false);
-    if ("result" in split) {
-      this.stitchRows(split.result, first, last, type, line, raw.slice(0, split.end));
+    if ("blocked" in split && split.blocked) {
+      this.instruction(noteText, line, split.blocked);
+      part.lastCount = declaredCount(raw) ?? part.lastCount;
+      return;
+    }
+    const accept = (result: Split["result"], consumed: string, rest: string, before = "") => {
+      // Stitch content in the rest of the same line would be a second row of this round:
+      // that is a misreading waiting to happen, so the whole round stays unread.
+      const nl = rest.indexOf("\n");
+      const sameLine = nl < 0 ? rest : rest.slice(0, nl);
+      const later = nl < 0 ? "" : rest.slice(nl + 1);
+      if (sameLine.trim() !== "" && this.containsStitches(sameLine)) {
+        const restCodes = this.unsupported(sameLine, false);
+        const text = `${label.text} ${before}${consumed}${sameLine}`;
+        this.instruction(text, line, restCodes.length > 0 ? restCodes : ["UNREADABLE"]);
+        part.lastCount = declaredCount(text) ?? part.lastCount;
+        if (later.trim() !== "") this.freeAfter(later, pieces, line);
+        return;
+      }
+      if (before.trim() !== "") this.instruction(`${label.text} ${before}`, line);
+      this.stitchRows(result, first, last, type, line, consumed);
       if (roundJoin) this.issue("UNSUPPORTED_ROUND_JOIN", line, noteText, undefined, part.rows.length - 1);
-      const rest = raw.slice(split.end);
       if (rest.trim() !== "") this.freeAfter(rest, pieces, line);
+    };
+    if ("result" in split) {
+      accept(split.result, raw.slice(0, split.end), raw.slice(split.end));
       return;
     }
 
     const codes = this.unsupported(raw, false);
     if (codes.length === 0) {
       // An instruction before the stitches ("4. 3–4. Sc in each stitch around"): keep the
-      // label with the instruction, read the row after it.
+      // label with the instruction, read the row after it — unless that "instruction" is
+      // itself stitches ("ch 1, hdc in same st, sc around"), which stays unread.
       const suffix = this.suffixRow(raw);
       if (suffix) {
-        this.instruction(`${label.text} ${raw.slice(0, suffix.cut)}`, line);
-        this.stitchRows(suffix.split.result, first, last, type, line, suffix.text);
-        if (suffix.rest.trim() !== "") this.freeAfter(suffix.rest, pieces, line);
+        const before = raw.slice(0, suffix.cut);
+        if (looksLikeStitches(before, this.locale) || this.unsupported(before, false).length > 0) {
+          const beforeCodes = this.unsupported(before, false);
+          this.instruction(noteText, line, beforeCodes.length > 0 ? beforeCodes : ["UNREADABLE"]);
+          part.lastCount = declaredCount(raw) ?? part.lastCount;
+          return;
+        }
+        accept(suffix.split.result, suffix.text, suffix.rest, before);
         return;
       }
       // "16 se [16] Sew the muzzle …": an unreadable row followed by an instruction.
@@ -955,6 +1030,13 @@ class Importer {
     return null;
   }
 
+  /** Whether `text` has stitch content: stitch-like words or a readable row somewhere. */
+  private containsStitches(text: string): boolean {
+    if (looksLikeStitches(text, this.locale) && !INSTRUCTION_WORDS.test(text)) return true;
+    const head = this.splitPrefix(text, true);
+    return "result" in head || ("blocked" in head && head.blocked !== undefined) || this.suffixRow(text) !== null;
+  }
+
   // -- free text ------------------------------------------------------------
 
   /** Text outside a labelled round: unlabelled rows and instruction rows. */
@@ -963,27 +1045,32 @@ class Importer {
     let guard = 0;
     while (s !== "" && guard++ < 50) {
       const stitchy = looksLikeStitches(s, this.locale);
-      const blocking = stitchy ? this.unsupported(s, true) : [];
-      if (blocking.length > 0) {
-        this.instruction(s, line, blocking);
+      const unsupported = stitchy ? this.unsupported(s, false) : [];
+      if (unsupported.length > 0) {
+        this.instruction(s, line, unsupported);
         return;
       }
       const head = this.splitPrefix(s, true);
+      if ("blocked" in head && head.blocked) {
+        this.instruction(s, line, head.blocked);
+        return;
+      }
       if ("result" in head) {
         const raw = s.slice(0, head.end);
         this.stitchRows(head.result, 1, 1, /\b(?:turn|wenden)\b/iu.test(raw) ? "row" : this.part().lastType, line, raw);
         s = s.slice(head.end).trim();
         continue;
       }
-      const unsupported = stitchy ? this.unsupported(s, false) : [];
-      if (unsupported.length > 0) {
-        this.instruction(s, line, unsupported);
-        return;
-      }
       // An instruction followed by a row: "With Color A: Ch 7", "…, crochet 21 sc."
       const suffix = this.suffixRow(s);
       if (suffix) {
-        this.instruction(s.slice(0, suffix.cut), line);
+        const before = s.slice(0, suffix.cut);
+        if (looksLikeStitches(before, this.locale)) {
+          // "skip 2 sts, sc 4": the part before the row is stitches we cannot read.
+          this.instruction(s, line, ["UNREADABLE"]);
+          return;
+        }
+        this.instruction(before, line);
         const type = /\b(?:turn|wenden)\b/iu.test(suffix.text) ? "row" : this.part().lastType;
         this.stitchRows(suffix.split.result, 1, 1, type, line, suffix.text);
         s = suffix.rest.trim();
@@ -1136,6 +1223,16 @@ export function parsePatternText(text: string, options: ParsePatternOptions = {}
   importer.flush();
 
   const { parts, issues } = importer.finish();
+  if (!options.locale && parts.length > 0 && detected.confidence < LOCALE_CONFIDENCE_THRESHOLD) {
+    // Above all a UK guess from "dc" alone: the app should ask which terms the pattern uses.
+    issues.unshift({
+      line: 1,
+      text: locale,
+      code: "LOCALE_UNCERTAIN",
+      severity: SEVERITY.LOCALE_UNCERTAIN,
+      message: `Read as ${locale} with low confidence (${detected.confidence}); please confirm the terms.`,
+    });
+  }
   const preamble = [...importer.preamble].sort((a, b) => a.line - b.line).map((p) => p.text);
   return { locale, localeConfidence: detected.confidence, parts, issues, preamble };
 }

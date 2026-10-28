@@ -23,7 +23,10 @@ All notable changes to this project are documented here. The format follows
   "*…* 6 times", to the end of the round ("sc around", "(…)*", "Zun in jede M" — with the
   previous row's count), magic ring starts ("6 sc in MR", "MR 6"), every stitch-count form
   ("= 18", "[18]", "– 18", "(18 sts)"), row-level "BLO:" / "nur hinteres Maschenglied" and
-  "sl-st". New error codes `needs-context` and `fill-mismatch`.
+  "sl-st". New error codes `needs-context` and `fill-mismatch`; the result may carry
+  `rounds` ("(4 rounds)") and `warnings` where the written count decided between two
+  readings ("sc, inc x6 (18)", "rep from * 5 times"). When in doubt the row fails rather than
+  being misread ("6 inc 12", "2 hdc in next st").
 - **Yarn thickness in mm.** The gauge accepts an optional `yarnDiameterMm` (0 < x ≤ 30).
   Without a swatch it sets the stitch size — interpolated over the yarn weight table and
   scaled by the hook — and wins over the yarn weight. It is always the rendered yarn

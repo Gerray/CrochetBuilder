@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { renderOps } from "./notation.js";
+import { renderOps, resolveStitchTerm } from "./notation.js";
 import { parsePatternText, type ImportedPart, type PatternImport } from "./pattern-import.js";
 import { validate } from "./validate.js";
 
@@ -98,6 +98,10 @@ describe("parsePatternText — parts and labels (US terms)", () => {
 
   it("only reports the preamble", () => {
     expect(new Set(codes(res))).toEqual(new Set(["PREAMBLE"]));
+  });
+
+  it("keeps every word of the input", () => {
+    expectEveryWordKept(text, res);
   });
 
   it("gives deterministic ids by default and uses an injected generator", () => {
@@ -301,14 +305,17 @@ describe("parsePatternText — German patterns", () => {
     expect(res.parts[2]!.rows).toHaveLength(5);
   });
 
+  it("keeps every word of the input", () => {
+    expectEveryWordKept(text, res);
+  });
+
   it("reports the colour change as information", () => {
     expect(issuesOf(res, "UNSUPPORTED_COLOR")).toMatchObject([{ line: 18, partIndex: 1, rowIndex: 2, severity: "info" }]);
   });
 });
 
 describe("parsePatternText — what the format cannot represent yet", () => {
-  const res = parsePatternText(
-    [
+  const text = [
       "Body",
       "1. 6 sc in MR",
       "2. inc around (12)",
@@ -323,9 +330,8 @@ describe("parsePatternText — what the format cannot represent yet", () => {
       "Muzzle",
       "Ch 7, start in 2nd ch from hook: 5 sc, 3 sc in last ch, work on the other side of the chain: 4 sc, inc (14)",
       "Rnd 2: (sc, inc) x 7 (21)",
-    ].join("\n"),
-    { locale: "en_us" },
-  );
+    ].join("\n");
+  const res = parsePatternText(text, { locale: "en_us" });
   const at = (part: number, row: number) =>
     res.issues.filter((i) => i.partIndex === part && i.rowIndex === row).map((i) => i.code);
 
@@ -350,7 +356,7 @@ describe("parsePatternText — what the format cannot represent yet", () => {
   it("reports rounds worked around a foundation chain", () => {
     const muzzle = res.parts[1]!;
     expect(muzzle.rows[0]!.ops).toEqual([]);
-    expect(at(1, 0)).toEqual(["UNSUPPORTED_FOUNDATION_OVAL"]);
+    expect(at(1, 0)).toEqual(["UNSUPPORTED_FOUNDATION_OVAL", "UNSUPPORTED_GROUP"]);
     // The declared count of the oval round still serves as context for later rounds.
     expect(view(muzzle)[1]).toBe("7x (1 sc, 1 inc) (21)");
   });
@@ -366,14 +372,38 @@ describe("parsePatternText — what the format cannot represent yet", () => {
     ]);
   });
 
-  it("never drops text: every input character is in a row, the preamble or an issue", () => {
-    const kept = [
-      ...res.parts.flatMap((p) => p.rows.map((r) => r.note ?? renderOps(r.ops, "en_us"))),
-      ...res.preamble,
-    ].join(" ");
-    for (const word of ["bobble", "sx", "ch-sp", "left", "other", "Stuff"]) expect(kept).toContain(word);
+  it("never drops text: every input word is in a row, the preamble or an issue", () => {
+    expectEveryWordKept(text, res);
   });
 });
+
+/** Words a stitch row may consume without repeating them (notation, not content). */
+const NOTATION_WORDS = new Set(
+  (
+    "rnd rnds round rounds row rows repeat rep times around each every into next magic ring make from more " +
+    "the and with runde runden reihe reihen jede rundherum einen den fadenring mal wiederholen " +
+    "back front loop loops only blo flo nur hinteres vorderes maschenglied"
+  ).split(" "),
+);
+
+/**
+ * Every word of the input (3+ letters) appears in a row (note or rendered ops), a part name,
+ * the preamble or an issue — or is notation a stitch row stands for.
+ */
+function expectEveryWordKept(text: string, res: PatternImport) {
+  const kept = [
+    ...res.parts.flatMap((p) => [p.name, ...p.rows.map((r) => r.note ?? `${renderOps(r.ops, "en_us")} ${renderOps(r.ops, "de")}`)]),
+    ...res.preamble,
+    ...res.issues.map((i) => i.text),
+  ]
+    .join(" ")
+    .toLowerCase();
+  for (const word of text.match(/[\p{L}][\p{L}\-]{2,}/gu) ?? []) {
+    const w = word.toLowerCase();
+    if (NOTATION_WORDS.has(w) || resolveStitchTerm(w, res.locale)) continue;
+    expect(kept, `"${word}" was dropped`).toContain(w);
+  }
+}
 
 describe("parsePatternText — instruction lines", () => {
   it("keeps instructions between rounds as instruction rows", () => {
@@ -502,5 +532,84 @@ describe("parsePatternText — preamble, pages and robustness", () => {
     const res = parsePatternText(line, { locale: "en_us" });
     expect(res.parts[0]!.rows).toHaveLength(200);
     expect(performance.now() - started).toBeLessThan(5000);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Review fixes A3: a silent misreading is worse than an issue
+// ---------------------------------------------------------------------------
+
+describe("parsePatternText — no silent misreadings", () => {
+  const start = "Body\nRnd 1: 6 sc in MR\nRnd 2: inc around (12)\n";
+  const third = (round: string) => {
+    const res = parsePatternText(start + round, { locale: "en_us" });
+    const rows = res.parts[0]!.rows.slice(2);
+    const found = res.issues.filter((i) => i.rowIndex !== undefined && i.rowIndex >= 2).map((i) => i.code);
+    return { res, rows, codes: found, view: view({ name: "", quantity: 1, rows }) };
+  };
+
+  it("reports several stitches into one stitch instead of reading a plain run", () => {
+    for (const round of ["Rnd 3: 2 hdc in next st, 10 sc (13)", "Rnd 3: 3 sc in next st, 11 sc (14)", "Rnd 3: 11 sc, 3 sc in next st"]) {
+      const result = third(round);
+      expect(result.rows.map((r) => r.ops), round).toEqual([[]]);
+      expect(result.codes, round).toEqual(["UNSUPPORTED_GROUP"]);
+    }
+    // Two single crochets into one stitch are an increase.
+    expect(third("Rnd 3: 2 sc in next st, 10 sc (13)").view).toEqual(["1 inc, 10 sc (13)"]);
+  });
+
+  it("never splits a labelled round into an instruction and a row, or into two rows", () => {
+    for (const round of [
+      "Rnd 3: ch 1, hdc in same st, sc around",
+      "Rnd 3: skip 2 sts, sc around",
+      "Rnd 3: sc 6, skip 2 sts, sc 4 (10)",
+      "Rnd 3: sc 6. Ch 3, skip 2 sts, sc 4 (12)",
+    ]) {
+      const result = third(round);
+      expect(result.rows, round).toHaveLength(1);
+      expect(result.rows[0]!.ops, round).toEqual([]);
+      expect(result.rows[0]!.note, round).toBe(round);
+      expect(result.codes, round).toEqual(["UNREADABLE"]);
+    }
+  });
+
+  it("does not read stitches before a row in free text as an instruction", () => {
+    const res = parsePatternText(`${start}skip 2 sts, sc 10 (10)`, { locale: "en_us" });
+    expect(view(res.parts[0]!).slice(2)).toEqual(["> skip 2 sts, sc 10 (10)"]);
+    expect(issuesOf(res, "UNREADABLE")).toMatchObject([{ line: 4, rowIndex: 2 }]);
+  });
+
+  it("still reads an unlabelled round on the line after a labelled one", () => {
+    expect(third("(sc, inc) x 6 (18)").view).toEqual(["6x (1 sc, 1 inc) (18)"]);
+  });
+
+  it("asks for the locale when it rests on dc alone", () => {
+    const res = parsePatternText("Round 1: 6 dc into the ring\nRound 2: 2 dc in each stitch around (12)\nRound 3: 12 dc");
+    expect(res.locale).toBe("en_uk");
+    expect(issuesOf(res, "LOCALE_UNCERTAIN")).toMatchObject([{ severity: "warning", text: "en_uk" }]);
+    const us = parsePatternText("Rnd 1: ch 3, 11 dc in ring, sl st to top of ch 3 (12)\nRnd 2: ch 3, 2 dc in each st (24)");
+    expect(us.locale).toBe("en_us");
+    expect(issuesOf(parsePatternText("Round 1: 6 dc into the ring", { locale: "en_uk" }), "LOCALE_UNCERTAIN")).toEqual([]);
+  });
+
+  it("settles 'x N' after a list by the count, and flags it", () => {
+    const guessed = third("Rnd 3: sc, inc x6 (18)");
+    expect(guessed.view).toEqual(["6x (1 sc, 1 inc) (18)"]);
+    expect(issuesOf(guessed.res, "REPEAT_GUESSED")).toMatchObject([{ severity: "info", rowIndex: 2 }]);
+    const ambiguous = third("Rnd 3: sc, inc x6 (20)");
+    expect(issuesOf(ambiguous.res, "AMBIGUOUS_REPEAT")).toMatchObject([{ severity: "warning", rowIndex: 2 }]);
+  });
+
+  it("settles 'rep from * N times' by the count, and flags it", () => {
+    const guessed = third("Rnd 3: *sc, inc; rep from * 5 times (18)");
+    expect(guessed.view).toEqual(["6x (1 sc, 1 inc) (18)"]);
+    expect(codes(guessed.res)).toContain("REPEAT_GUESSED");
+    expect(codes(third("Rnd 3: *sc, inc; rep from * 5 times").res)).toContain("AMBIGUOUS_REPEAT");
+  });
+
+  it("reports a removed 'does not count as a stitch' note", () => {
+    const result = third("Rnd 3: ch 1 (does not count as a st), 12 sc (12)");
+    expect(result.view).toEqual(["1 ch, 12 sc (12)"]);
+    expect(issuesOf(result.res, "IGNORED")).toMatchObject([{ line: 4, text: "(does not count as a st)", severity: "info" }]);
   });
 });
