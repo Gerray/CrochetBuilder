@@ -141,7 +141,7 @@ export function parseImportText(text: string, fileName?: string, makeId: () => s
 
   if (hasKey(data, "parts")) {
     const version = (data as { schemaVersion?: unknown }).schemaVersion;
-    if (version !== 1) {
+    if (version !== 1 && version !== 2) {
       return { ok: false, message: `Die Datei hat ein unbekanntes Format (schemaVersion ${JSON.stringify(version ?? null)}).` };
     }
     const parsed = safely(() => BuilderExportSchema.safeParse(data));

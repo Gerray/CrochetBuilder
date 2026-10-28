@@ -13,13 +13,26 @@
  *
  * Consuming more anchors than exist is an error (the pattern cannot be worked). Consuming
  * fewer is a warning (stitches left unworked — legitimate for shaping, often a mistake).
+ * A stitch group (format v2) consumes one anchor, whatever its stitches.
+ *
+ * Further checks: relief modifiers on stitches without a post (`INVALID_MODIFIER`), colours
+ * missing from the palette (`UNKNOWN_COLOR`, only when a palette is passed), empty repeats
+ * and empty stitch groups (warnings), and optionally the stitch budget of the 3D model.
  *
  * All counts are computed arithmetically from the op tree (never by expanding it), so
  * validation stays cheap on every edit even for patterns with huge repeat counts.
  */
 
-import { countRowAtoms, isInstructionRow, type RowStitch } from "./expand.js";
-import { STITCH_PROPERTIES, consumesOf, type Op, type PartContent, type Row } from "./schema.js";
+import { countOpAtoms, countRowAtoms, isInstructionRow, type RowStitch } from "./expand.js";
+import {
+  STITCH_PROPERTIES,
+  consumesOf,
+  isPostStitch,
+  type Op,
+  type PartContent,
+  type Row,
+  type StitchOp,
+} from "./schema.js";
 import { checkPart, computeRowStitches } from "./stitch-count.js";
 
 export type FindingCode =
@@ -28,7 +41,10 @@ export type FindingCode =
   | "CONSUMES_UNDERFLOW"
   | "NO_ANCHOR_ROW"
   | "TOO_MANY_STITCHES"
-  | "EMPTY_REPEAT";
+  | "EMPTY_REPEAT"
+  | "EMPTY_GROUP"
+  | "INVALID_MODIFIER"
+  | "UNKNOWN_COLOR";
 
 export interface Finding {
   rowId: string;
@@ -52,13 +68,19 @@ function onlyChains(op: Op): boolean {
   return op.kind === "stitch" ? op.code === "CH" : op.ops.every(onlyChains);
 }
 
+/**
+ * Anchors one op consumes. A stitch group is worked into one stitch, whatever its stitches
+ * are — an empty group (no stitches at all) is worked into none.
+ */
 function consumedByOp(op: Op): number {
   if (op.kind === "stitch") return op.count * consumesOf(op);
+  if (op.kind === "group") return countOpAtoms(op) > 0 ? 1 : 0;
   return op.times * op.ops.reduce((sum, inner) => sum + consumedByOp(inner), 0);
 }
 
 function containsRing(op: Op): boolean {
-  return op.kind === "stitch" ? op.code === "MR" : op.times > 0 && op.ops.some(containsRing);
+  if (op.kind === "stitch") return op.code === "MR";
+  return (op.kind === "group" || op.times > 0) && op.ops.some(containsRing);
 }
 
 /** Anchors a row offers to the next row. */
@@ -188,13 +210,107 @@ export interface ValidateOptions {
    * a limit of the 3D model, not of the pattern (`buildModel` passes its budget here).
    */
   maxStitches?: number;
+  /**
+   * The export's colour palette (`overview.colors`). When given, colour ids that are not in
+   * it are reported as `UNKNOWN_COLOR`; without it colours are not checked.
+   */
+  palette?: readonly { id: string }[];
 }
 
 function countEmptyRepeats(ops: readonly Op[]): number {
-  return ops.reduce(
-    (n, op) => (op.kind === "repeat" ? n + (op.ops.length === 0 ? 1 : countEmptyRepeats(op.ops)) : n),
-    0,
-  );
+  return ops.reduce((n, op) => {
+    if (op.kind === "stitch") return n;
+    if (op.kind === "group") return n + countEmptyRepeats(op.ops);
+    return n + (op.ops.length === 0 ? 1 : countEmptyRepeats(op.ops));
+  }, 0);
+}
+
+/** Every stitch op of an op tree, depth first, in document order. */
+function stitchOps(ops: readonly Op[], out: StitchOp[] = []): StitchOp[] {
+  for (const op of ops) {
+    if (op.kind === "stitch") out.push(op);
+    else stitchOps(op.ops, out);
+  }
+  return out;
+}
+
+function countEmptyGroups(ops: readonly Op[]): number {
+  return ops.reduce((n, op) => {
+    if (op.kind === "stitch") return n;
+    if (op.kind === "group") return n + (countOpAtoms(op) === 0 ? 1 : 0);
+    return n + countEmptyGroups(op.ops);
+  }, 0);
+}
+
+/**
+ * Stitch groups without stitches (`()` in one stitch) — legal in the schema, worked into no
+ * stitch and producing none; almost always an unfinished edit. One warning per affected row.
+ */
+export function checkEmptyGroups(content: PartContent): Finding[] {
+  return content.rows.flatMap((row) => {
+    const empty = countEmptyGroups(row.ops);
+    if (empty === 0) return [];
+    return [
+      {
+        rowId: row.id,
+        severity: "warning" as const,
+        code: "EMPTY_GROUP" as const,
+        message: `Row contains ${empty} stitch group${empty === 1 ? "" : "s"} without stitches.`,
+        actual: empty,
+      },
+    ];
+  });
+}
+
+/**
+ * Relief modifiers that cannot be worked: `FP` / `BP` on a code without a post to work around
+ * (anything but SC, HDC, DC, TR, DTR — see `isPostStitch`), or both on one stitch. One error
+ * per affected row; `actual` is the number of offending stitch ops.
+ */
+export function checkModifiers(content: PartContent): Finding[] {
+  return content.rows.flatMap((row) => {
+    const bad = stitchOps(row.ops).filter((op) => {
+      const mods = op.modifiers ?? [];
+      const fp = mods.includes("FP");
+      const bp = mods.includes("BP");
+      return (fp || bp) && (!isPostStitch(op.code) || (fp && bp));
+    });
+    if (bad.length === 0) return [];
+    const codes = [...new Set(bad.map((op) => op.code))].join(", ");
+    return [
+      {
+        rowId: row.id,
+        severity: "error" as const,
+        code: "INVALID_MODIFIER" as const,
+        message: `Front/back post (FP/BP) only works on SC, HDC, DC, TR or DTR, one of them per stitch (found on ${codes}).`,
+        actual: bad.length,
+      },
+    ];
+  });
+}
+
+/**
+ * Colour ids (row colour, stitch colour) that are not in `palette`. One error per row,
+ * listing the unknown ids.
+ */
+export function checkColors(content: PartContent, palette: readonly { id: string }[]): Finding[] {
+  const known = new Set(palette.map((c) => c.id));
+  return content.rows.flatMap((row) => {
+    const ids = [row.color, ...stitchOps(row.ops).map((op) => op.color)].filter(
+      (id): id is string => id !== undefined && !known.has(id),
+    );
+    if (ids.length === 0) return [];
+    const unique = [...new Set(ids)];
+    return [
+      {
+        rowId: row.id,
+        severity: "error" as const,
+        code: "UNKNOWN_COLOR" as const,
+        message: `Row uses colour${unique.length === 1 ? "" : "s"} not in the palette: ${unique.join(", ")}.`,
+        actual: unique.length,
+      },
+    ];
+  });
 }
 
 /**
@@ -227,7 +343,16 @@ export function validate(content: PartContent, opts: ValidateOptions = {}): Find
     opts.maxStitches !== undefined && Number.isFinite(opts.maxStitches)
       ? checkStitchBudget(content, opts.maxStitches)
       : [];
-  for (const f of [...checkStitchCounts(content), ...checkConsumes(content), ...checkEmptyRepeats(content), ...budget]) {
+  const all = [
+    ...checkStitchCounts(content),
+    ...checkConsumes(content),
+    ...checkModifiers(content),
+    ...(opts.palette ? checkColors(content, opts.palette) : []),
+    ...checkEmptyRepeats(content),
+    ...checkEmptyGroups(content),
+    ...budget,
+  ];
+  for (const f of all) {
     const list = byRow.get(f.rowId) ?? [];
     list.push(f);
     byRow.set(f.rowId, list);

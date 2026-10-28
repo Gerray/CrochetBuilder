@@ -118,7 +118,7 @@ describe("JSON import", () => {
       ["{ kaputt", /kein lesbares JSON/],
       ["[1, 2]", /keine CrochetBuilder-Anleitung/],
       ['{"hello": 1}', /keine CrochetBuilder-Anleitung/],
-      [JSON.stringify({ ...prepareExport(ball()), schemaVersion: 2 }), /unbekanntes Format \(schemaVersion 2\)/],
+      [JSON.stringify({ ...prepareExport(ball()), schemaVersion: 3 }), /unbekanntes Format \(schemaVersion 3\)/],
       [JSON.stringify({ ...prepareExport(ball()), title: 7 }), /Anleitung in der Datei ist fehlerhaft \(bei „title“\)/],
       [JSON.stringify({ schemaVersion: 1, rows: [{ id: "a", type: "round", ops: [{ kind: "stitch", code: "XX", count: 1 }], stitchCountTarget: 1 }] }), /Reihen in der Datei sind fehlerhaft \(bei „rows\.0\.ops\.0/],
       [JSON.stringify({ ...prepareExport(ball()), parts: [] }), /keine Teile/],

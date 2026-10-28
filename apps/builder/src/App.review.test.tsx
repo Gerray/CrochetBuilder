@@ -25,7 +25,7 @@ describe("unreadable stored document", () => {
   it("is not overwritten until the person decides, and is offered as a backup", async () => {
     const doc = demoDocument() as unknown as { title: string; parts: Array<{ content: { rows: Array<Record<string, unknown>> } }> };
     doc.title = "Mein Teddy";
-    doc.parts[0]!.content.rows[0]!.color = "rot";
+    doc.parts[0]!.content.rows[0]!.farbe = "rot";
     const raw = JSON.stringify({ doc, pinned: [] });
     localStorage.setItem(LS_KEY, raw);
 

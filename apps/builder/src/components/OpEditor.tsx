@@ -7,6 +7,7 @@ import {
   STITCH_ABBREVIATIONS,
   STITCH_NAMES,
   modifierAllowed,
+  renderOp,
   type Mod,
   type Op,
   type RepeatGroup,
@@ -62,7 +63,14 @@ function OpList({ rowId, rowTitle, ops, path, dispatch }: OpEditorProps & { path
             };
             return (
               <li key={`${i}-${op.kind}`}>
-                {op.kind === "stitch" ? <StitchEditor {...item} op={op} /> : <RepeatEditor {...item} op={op} />}
+                {op.kind === "stitch" ? (
+                  <StitchEditor {...item} op={op} />
+                ) : op.kind === "repeat" ? (
+                  <RepeatEditor {...item} op={op} />
+                ) : (
+                  // Stitch groups (format v2) are shown read-only until the editor supports them.
+                  <span className="op-group">{renderOp(op, "de")}</span>
+                )}
               </li>
             );
           })}

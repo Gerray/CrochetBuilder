@@ -43,7 +43,7 @@ export const MAX_STITCH_COUNT_TARGET = 2 * MAX_ROW_STITCHES;
 export function countWorkedStitches(ops: readonly Op[]): number {
   let total = 0;
   for (const op of ops) {
-    total += op.kind === "stitch" ? op.count : op.times * countWorkedStitches(op.ops);
+    total += op.kind === "stitch" ? op.count : (op.kind === "group" ? 1 : op.times) * countWorkedStitches(op.ops);
   }
   return total;
 }
@@ -52,7 +52,7 @@ export function countWorkedStitches(ops: readonly Op[]): number {
 export function opsWithinLimits(ops: readonly Op[]): boolean {
   const inner = (list: readonly Op[]): boolean =>
     list.every((op) =>
-      op.kind === "stitch" ? op.count <= MAX_COUNT : op.times <= MAX_TIMES && inner(op.ops),
+      op.kind === "stitch" ? op.count <= MAX_COUNT : (op.kind === "group" || op.times <= MAX_TIMES) && inner(op.ops),
     );
   return inner(ops) && countWorkedStitches(ops) <= MAX_ROW_STITCHES;
 }
@@ -106,6 +106,10 @@ export const STITCH_ABBREVIATIONS: Record<StitchCode, Record<NotationLocale, str
   DEC: { de: "Abn", en_us: "dec", en_uk: "dec" },
   INVDEC: { de: "uAbn", en_us: "invdec", en_uk: "invdec" },
   ST: { de: "M", en_us: "st", en_uk: "st" },
+  BOBBLE: { de: "Noppe", en_us: "bobble", en_uk: "bobble" },
+  PUFF: { de: "Büschel", en_us: "puff", en_uk: "puff" },
+  POPCORN: { de: "Popcorn", en_us: "popcorn", en_uk: "popcorn" },
+  PICOT: { de: "Pikot", en_us: "picot", en_uk: "picot" },
 };
 
 /** Full stitch name per code and locale (for pickers and tooltips). */
@@ -122,6 +126,10 @@ export const STITCH_NAMES: Record<StitchCode, Record<NotationLocale, string>> = 
   DEC: { de: "Abnahme", en_us: "decrease", en_uk: "decrease" },
   INVDEC: { de: "Unsichtbare Abnahme", en_us: "invisible decrease", en_uk: "invisible decrease" },
   ST: { de: "Masche", en_us: "stitch", en_uk: "stitch" },
+  BOBBLE: { de: "Noppe", en_us: "bobble stitch", en_uk: "bobble stitch" },
+  PUFF: { de: "Büschelmasche", en_us: "puff stitch", en_uk: "puff stitch" },
+  POPCORN: { de: "Popcornmasche", en_us: "popcorn stitch", en_uk: "popcorn stitch" },
+  PICOT: { de: "Pikot", en_us: "picot", en_uk: "picot" },
 };
 
 /** Modifier abbreviation per locale, rendered in parentheses after a stitch. */
@@ -129,6 +137,8 @@ export const MOD_ABBREVIATIONS: Record<Mod, Record<NotationLocale, string>> = {
   BLO: { de: "hMG", en_us: "BLO", en_uk: "BLO" },
   FLO: { de: "vMG", en_us: "FLO", en_uk: "FLO" },
   TOG: { de: "zus", en_us: "tog", en_uk: "tog" },
+  FP: { de: "Relief v", en_us: "FP", en_uk: "FP" },
+  BP: { de: "Relief h", en_us: "BP", en_uk: "BP" },
 };
 
 /** Full modifier name per locale. */
@@ -136,10 +146,15 @@ export const MOD_NAMES: Record<Mod, Record<NotationLocale, string>> = {
   BLO: { de: "nur hinteres Maschenglied", en_us: "back loop only", en_uk: "back loop only" },
   FLO: { de: "nur vorderes Maschenglied", en_us: "front loop only", en_uk: "front loop only" },
   TOG: { de: "zusammen abmaschen", en_us: "together", en_uk: "together" },
+  FP: { de: "Relief von vorne", en_us: "front post", en_uk: "front post" },
+  BP: { de: "Relief von hinten", en_us: "back post", en_uk: "back post" },
 };
 
 /** Times sign used when rendering repeat groups. */
 const TIMES_SIGN: Record<NotationLocale, string> = { de: "×", en_us: "x", en_uk: "x" };
+
+/** Suffix of a rendered stitch group (format v2): all its stitches into one stitch. */
+const GROUP_WORDS: Record<NotationLocale, string> = { de: "in dieselbe M", en_us: "in same st", en_uk: "in same st" };
 
 const MOD_ALIASES: Record<string, Mod> = {
   "hinteres maschenglied": "BLO",
@@ -308,6 +323,7 @@ function renderStitch(op: StitchOp, locale: NotationLocale): string {
 /** Render a single op (a stitch or a repeat group). */
 export function renderOp(op: Op, locale: NotationLocale): string {
   if (op.kind === "stitch") return renderStitch(op, locale);
+  if (op.kind === "group") return `(${renderOps(op.ops, locale)}) ${GROUP_WORDS[locale]}`;
   return `${op.times}${TIMES_SIGN[locale]} (${renderOps(op.ops, locale)})`;
 }
 

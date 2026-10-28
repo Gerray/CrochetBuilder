@@ -86,7 +86,7 @@ describe("storage — ordering and fallback", () => {
 describe("storage — unreadable values", () => {
   it("reports a schema-foreign document as invalid and backs it up", async () => {
     const doc = demoDocument() as unknown as { parts: Array<{ content: { rows: Array<Record<string, unknown>> } }> };
-    doc.parts[0]!.content.rows[0]!.color = "rot"; // field from a newer/foreign format
+    doc.parts[0]!.content.rows[0]!.farbe = "rot"; // field from a newer/foreign format
     const raw = { doc, pinned: [], savedAt: 5 };
     localStorage.setItem(LS_KEY, JSON.stringify(raw));
 

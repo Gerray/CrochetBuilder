@@ -35,13 +35,24 @@ export interface AtomicStitch {
 }
 
 /**
- * One worked stitch of a row: its code plus the op's modifiers (BLO/FLO/TOG). `modifiers`
- * is only present when the op carries at least one. A free instruction row yields exactly
- * one atom with `code: INSTRUCTION_CODE`.
+ * One worked stitch of a row: its code plus the op's modifiers (BLO/FLO/TOG/FP/BP).
+ * `modifiers` is only present when the op carries at least one. A free instruction row
+ * yields exactly one atom with `code: INSTRUCTION_CODE`.
  */
 export interface RowStitch {
   code: AtomCode;
   modifiers?: Mod[];
+  /**
+   * Format v2: the colour switch of the op this stitch comes from (palette id). Present on
+   * every stitch of such an op; the working colour is resolved by `colorsOfStitches`.
+   */
+  color?: string;
+  /**
+   * Format v2: position of the stitch within its stitch group (0 = first stitch of the
+   * group). Absent outside groups. All stitches of a group are worked into one stitch; a
+   * new group starts at every `group === 0`.
+   */
+  group?: number;
 }
 
 /** A row with no ops but with text (note, else label) is a free instruction. */
@@ -72,9 +83,17 @@ export function rowOrdinals(rows: readonly Row[]): number[] {
 function expandOp(op: Op): RowStitch[] {
   if (op.kind === "stitch") {
     const mods = op.modifiers && op.modifiers.length > 0 ? op.modifiers : undefined;
-    return Array.from({ length: op.count }, () =>
-      mods ? { code: op.code, modifiers: [...mods] } : { code: op.code },
-    );
+    const color = op.color;
+    return Array.from({ length: op.count }, () => {
+      const atom: RowStitch = { code: op.code };
+      if (mods) atom.modifiers = [...mods];
+      if (color !== undefined) atom.color = color;
+      return atom;
+    });
+  }
+  if (op.kind === "group") {
+    // Fresh atoms (repeats inside the group share theirs), each marked with its position.
+    return op.ops.flatMap(expandOp).map((atom, i) => ({ ...atom, group: i }));
   }
   const body = op.ops.flatMap(expandOp);
   const out: RowStitch[] = [];
@@ -90,9 +109,10 @@ export function expandRow(row: Row): RowStitch[] {
 }
 
 /** Atoms one op expands to, computed arithmetically (no expansion). */
-function countOpAtoms(op: Op): number {
+export function countOpAtoms(op: Op): number {
   if (op.kind === "stitch") return op.count;
-  return op.times * op.ops.reduce((sum, inner) => sum + countOpAtoms(inner), 0);
+  const body = op.ops.reduce((sum, inner) => sum + countOpAtoms(inner), 0);
+  return op.kind === "group" ? body : op.times * body;
 }
 
 /**

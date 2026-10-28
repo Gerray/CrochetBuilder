@@ -12,21 +12,38 @@ export {
   ModSchema,
   StitchOpSchema,
   RepeatGroupSchema,
+  GroupRepeatSchema,
+  GroupOpSchema,
+  StitchGroupSchema,
   OpSchema,
   RowSchema,
   PartContentSchema,
+  SchemaVersionSchema,
+  CURRENT_SCHEMA_VERSION,
+  ColorIdSchema,
+  FinishSchema,
+  StuffingSchema,
   STITCH_PROPERTIES,
+  POST_STITCH_CODES,
   consumesOf,
+  isPostStitch,
 } from "./schema.js";
 export type {
   StitchCode,
   Mod,
   StitchOp,
   RepeatGroup,
+  GroupRepeat,
+  GroupOp,
+  StitchGroup,
   Op,
   Row,
   PartContent,
   StitchProperties,
+  SchemaVersion,
+  ColorId,
+  Finish,
+  Stuffing,
 } from "./schema.js";
 
 export {
@@ -49,6 +66,7 @@ export {
   YARN_WEIGHT_DEFAULTS,
   DEFAULT_YARN_WEIGHT,
   STITCH_HEIGHT_FACTOR,
+  STITCH_BULGE,
   MAX_YARN_DIAMETER_MM,
   YARN_DIAMETER_EXTRAPOLATION,
   resolveGauge,
@@ -69,10 +87,19 @@ export {
   consumesOfAtom,
   isRingRow,
   checkEmptyRepeats,
+  checkEmptyGroups,
+  checkModifiers,
+  checkColors,
 } from "./validate.js";
 export type { Finding, FindingCode, ValidateOptions } from "./validate.js";
 
-export { buildGraph, nodesOfRow, LEG_LEAN } from "./graph.js";
+export { colorsOfStitches, nodeColorIndices } from "./color.js";
+export type { PaletteEntry } from "./color.js";
+
+export { PlacementSchema, PlacementKindSchema, placementAnchor } from "./assembly.js";
+export type { Placement, PlacementKind, Anchor, Vec3 } from "./assembly.js";
+
+export { buildGraph, nodesOfRow, isFabricNode, LEG_LEAN } from "./graph.js";
 export type {
   StitchGraph,
   StitchNode,
@@ -85,7 +112,15 @@ export type {
   AnchorSlot,
 } from "./graph.js";
 
-export { relax, isClosedPiece, canonicalPose } from "./relax.js";
+export {
+  relax,
+  isClosedPiece,
+  canonicalPose,
+  resolveFinish,
+  relaxOptionsForPart,
+  seamStrip,
+  STUFFING_LEVELS,
+} from "./relax.js";
 export type { RelaxOptions } from "./relax.js";
 
 export { measure, measureRounds, maxRoundDiameter } from "./measure.js";
@@ -99,7 +134,7 @@ export type { MeshData, MeshOptions, MeshStyle } from "./mesh.js";
 export { STITCH_YARN_MAX_WIDTH, STITCH_YARN_SCALE, stitchDetail, stitchYarn, stitchYarnRadius } from "./stitch-mesh.js";
 export type { StitchClosing, YarnArc, YarnLoop, YarnPiece, YarnPost } from "./stitch-mesh.js";
 
-export { buildModel } from "./model.js";
+export { buildModel, partRelaxOptions } from "./model.js";
 export type { Model, ModelOptions } from "./model.js";
 
 export {
@@ -135,11 +170,16 @@ export {
   BuilderOverviewSchema,
   RenderedRowsSchema,
   BuilderExportSchema,
+  PaletteColorSchema,
   renderedRows,
+  validateExport,
 } from "./export.js";
 export type {
   MaterialKind,
   Material,
+  PaletteColor,
+  ExportFinding,
+  ExportFindingCode,
   BuilderPart,
   BuilderOverview,
   RenderedRows,

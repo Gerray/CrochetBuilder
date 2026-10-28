@@ -150,7 +150,7 @@ describe("PartContentSchema — invalid input is rejected", () => {
 
   it("rejects a wrong schemaVersion", () => {
     expect(
-      PartContentSchema.safeParse({ schemaVersion: 2, rows: [] }).success,
+      PartContentSchema.safeParse({ schemaVersion: 3, rows: [] }).success,
     ).toBe(false);
   });
 
@@ -203,6 +203,10 @@ describe("STITCH_PROPERTIES", () => {
       DEC: 1,
       INVDEC: 1,
       ST: 1,
+      BOBBLE: 1,
+      PUFF: 1,
+      POPCORN: 1,
+      PICOT: 0,
     };
     for (const code of StitchCodeSchema.options) {
       expect(STITCH_PROPERTIES[code].producesStitches).toBe(expected[code]);

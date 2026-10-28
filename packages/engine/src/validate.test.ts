@@ -55,6 +55,7 @@ describe("STITCH_PROPERTIES.consumesStitches", () => {
   it("keeps producesStitches exactly as TellmeCrochet defines it", () => {
     const expected: Record<StitchCode, number> = {
       CH: 0, SL_ST: 1, SC: 1, HDC: 1, DC: 1, TR: 1, DTR: 1, MR: 0, INC: 2, DEC: 1, INVDEC: 1, ST: 1,
+      BOBBLE: 1, PUFF: 1, POPCORN: 1, PICOT: 0,
     };
     for (const code of StitchCodeSchema.options) {
       expect(STITCH_PROPERTIES[code].producesStitches).toBe(expected[code]);
