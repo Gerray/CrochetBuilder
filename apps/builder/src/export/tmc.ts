@@ -7,6 +7,7 @@
 import {
   buildTmcImportUrl,
   encodeTmcPayload,
+  ShareDecodeError,
   summarizeTmcLosses,
   toTellmeCrochetDraft,
   toTmcEnvelope,
@@ -40,6 +41,22 @@ export async function tmcLink(exp: BuilderExport, originHint: TmcOriginHint): Pr
   const handoff = tmcHandoff(exp, originHint);
   const payload = await encodeTmcPayload(handoff.envelope);
   return { ...handoff, payload, url: buildTmcImportUrl(payload) };
+}
+
+/** The hand-off link of the current document (validated export). Rejects like `tmcLink`. */
+export async function documentTmcLink(doc: BuilderDoc, originHint: TmcOriginHint): Promise<TmcLink> {
+  return tmcLink(prepareExport(doc), originHint);
+}
+
+/** Why no TellmeCrochet link could be made (German); the share links are not affected. */
+export function tmcLinkErrorMessage(err: unknown): string {
+  if (err instanceof ShareDecodeError && err.code === "unsupported") {
+    return "Dein Browser ist zu alt für den Link zu TellmeCrochet. Speichere die Anleitung mit „Für TellmeCrochet speichern (.json)“.";
+  }
+  if (err instanceof RangeError) {
+    return "Die Anleitung ist zu groß für einen Link zu TellmeCrochet. Speichere sie mit „Für TellmeCrochet speichern (.json)“.";
+  }
+  return "Der Link zu TellmeCrochet konnte nicht erstellt werden. Speichere die Anleitung mit „Für TellmeCrochet speichern (.json)“.";
 }
 
 /** File name of the saved hand-off: "amigurumi-kugel.tellmecrochet.json". */

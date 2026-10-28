@@ -49,9 +49,10 @@ export interface EditorState {
   /** Key of the last coalescable edit (typing into one field = one undo step). */
   lastKey: string | undefined;
   /**
-   * Provenance (E25): the document took in text through "Anleitung einfügen". Set by the paste
-   * actions, cleared only by replacing the document otherwise ("Neu", opening a file or link);
-   * undo keeps it (cautious). App-local, never part of the export.
+   * Provenance (E25): the document is not known to be the author's own — it took in text
+   * through "Anleitung einfügen" or came from a file or link. "Neu" and the demos clear it.
+   * Undo and redo restore it with the document, except that undoing a paste keeps it set
+   * (the pasted text was in the pattern). App-local, never part of the export.
    */
   imported: boolean;
 }
@@ -59,11 +60,21 @@ export interface EditorState {
 interface Snapshot {
   doc: BuilderDoc;
   pinned: readonly string[];
+  /** Provenance that belongs to `doc` (see `EditorState.imported`). */
+  imported: boolean;
+  /** The step was a paste: undoing it keeps `imported` set. */
+  pasted?: boolean;
   /** Part to show after undoing this step (undefined: keep the current one). */
   undoPart: number | undefined;
   /** Part to show after redoing it. */
   redoPart: number | undefined;
 }
+
+/**
+ * Where a replacing document comes from (E25): `paste` — "Anleitung einfügen"; `foreign` — a
+ * file or a link (author unknown). Without it ("Neu", demos) the document is the author's own.
+ */
+export type DocumentSource = "paste" | "foreign";
 
 type Part = BuilderDoc["parts"][number];
 
@@ -121,8 +132,8 @@ export type EditorAction =
   // pattern paste ("Anleitung einfügen", see the block at the end of `applyEdit`)
   | AppendPartsAction
   // document
-  /** `imported`: the new document comes from "Anleitung einfügen" (provenance, E25). */
-  | { type: "replaceDocument"; doc: BuilderDoc; pinned?: readonly string[]; imported?: boolean }
+  /** `source`: where the new document comes from (provenance, E25). */
+  | { type: "replaceDocument"; doc: BuilderDoc; pinned?: readonly string[]; source?: DocumentSource }
   | { type: "hydrate"; doc: BuilderDoc; pinned?: readonly string[]; part?: number; imported?: boolean }
   | { type: "undo" }
   | { type: "redo" }
@@ -136,8 +147,13 @@ export function initEditorState(doc: BuilderDoc, pinned: readonly string[] = [],
 /** Provenance after `action` (see `EditorState.imported`). */
 function importedAfter(state: EditorState, action: EditorAction): boolean {
   if (action.type === "appendParts") return true;
-  if (action.type === "replaceDocument") return action.imported === true;
+  if (action.type === "replaceDocument") return action.source !== undefined;
   return state.imported;
+}
+
+/** Whether `action` is a paste ("Anleitung einfügen"): undoing it keeps `imported` set. */
+function isPaste(action: EditorAction): boolean {
+  return action.type === "appendParts" || (action.type === "replaceDocument" && action.source === "paste");
 }
 
 /** A valid part index of `doc` (documents always hold at least one part). */
@@ -797,9 +813,10 @@ export function editorReducer(state: EditorState, action: EditorAction): EditorS
       pinned: previous.pinned,
       part: clampPart(previous.doc, previous.undoPart ?? state.part),
       past: state.past.slice(0, -1),
-      future: [{ ...previous, doc: state.doc, pinned: state.pinned }, ...state.future],
+      future: [{ ...previous, doc: state.doc, pinned: state.pinned, imported: state.imported }, ...state.future],
       lastKey: undefined,
-      imported: state.imported,
+      // Undoing a paste keeps the mark: the pasted text was in the pattern (E25).
+      imported: previous.pasted === true || previous.imported,
     };
   }
   if (action.type === "redo") {
@@ -809,10 +826,10 @@ export function editorReducer(state: EditorState, action: EditorAction): EditorS
       doc: next.doc,
       pinned: next.pinned,
       part: clampPart(next.doc, next.redoPart ?? state.part),
-      past: [...state.past, { ...next, doc: state.doc, pinned: state.pinned }],
+      past: [...state.past, { ...next, doc: state.doc, pinned: state.pinned, imported: state.imported }],
       future: state.future.slice(1),
       lastKey: undefined,
-      imported: state.imported,
+      imported: next.imported,
     };
   }
   if (action.type === "hydrate") {
@@ -836,6 +853,8 @@ export function editorReducer(state: EditorState, action: EditorAction): EditorS
   const entry: Snapshot = {
     doc: state.doc,
     pinned: state.pinned,
+    imported: state.imported,
+    ...(isPaste(action) ? { pasted: true } : {}),
     undoPart: result.scope,
     redoPart: result.select ?? result.scope,
   };

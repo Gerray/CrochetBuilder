@@ -92,8 +92,9 @@ export function App({ exportActions, pastePreviewOptions }: AppProps = {}) {
     setFocusRequest(null);
   }
 
+  // A document from a file or a link: its author is unknown (provenance "foreign", E25).
   const replaceDocument = useCallback((doc: BuilderDoc, pinned: string[]) => {
-    dispatch({ type: "replaceDocument", doc, pinned });
+    dispatch({ type: "replaceDocument", doc, pinned, source: "foreign" });
     setSelectedRowId(null);
   }, []);
 

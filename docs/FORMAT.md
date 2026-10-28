@@ -426,10 +426,12 @@ per row, in row order: `actual` is the sum of the stitches the row's ops produce
 
 **`originHint`** says where the pattern presumably comes from. The builder writes `imported`
 as soon as the document has taken in text through "Anleitung einfügen" (pasting a pattern
-text), and also from the viewer, which cannot know who wrote a shared pattern; otherwise
-`self_created`. It is a hint only: a receiver records a pattern as the person's own creation
-only after she has confirmed that explicitly, and otherwise as imported. Which documents took
-in pasted text is remembered by the builder next to the stored document, not in the format.
+text), for a document opened from a file or a link, and from the viewer — in those cases the
+author is unknown. It writes `self_created` only for documents started with "Neu" or from a
+demo. It is a hint only: a receiver records a pattern as the person's own creation only
+after she has confirmed that explicitly, and otherwise as imported. The builder remembers
+this next to the stored document (undo and redo restore it; undoing a paste keeps
+`imported`), not in the format.
 
 ### Payload and link
 
@@ -454,16 +456,16 @@ JSON is validated against `TmcEnvelope` instead of `BuilderExport`. The saved fi
 | row without version-2 features | same row (colours removed); `stitchCountTarget` 0 on a row with stitches ("no number given") → the counted stitches |
 | row with stitch groups, BOBBLE/PUFF/POPCORN/PICOT or FP/BP | **text**: free instruction, `label` = "Runde 3", `note` = the full German line, e.g. `Runde 3: 6× ((3 fM) in dieselbe M) (18)` |
 | rows after such a row | keep their number as `label` ("Runde 4"), because the receiver numbers only rows with stitches |
-| free instruction (no stitches, with text) | same row; rows with neither stitches nor text are left out |
-| colour at the start of a row | **text**: an instruction before the row, `Farbwechsel: Weiß`; with two or more palette colours each part first states `Farbe: …` |
-| colour change inside a row | **text**: appended to the row's `note`, `Farbwechsel in dieser Runde: 6 fM, [Farbe: Weiß] 6 fM` |
+| free instruction (no stitches, with text) | same row; with both label and note the note reads `Label: note` (the receiver shows the note, else the label); rows with neither stitches nor text are left out |
+| colour at the start of a row | **text**: an instruction before the row, `Farbwechsel: Weiß`, when the colour really changes; with two or more palette colours each part first states its starting colour, `Farbe: …` |
+| colour change inside a row | **text**: appended to the row's `note`, `Farbwechsel in dieser Runde: 6 fM, [Farbe: Weiß] 6 fM` (`Reihe` for rows); marks that repeat the working colour are left out, here and in rows that became text |
 | `stuffing`, `finish` | **text**: instructions at the end of the part (`Füllung: fest mit Füllwatte füllen.`, `Abschluss: …`) |
 | `overview.notes`, `overview.gauge` | **text**: instructions at the start of the first part (`Hinweise: …`, `Maschenprobe: … · Garn: DK · Nadel: 3,5 mm`) |
 | `assembly` | **text**: an extra last part `Zusammensetzen` (quantity 1), one instruction per placement, e.g. `Kopf: Sicherheitsaugen 12 mm vorne zwischen Runde 8 und 9 einsetzen, 6 Maschen Abstand.` |
 | `overview.colors` (palette) | colour names added to the yarn material (one yarn: its `colors`; none: a new yarn `Garn`; several: a new yarn `Garnfarben`) |
 | `overview.materials` | trimmed; entries with an empty label are left out, empty colours and amounts dropped |
 | part without rows | one instruction `Für dieses Teil sind noch keine Reihen angegeben.` |
-| duplicate row ids in a part | later ones get `-2`, `-3`, … |
+| row ids | kept. Ids of added steps (`<row>-farbe`, `tmc-hinweise`, `tmc-fuellung` …) never take a row's id, and a repeated id in a part, from its second occurrence on, get the next free `-2`, `-3`, … |
 | `rendered`, part `id`s | not carried |
 
 A free instruction is a row with `ops: []` and its text in `note`; TellmeCrochet's guided mode

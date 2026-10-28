@@ -117,10 +117,45 @@ describe("Export menu", () => {
     expect(next.target).toBe("_blank");
     expect(fireEvent.click(next)).toBe(true); // opens
     expect(within(panel).queryByRole("note", { name: "Hinweis zu TellmeCrochet" })).toBeNull();
-    // "Abbrechen" closes the notice without opening anything.
+    // "Abbrechen" closes the notice without opening anything; the focus goes back to the link.
     fireEvent.click(link);
     fireEvent.click(within(panel).getByRole("button", { name: "Abbrechen" }));
     expect(within(panel).queryByRole("note", { name: "Hinweis zu TellmeCrochet" })).toBeNull();
+    expect(document.activeElement).toBe(link);
+  });
+
+  it("the notice takes the focus on „Weiter“; Escape closes only the notice, a click elsewhere too", async () => {
+    await renderApp(fakeActions().actions);
+    await loadBall();
+    const panel = await openExport();
+    const link = within(panel).getByRole("link", { name: "In TellmeCrochet öffnen" });
+    const noticeOf = () => within(panel).queryByRole("note", { name: "Hinweis zu TellmeCrochet" });
+    fireEvent.click(link);
+    expect(document.activeElement).toBe(within(noticeOf()!).getByRole("link", { name: "Weiter zu TellmeCrochet" }));
+    fireEvent.keyDown(document.activeElement!, { key: "Escape" });
+    expect(noticeOf()).toBeNull();
+    expect(screen.getByRole("dialog", { name: "Exportieren" })).toBeTruthy(); // the menu stays open
+    expect(document.activeElement).toBe(link);
+    fireEvent.click(link);
+    fireEvent.pointerDown(within(panel).getByRole("button", { name: "Als PDF speichern" }));
+    expect(noticeOf()).toBeNull();
+  });
+
+  it("a failing TellmeCrochet link only disables that link, with a message; share links still work", async () => {
+    const { actions, rec } = fakeActions();
+    actions.tmcLink = () => Promise.reject(new RangeError("too big"));
+    await renderApp(actions);
+    await loadBall();
+    fireEvent.click(screen.getByRole("button", { name: /Exportieren/ }));
+    const panel = screen.getByRole("dialog", { name: "Exportieren" });
+    const alert = await within(panel).findByRole("alert");
+    expect(alert.textContent).toMatch(/^Die Anleitung ist zu groß für einen Link zu TellmeCrochet/);
+    expect((within(panel).getByRole("button", { name: "In TellmeCrochet öffnen" }) as HTMLButtonElement).disabled).toBe(true);
+    const share = within(panel).getByRole("button", { name: "Link teilen" }) as HTMLButtonElement;
+    expect(share.disabled).toBe(false);
+    fireEvent.click(share);
+    await within(panel).findByText("Link kopiert.");
+    expect(rec.copied[0]).toMatch(/\/viewer\/#data=v1\./);
   });
 
   it("„Für TellmeCrochet speichern (.json)“ hands the document and its provenance to the action", async () => {
@@ -188,8 +223,11 @@ describe("Export menu", () => {
     try {
       fireEvent.click(screen.getByRole("button", { name: /Exportieren/ }));
       const panel = screen.getByRole("dialog", { name: "Exportieren" });
-      const alert = await within(panel).findByRole("alert");
-      expect(alert.textContent).toMatch(/^Dein Browser ist zu alt für Teilen-Links/);
+      // One message for the share links, one for the TellmeCrochet link.
+      await waitFor(() => expect(within(panel).getAllByRole("alert")).toHaveLength(2));
+      const texts = within(panel).getAllByRole("alert").map((a) => a.textContent);
+      expect(texts).toContainEqual(expect.stringMatching(/^Dein Browser ist zu alt für Teilen-Links/));
+      expect(texts).toContainEqual(expect.stringMatching(/^Dein Browser ist zu alt für den Link zu TellmeCrochet/));
     } finally {
       vi.unstubAllGlobals();
     }
@@ -256,6 +294,26 @@ describe("JSON öffnen…", () => {
     expect(screen.getAllByRole("tab").map((t) => t.textContent)).toEqual(["Ball192", "Ohr×20"]);
   });
 
+  it("a document from a file goes to TellmeCrochet as „imported“ (author unknown, E25); „Neu“ clears it", async () => {
+    const { actions, rec } = fakeActions();
+    await renderApp(actions);
+    const panel = await openExport();
+    choose("ball.json", JSON.stringify(prepareExport(demoDocument(ids("ball"), "ball"))));
+    await within(panel).findByText("„ball.json“ geöffnet.");
+    fireEvent.click(within(panel).getByRole("button", { name: "Für TellmeCrochet speichern (.json)" }));
+    expect(rec.tmc.at(-1)?.originHint).toBe("imported");
+    const link = (await within(panel).findByRole("link", { name: "In TellmeCrochet öffnen" })) as HTMLAnchorElement;
+    await waitFor(async () =>
+      expect((await decodeTmcPayload(readShareFragment(new URL(link.href).hash)!)).originHint).toBe("imported"),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /Exportieren/ })); // close
+    fireEvent.click(screen.getByRole("button", { name: /^Neu$/ }));
+    const again = await openExport();
+    fireEvent.click(within(again).getByRole("button", { name: "Für TellmeCrochet speichern (.json)" }));
+    expect(rec.tmc.at(-1)?.originHint).toBe("self_created");
+  });
+
   it("shows a German error for an invalid file and keeps the document", async () => {
     await renderApp(fakeActions().actions);
     await loadBall();
@@ -281,6 +339,21 @@ describe("Opening a document from the builder URL (#data=)", () => {
     expect(location.hash).toBe("");
     expect(confirm).not.toHaveBeenCalled();
     confirm.mockRestore();
+  });
+
+  it("a document from a link goes to TellmeCrochet as „imported“; a demo afterwards as the author's own", async () => {
+    await linkTo(prepareExport(demoDocument(ids("b"), "ball")));
+    const { actions, rec } = fakeActions();
+    await renderApp(actions);
+    await screen.findByLabelText("Maschen von Runde 11 als Text");
+    const panel = await openExport();
+    fireEvent.click(within(panel).getByRole("button", { name: "Für TellmeCrochet speichern (.json)" }));
+    expect(rec.tmc.at(-1)?.originHint).toBe("imported");
+    fireEvent.click(screen.getByRole("button", { name: /Exportieren/ })); // close
+    await loadBall();
+    const again = await openExport();
+    fireEvent.click(within(again).getByRole("button", { name: "Für TellmeCrochet speichern (.json)" }));
+    expect(rec.tmc.at(-1)?.originHint).toBe("self_created");
   });
 
   it("asks before replacing a stored, non-empty document", async () => {

@@ -97,6 +97,21 @@ describe("ViewerApp", () => {
     expect(localStorage.length).toBe(0);
   });
 
+  it("the TellmeCrochet notice: focus on „Weiter“, closed by Escape or a click elsewhere", async () => {
+    render(<ViewerApp location={at("", `#data=${await encodeShare(ballExport())}`)} />);
+    const link = await screen.findByRole("link", { name: "In TellmeCrochet öffnen" });
+    const notice = () => screen.queryByRole("note", { name: "Hinweis zu TellmeCrochet" });
+    expect(fireEvent.click(link)).toBe(false);
+    expect(document.activeElement).toBe(screen.getByRole("link", { name: "Weiter zu TellmeCrochet" }));
+    fireEvent.keyDown(document.activeElement!, { key: "Escape" });
+    expect(notice()).toBeNull();
+    expect(document.activeElement).toBe(link);
+    fireEvent.click(link);
+    expect(notice()).not.toBeNull();
+    fireEvent.pointerDown(screen.getByRole("heading", { level: 1 }));
+    expect(notice()).toBeNull();
+  });
+
   it("forwards the canonical payload: whitespace and padding of the received link are not passed on", async () => {
     const payload = await encodeShare(ballExport());
     const pad = "=".repeat((4 - ((payload.length - 3) % 4)) % 4);

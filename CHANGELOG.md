@@ -74,10 +74,14 @@ All notable changes to this project are documented here. The format follows
   `renderedRowLine` renders a single row like `renderedRows`. Documented in
   docs/FORMAT.md, "Hand-off to TellmeCrochet".
 - **Builder:** "In TellmeCrochet öffnen" (export menu and viewer) carries that envelope and
-  first shows briefly what arrives differently, with one click to continue; the new entry
-  "Für TellmeCrochet speichern (.json)" saves it as a file. The envelope's `originHint` is
-  `imported` once the document took in pasted text ("Anleitung einfügen"; remembered next to
-  the stored document, not in the format) and from the viewer, else `self_created`.
+  first shows briefly what arrives differently, with one click to continue (the focus moves to
+  "Weiter zu TellmeCrochet"; Escape or a click elsewhere closes the notice); the new entry
+  "Für TellmeCrochet speichern (.json)" saves it as a file. The TellmeCrochet link is made
+  apart from the share links: if it fails, only that link is disabled, with a message. The
+  envelope's `originHint` is `imported` once the document took in pasted text ("Anleitung
+  einfügen"), for documents opened from a file or a link and in the viewer, and
+  `self_created` only for "Neu" and demos. It is remembered next to the stored document, not
+  in the format; undo and redo restore it, undoing a paste keeps `imported`.
 
 ### Changed
 

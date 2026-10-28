@@ -3,12 +3,13 @@ import { ShareDecodeError, type TmcOriginHint } from "@crochetbuilder/engine";
 import { importFile, UNSUPPORTED_BROWSER_MESSAGE } from "../export/import.js";
 import { downloadJson, isDocumentEmpty } from "../export/prepare.js";
 import { embedSnippet, LONG_URL_CHARS, shareLinks, type ShareLinks } from "../export/share.js";
-import { downloadTmcJson } from "../export/tmc.js";
+import { documentTmcLink, downloadTmcJson, tmcLinkErrorMessage } from "../export/tmc.js";
 import type { BuilderDoc } from "../state/document.js";
 import { TmcLink } from "./TmcLink.js";
 import "./export.css";
 
-export const TMC_PENDING_NOTE = "Import in TellmeCrochet folgt – du kannst die Anleitung auch als JSON speichern.";
+export const TMC_PENDING_NOTE =
+  "Import in TellmeCrochet folgt – speichere die Anleitung bis dahin mit „Für TellmeCrochet speichern (.json)“.";
 export const REPLACE_FROM_FILE_QUESTION =
   "Die aktuelle Anleitung wird durch die Datei ersetzt (mit „Rückgängig“ zurückholbar). Fortfahren?";
 
@@ -18,6 +19,8 @@ export interface ExportActions {
   downloadJson: (doc: BuilderDoc) => void;
   /** "Für TellmeCrochet speichern (.json)": the hand-off envelope as a file. */
   downloadTmcJson: (doc: BuilderDoc, originHint: TmcOriginHint) => void;
+  /** The TellmeCrochet link and what arrives differently (made apart from the share links). */
+  tmcLink: (doc: BuilderDoc, originHint: TmcOriginHint) => Promise<{ url: string; summary: string[] }>;
   copy: (text: string) => Promise<void>;
   confirm: (question: string) => boolean;
 }
@@ -27,6 +30,7 @@ const defaultActions: ExportActions = {
   savePdf: async (doc) => (await import("../export/pdf.js")).savePdf(doc),
   downloadJson,
   downloadTmcJson,
+  tmcLink: documentTmcLink,
   copy: async (text) => {
     if (!globalThis.navigator?.clipboard) throw new Error("Keine Zwischenablage");
     await globalThis.navigator.clipboard.writeText(text);
@@ -61,6 +65,8 @@ export function ExportMenu({ doc, onReplace, originHint = "self_created", action
   const [open, setOpen] = useState(false);
   const [links, setLinks] = useState<ShareLinks | null>(null);
   const [linkError, setLinkError] = useState<string | null>(null);
+  const [tmc, setTmc] = useState<{ url: string; summary: string[] } | null>(null);
+  const [tmcError, setTmcError] = useState<string | null>(null);
   const [view, setView] = useState<View>(null);
   const [status, setStatus] = useState<Status>(null);
   const [busy, setBusy] = useState(false);
@@ -70,25 +76,36 @@ export function ExportMenu({ doc, onReplace, originHint = "self_created", action
   const panelId = useId();
 
   // Links are computed while the panel is open, so the buttons are real links / instant copies
-  // (popup blockers and the clipboard want the user's click, not a promise after it).
+  // (popup blockers and the clipboard want the user's click, not a promise after it). Share
+  // links and the TellmeCrochet link are made independently: one failing never blocks the other.
+  const makeTmcLink = actions.tmcLink;
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
     setLinkError(null);
-    shareLinks(doc, globalThis.location.href, originHint).then(
-      (next) => {
-        if (!cancelled) setLinks(next);
-      },
-      (err: unknown) => {
-        if (cancelled) return;
-        console.error(err);
+    setTmcError(null);
+    void Promise.allSettled([shareLinks(doc), makeTmcLink(doc, originHint)]).then(([share, handoff]) => {
+      if (cancelled) return;
+      if (share.status === "fulfilled") {
+        setLinks(share.value);
+      } else {
+        console.error(share.reason);
         setLinks(null);
-        setLinkError(packErrorMessage(err));
-      },
-    );
+        setLinkError(packErrorMessage(share.reason));
+      }
+      if (handoff.status === "fulfilled") {
+        setTmc(handoff.value);
+      } else {
+        console.error(handoff.reason);
+        setTmc(null);
+        setTmcError(tmcLinkErrorMessage(handoff.reason));
+      }
+    });
     return () => {
       cancelled = true;
     };
+    // `makeTmcLink` is a test hook that does not change while the menu is shown.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, doc, originHint]);
 
   useEffect(() => {
@@ -139,7 +156,7 @@ export function ExportMenu({ doc, onReplace, originHint = "self_created", action
     });
   };
 
-  const tmcLong = links !== null && links.tmc.length > LONG_URL_CHARS;
+  const tmcLong = tmc !== null && tmc.url.length > LONG_URL_CHARS;
 
   return (
     <div className="export-menu" ref={root}>
@@ -167,9 +184,9 @@ export function ExportMenu({ doc, onReplace, originHint = "self_created", action
           }}
         >
           <div className="export-primary">
-            <TmcLink className="btn btn-primary btn-large" href={links?.tmc ?? null} summary={links?.tmcSummary ?? []} />
+            <TmcLink className="btn btn-primary btn-large" href={tmc?.url ?? null} summary={tmc?.summary ?? []} error={tmcError} />
             <p className="muted small export-note">{TMC_PENDING_NOTE}</p>
-            {tmcLong && <LongUrlWarning length={links.tmc.length} />}
+            {tmcLong && <LongUrlWarning length={tmc.url.length} />}
           </div>
 
           <div className="export-actions">

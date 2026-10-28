@@ -2,7 +2,7 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useState, type Keyboar
 import { renderedRows, type BuilderExport, type MeshStyle } from "@crochetbuilder/engine";
 import { loadModelCanvas, ViewBoundary, ViewError, type ViewLoader } from "../components/PreviewPane.js";
 import { TmcLink } from "../components/TmcLink.js";
-import { tmcLink, type TmcLink as TmcLinkData } from "../export/tmc.js";
+import { tmcLink, tmcLinkErrorMessage, type TmcLink as TmcLinkData } from "../export/tmc.js";
 import { estimateNote, gaugeLine, materialLine, partHeading, sizeLine } from "../export/labels.js";
 import { partsTotal, totalText } from "../state/parts.js";
 import { builderBaseUrl } from "../export/share.js";
@@ -114,7 +114,7 @@ export function ViewerApp({ location = globalThis.location, previewOptions, load
           <span className="viewer-embed-title" title={title}>
             {title}
           </span>
-          <TmcLink href={tmc?.url ?? null} summary={tmc?.summary ?? []} placement="above" />
+          <TmcLink href={tmc.link?.url ?? null} summary={tmc.link?.summary ?? []} error={tmc.error} placement="above" />
         </div>
       </div>
     );
@@ -128,7 +128,13 @@ export function ViewerApp({ location = globalThis.location, previewOptions, load
         </a>
         <h1>{title}</h1>
         <div className="viewer-actions">
-          <TmcLink className="btn btn-primary" href={tmc?.url ?? null} summary={tmc?.summary ?? []} placement="below" />
+          <TmcLink
+            className="btn btn-primary"
+            href={tmc.link?.url ?? null}
+            summary={tmc.link?.summary ?? []}
+            error={tmc.error}
+            placement="below"
+          />
           <a className="btn" href={editUrl}>
             Im Builder bearbeiten
           </a>
@@ -156,23 +162,26 @@ export function ViewerApp({ location = globalThis.location, previewOptions, load
  * it cannot be made). A shared link says nothing about who wrote the pattern, so the viewer
  * reports it as "imported" (E25); TellmeCrochet asks the person.
  */
-function useTmcLink(exp: BuilderExport | null): TmcLinkData | null {
-  const [link, setLink] = useState<TmcLinkData | null>(null);
+function useTmcLink(exp: BuilderExport | null): { link: TmcLinkData | null; error: string | null } {
+  const [state, setState] = useState<{ link: TmcLinkData | null; error: string | null }>({ link: null, error: null });
   useEffect(() => {
-    setLink(null);
+    setState({ link: null, error: null });
     if (!exp) return;
     let cancelled = false;
     tmcLink(exp, "imported").then(
-      (next) => {
-        if (!cancelled) setLink(next);
+      (link) => {
+        if (!cancelled) setState({ link, error: null });
       },
-      (err: unknown) => console.error(err),
+      (err: unknown) => {
+        console.error(err);
+        if (!cancelled) setState({ link: null, error: tmcLinkErrorMessage(err) });
+      },
     );
     return () => {
       cancelled = true;
     };
   }, [exp]);
-  return link;
+  return state;
 }
 
 /** Ids of the part tabs, of the panel they control (the 3D model) and of each part's rows. */
