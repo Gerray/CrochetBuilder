@@ -7,8 +7,10 @@ import {
   type Gauge,
   type Material,
   type MaterialKind,
+  type PaletteColor,
   type YarnWeight,
 } from "@crochetbuilder/engine";
+import { colorCss, colorName } from "../state/palette.js";
 
 export const YARN_WEIGHTS: Array<[YarnWeight, string]> = [
   ["lace", "Lace (sehr fein)"],
@@ -49,6 +51,11 @@ export function materialLine(m: Material): string {
   if (colors.length > 0) line += ` (${colors.join(", ")})`;
   if (m.amount?.trim()) line += `, ${m.amount.trim()}`;
   return line;
+}
+
+/** The palette as the material lists show it: name ("Farbe n" without one) and display colour. */
+export function paletteEntries(colors: readonly PaletteColor[]): Array<{ name: string; css: string }> {
+  return colors.map((c, i) => ({ name: colorName(c, i), css: colorCss(c, i) }));
 }
 
 /** Select option for a yarn weight with its typical thickness: "DK (leicht) · ca. 2,5 mm". */

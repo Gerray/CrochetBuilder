@@ -5,7 +5,17 @@
  * re-validates the others.
  */
 
-import { DEFAULT_MAX_STITCHES, computeRowStitches, validate, type Finding, type PartContent } from "@crochetbuilder/engine";
+import {
+  DEFAULT_MAX_STITCHES,
+  computeRowStitches,
+  validate,
+  type Finding,
+  type Finish,
+  type Op,
+  type PartContent,
+  type StitchCode,
+  type Stuffing,
+} from "@crochetbuilder/engine";
 import type { BuilderDoc } from "./document.js";
 
 const findingsCache = new WeakMap<PartContent, readonly Finding[]>();
@@ -79,4 +89,67 @@ export function partsTotal(doc: BuilderDoc): PartsTotal {
 export function totalText({ stitches, pieces }: PartsTotal): string {
   const s = stitches.toLocaleString("de-DE");
   return `Gesamt: ${s} ${stitches === 1 ? "Masche" : "Maschen"}, ${pieces} ${pieces === 1 ? "Teil" : "Teile"} zu häkeln`;
+}
+
+// ---------------------------------------------------------------------------
+// Finish and stuffing (format v2)
+// ---------------------------------------------------------------------------
+
+const closedCache = new WeakMap<PartContent, boolean>();
+
+const hasCode = (ops: readonly Op[], code: StitchCode): boolean =>
+  ops.some((op) => (op.kind === "stitch" ? op.code === code : hasCode(op.ops, code)));
+const onlyChains = (ops: readonly Op[]): boolean =>
+  ops.every((op) => (op.kind === "stitch" ? op.code === "CH" : onlyChains(op.ops)));
+
+/**
+ * Whether the engine takes the part for a closed piece (`isClosedPiece`: it starts with a magic
+ * ring, consists of rounds only and its last round has less than half the stitches of its
+ * widest), read from the rows — no stitch graph on the main thread. Cached per content.
+ * Over the stitch budget: no (the engine builds no graph then).
+ */
+export function isClosedPart(content: PartContent): boolean {
+  let closed = closedCache.get(content);
+  if (closed === undefined) {
+    const rows = content.rows.filter((r) => r.ops.length > 0);
+    const widths = rows.map((r) => computeRowStitches(r));
+    closed =
+      rows.length >= 3 &&
+      partStitches(content) <= DEFAULT_MAX_STITCHES &&
+      hasCode(rows[0]!.ops, "MR") &&
+      rows.every((r) => r.type === "round" && !onlyChains(r.ops)) &&
+      widths[widths.length - 1]! < 0.5 * Math.max(...widths);
+    closedCache.set(content, closed);
+  }
+  return closed;
+}
+
+/** The finish the engine uses without an own `finish`: gathered for a closed piece, else open. */
+export function automaticFinish(content: PartContent): Finish {
+  return isClosedPart(content) ? "gather" : "open";
+}
+
+/** The finish in effect: the part's own, else the automatic one. */
+export function effectiveFinish(content: PartContent): Finish {
+  return content.finish ?? automaticFinish(content);
+}
+
+/** The stuffing in effect without an own `stuffing`: only a gathered piece is stuffed (E22). */
+export function automaticStuffing(content: PartContent): Stuffing {
+  return effectiveFinish(content) === "gather" ? "firm" : "none";
+}
+
+/** A gathered last round larger than this is hard to pull shut (hint: crochet it flat). */
+export const GATHER_HINT_STITCHES = 12;
+
+/**
+ * Stitches of the last round when the part is gathered and that round is large (more than
+ * `GATHER_HINT_STITCHES`), else null — then "flach zusammenhäkeln?" is offered.
+ */
+export function largeGatheredRound(content: PartContent): number | null {
+  if (effectiveFinish(content) !== "gather") return null;
+  const last = [...content.rows].reverse().find((r) => r.ops.length > 0);
+  if (!last || last.type !== "round") return null;
+  const count = computeRowStitches(last);
+  return count > GATHER_HINT_STITCHES ? count : null;
 }

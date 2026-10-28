@@ -22,6 +22,11 @@ All notable changes to this project are documented here. The format follows
   `BuilderExportSchema` are refined schemas now (no `.shape` / `.extend`).
 - `modifierAllowed` allows `FP` / `BP` only on SC, HDC, DC, TR and DTR; `normalizeModifiers`
   refuses FP together with BP (the same rules as validation).
+- Whole-pattern import: `ImportIssueCode` loses `UNSUPPORTED_GROUP` and `UNSUPPORTED_COLOR`
+  (both are read now) and gains `COLOR_UNNAMED`, `ASSEMBLY_ANGLE_GUESSED`,
+  `AMBIGUOUS_INCREASE`, `DETAIL_UNASSIGNED` and `PLACEMENT_ROUND_UNKNOWN`; `UNSUPPORTED_SPECIAL_STITCH` only covers stitches without a code
+  (clusters, bullions, shells …). `ImportedPart.id` and `PatternImport.colors` / `.assembly`
+  are new required fields; `ParseRowWarning` gains `increase-ambiguous`.
 
 ### Added
 
@@ -63,6 +68,39 @@ All notable changes to this project are documented here. The format follows
   apart). The 3D preview closes a part as its finish says and relaxes again when finish or
   stuffing change. Importing duplicate row ids renames them and moves the placements that
   point at them; a duplicated part gets no part id of its own.
+- `ParseRowContext.rowColor`: a leading colour mark (`[Farbe: Weiß] 6 fM`) comes back as the
+  row's colour (`result.color`) instead of on the first stitch, so `renderRow` text reads
+  back into `Row.color`.
+- **Colours in the builder.** A palette strip in the parts bar and a "Farben" section in
+  "Material & Hinweise": built-in colour names with one click, own name and colour, rename,
+  recolour, choose the start colour, delete (rows that use the colour switch to a replacement
+  or lose the change), take the colours over into the yarn of the material list. Every row
+  card shows the colour it starts in — emphasised where it changes, muted where it carries
+  on — and sets or clears "Farbwechsel ab dieser Runde"; the op editor sets a colour change
+  per stitch. The row text shows colour changes with the palette's names and reads them back
+  (a name the palette lacks joins it). The 3D preview, the viewer and the PDF image show
+  every stitch in its colour (the row highlight blends in, so it stays visible on any
+  colour); PDF and viewer list the palette with swatches.
+- **Finish and stuffing in the builder:** "Abschluss" (Offen, Zusammengezogen, Flach
+  zusammengehäkelt) and "Füllung" (Keine, Leicht, Fest) per part, "Automatisch" showing what
+  the engine decides; a large gathered last round offers a flat finish with one click.
+- **Pasted patterns in format v2.** `parseRowText` reads several stitches into one stitch as
+  groups ("3 sc in next st", "5 dc in same st", "3 fM in 1 M", "(3 dc, ch 2, 3 dc) in next
+  st", "3 sc in each st"), taller-stitch increases ("hdc inc", "3 hdc-inc", "2 hStb-Zun"),
+  bobble-family stitches with their loops in the name ("5-dc bobble", "Noppe aus 5 Stb",
+  "ch-3 picot") and more relief spellings ("Reliefstäbchen vorne", "Relief-Stb h").
+  `parsePatternText` gives every part an `id` and reads from the instruction sentences a
+  palette (`colors`, with `hex` for common colour names or from "Color A: Gray" in the
+  materials) and `Row.color` on the row after a colour change, `finish` and `stuffing` per
+  part, and `assembly` placements for safety eyes and sewn-on parts; the sentences stay
+  instruction rows. In German text a capitalised noun no longer starts a row ("…, 4 M
+  Abstand" stays text). When in doubt the import reports instead of guessing: sentences in an
+  assembly section apply only to a part they name, stuffing is read clause by clause and per
+  named part, a finish is the last finishing sentence after the last stitch row (closing the
+  magic ring or a round, a negated close, a brim folded up and "sew it to …" are told apart),
+  placements are matched by round label only, colour choices and stripes, felt, knots and
+  "same colour" are no colour changes, and the written count decides "3 hdc inc". Sentences
+  over 300 characters are not read for details, so long lines stay fast.
 - **Hand-off to TellmeCrochet** (`tellmecrochet.ts`): `toTellmeCrochetDraft(doc)` turns an
   export into a TellmeCrochet draft (format version 1, strict `TmcDraftSchema`) and lists what
   it carried differently (`losses`, summarised in German by `summarizeTmcLosses`). Rows
@@ -82,6 +120,7 @@ All notable changes to this project are documented here. The format follows
   einfügen"), for documents opened from a file or a link and in the viewer, and
   `self_created` only for "Neu" and demos. It is remembered next to the stored document, not
   in the format; undo and redo restore it, undoing a paste keeps `imported`.
+
 
 ### Changed
 

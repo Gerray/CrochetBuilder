@@ -5,7 +5,8 @@
  *
  * Rows group when they have the same type, ops, Soll and note, no own label and the same
  * findings (a row whose check differs — the first of a run after a change of count — stands
- * out as its own card, so a finding always names the card it belongs to).
+ * out as its own card, so a finding always names the card it belongs to). A colour change of
+ * the row (`Row.color`) may only sit on the first row of a card (E26).
  *
  * Two things keep cards apart that would otherwise group:
  *   - `split`: runs the user split ("aufteilen"), each as the row ids of the run at that time.
@@ -38,8 +39,10 @@ export interface GroupOptions {
 function groupKey(row: Row, findings: readonly Finding[] | undefined): string | null {
   if (!isStitchRow(row) || row.label?.trim()) return null;
   const checks = (findings ?? []).map((f) => [f.code, f.expected ?? null, f.actual ?? null]);
-  // Ops compared structurally (stitch groups and colour changes included), plus the row's colour.
-  return JSON.stringify([row.type, row.ops, row.color ?? null, row.stitchCountTarget, row.note ?? null, checks]);
+  // Ops compared structurally (stitch groups and colour changes included). The row's own colour
+  // is not part of the key: a colour change belongs to the first row of a run (E26), and a later
+  // row with a colour of its own starts a new run (see `naturalRuns`).
+  return JSON.stringify([row.type, row.ops, row.stitchCountTarget, row.note ?? null, checks]);
 }
 
 const sameIds = (a: readonly string[], b: readonly Row[]) => a.length === b.length && a.every((id, i) => b[i]!.id === id);
@@ -51,7 +54,8 @@ export function naturalRuns(rows: readonly Row[], findings: ReadonlyMap<string, 
   rows.forEach((row, i) => {
     const key = groupKey(row, findings.get(row.id));
     const current = runs[runs.length - 1];
-    if (key !== null && key === previousKey && current) current.rows.push(row);
+    // A row that changes colour itself only ever starts a run ("Runde 5–8" in Rosa from round 5).
+    if (key !== null && key === previousKey && current && row.color === undefined) current.rows.push(row);
     else runs.push({ start: i, rows: [row] });
     previousKey = key;
   });

@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useReducer, useRef, useState } from "react";
-import type { Row } from "@crochetbuilder/engine";
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
+import type { PaletteColor, Row } from "@crochetbuilder/engine";
 import { createPortal } from "react-dom";
 import type { ExportActions } from "./components/ExportMenu.js";
 import { focusLater } from "./components/focus.js";
+import { PaletteContext, type PaletteInfo } from "./components/palette.js";
 import { PART_PANEL_ID, PartsBar, partTabId } from "./components/PartsBar.js";
 import { PasteDialog, pasteShortcut, type PasteImport } from "./components/PasteDialog.js";
 import { commitPendingEdits } from "./components/pendingEdits.js";
@@ -19,10 +20,13 @@ import type { PastePreviewOptions } from "./paste/usePastePreview.js";
 import { addPart, addRow, duplicatePart, duplicateRow, insertRounds, loadDemo, newDocument } from "./state/actions.js";
 import { emptyDocument, type BuilderDoc } from "./state/document.js";
 import { canRedo, canUndo, editorReducer, initEditorState, selectedPart, type EditorAction } from "./state/editor.js";
+import { paletteCss } from "./state/palette.js";
 import { partFindings, partName } from "./state/parts.js";
 import type { RoundSpec } from "./state/rounds.js";
 import { isMacPlatform, shortcutFor } from "./state/shortcuts.js";
 import { usePersistence } from "./state/usePersistence.js";
+
+const NO_COLORS: readonly PaletteColor[] = [];
 
 function isEditable(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false;
@@ -112,6 +116,13 @@ export function App({ exportActions, pastePreviewOptions }: AppProps = {}) {
       setLinkError(message);
     },
   });
+
+  // The palette for the row cards (context: they are memoised), with the live document for
+  // new colour ids.
+  const docRef = useRef(state.doc);
+  docRef.current = state.doc;
+  const colors = state.doc.overview.colors ?? NO_COLORS;
+  const palette = useMemo<PaletteInfo>(() => ({ colors, css: paletteCss(colors), getDoc: () => docRef.current }), [colors]);
 
   const part = selectedPart(state);
   // Validation only reruns when a part's content changes (cached per part, see parts.ts).
@@ -315,7 +326,7 @@ export function App({ exportActions, pastePreviewOptions }: AppProps = {}) {
 
   return (
     // Leaving a field ends its typing streak: the next edit is a separate undo step.
-    <>
+    <PaletteContext.Provider value={palette}>
       <div ref={appRoot} className="app" onBlurCapture={() => dispatch({ type: "endTyping" })}>
         {persistence.invalidStored !== undefined && (
           <StorageNotice raw={persistence.invalidStored} onStartFresh={persistence.resume} />
@@ -412,6 +423,7 @@ export function App({ exportActions, pastePreviewOptions }: AppProps = {}) {
               <PreviewPane
                 content={part}
                 gauge={state.doc.overview.gauge}
+                palette={colors}
                 findings={findings}
                 selectedRowId={selectedRowId}
                 highlightRowIds={selectedRows}
@@ -439,6 +451,6 @@ export function App({ exportActions, pastePreviewOptions }: AppProps = {}) {
           />,
           document.body,
         )}
-    </>
+    </PaletteContext.Provider>
   );
 }

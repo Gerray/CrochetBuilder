@@ -7,6 +7,7 @@ import type { SaveStatus } from "../state/usePersistence.js";
 import { ExportMenu, type ExportActions } from "./ExportMenu.js";
 import { ListField } from "./fields.js";
 import { GaugeEditor } from "./GaugeEditor.js";
+import { PaletteEditor } from "./palette.js";
 
 const STATUS_TEXT: Record<SaveStatus, string> = {
   loading: "Lade …",
@@ -262,6 +263,7 @@ function OverviewPanel({ doc, dispatch }: { doc: BuilderDoc; dispatch: Dispatch<
         >
           + Material
         </button>
+        <PaletteEditor doc={doc} dispatch={dispatch} />
       </div>
       <div className="overview-col">
         <h2 className="section-title">

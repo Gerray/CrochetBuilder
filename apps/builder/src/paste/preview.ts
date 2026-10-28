@@ -8,6 +8,7 @@
  */
 
 import {
+  CURRENT_SCHEMA_VERSION,
   DEFAULT_MAX_STITCHES,
   detectNotationLocale,
   parsePatternText,
@@ -16,10 +17,14 @@ import {
   rowOrdinals,
   validate,
   type Finding,
+  type Finish,
+  type ImportedColor,
   type ImportIssue,
   type ImportIssueCode,
   type NotationLocale,
+  type Placement,
   type Row,
+  type Stuffing,
 } from "@crochetbuilder/engine";
 import { importIssueMessage, unreadRowLabel } from "../state/import-messages.js";
 import { findingMessage } from "../state/messages.js";
@@ -51,9 +56,13 @@ export interface PreviewLine {
   messages: PreviewMessage[];
   /** 1-based line of the pasted text, when known. */
   source?: number;
+  /** The colour the work switches to at this row (format v2), as a chip. */
+  color?: ImportedColor;
 }
 
 export interface PreviewPart {
+  /** The part's id in the import (`assembly` refers to it; replaced on import when taken). */
+  id: string;
   name: string;
   quantity: number;
   /** The rows as they will be imported (ids are replaced on import). */
@@ -61,6 +70,8 @@ export interface PreviewPart {
   lines: PreviewLine[];
   /** Rows with stitches (rounds and rows). */
   stitchRows: number;
+  finish?: Finish;
+  stuffing?: Stuffing;
 }
 
 export interface GeneralIssue {
@@ -97,6 +108,10 @@ export interface PastePreview {
   counts: PreviewCounts;
   /** First preamble line when it looks like the pattern's title. */
   title?: string;
+  /** Colours named in the text (palette ids as in `Row.color`). */
+  colors: ImportedColor[];
+  /** Placements read from the text (part ids of `parts`, row ids of their rows). */
+  assembly: Placement[];
 }
 
 const KEY = (part: number, row: number) => `${part}:${row}`;
@@ -131,14 +146,21 @@ export function buildPastePreview(text: string, choice: LocaleChoice = "auto"): 
       const label = unreadRowLabel((byRow.get(KEY(p, r)) ?? []).map((i) => i.code));
       return label ? { ...row, label } : row;
     });
-    const findings = validate({ schemaVersion: 1, rows }, { maxStitches: DEFAULT_MAX_STITCHES });
-    return {
+    const findings = validate(
+      { schemaVersion: CURRENT_SCHEMA_VERSION, rows },
+      { maxStitches: DEFAULT_MAX_STITCHES, palette: result.colors },
+    );
+    const out: PreviewPart = {
+      id: part.id,
       name: part.name,
       quantity: part.quantity,
       rows,
-      lines: previewLines(rows, findings, (r) => byRow.get(KEY(p, r)) ?? []),
+      lines: previewLines(rows, findings, (r) => byRow.get(KEY(p, r)) ?? [], result.colors),
       stitchRows: rows.filter((r) => r.ops.length > 0).length,
     };
+    if (part.finish) out.finish = part.finish;
+    if (part.stuffing) out.stuffing = part.stuffing;
+    return out;
   });
   locateSources(text, parts);
 
@@ -163,6 +185,8 @@ export function buildPastePreview(text: string, choice: LocaleChoice = "auto"): 
     preamble: result.preamble,
     general,
     counts,
+    colors: result.colors,
+    assembly: result.assembly,
   };
   const title = titleCandidate(text, result.preamble);
   if (title) preview.title = title;
@@ -187,6 +211,43 @@ export function summaryText(counts: PreviewCounts): string {
   return `${head} – ${tail}`;
 }
 
+/** German words for a part's finish and stuffing (badges in the preview). */
+export const FINISH_LABELS: Record<Finish, string> = {
+  gather: "zusammengezogen",
+  flat: "flach geschlossen",
+  open: "offen",
+};
+export const STUFFING_LABELS: Record<Stuffing, string> = {
+  firm: "fest gefüllt",
+  light: "leicht gefüllt",
+  none: "ungefüllt",
+};
+
+/**
+ * "Montage: 2 Augen, 4 Teile angenäht, 1 Stickerei" — what the text says about the assembly,
+ * or undefined when it says nothing. Sewn-on parts count with their quantity (two ears are
+ * two parts), a placement of eyes is a pair.
+ */
+export function assemblySummary(preview: Pick<PastePreview, "assembly" | "parts">, quantities?: (index: number) => number): string | undefined {
+  let eyes = 0;
+  let attached = 0;
+  let embroidery = 0;
+  for (const p of preview.assembly) {
+    if (p.kind === "eyes") eyes += 2;
+    else if (p.kind === "embroidery") embroidery++;
+    else {
+      const index = preview.parts.findIndex((part) => part.id === p.part);
+      attached += index < 0 ? 1 : (quantities?.(index) ?? preview.parts[index]!.quantity);
+    }
+  }
+  const items = [
+    eyes > 0 ? count(eyes, "Auge", "Augen") : "",
+    attached > 0 ? `${count(attached, "Teil", "Teile")} angenäht` : "",
+    embroidery > 0 ? count(embroidery, "Stickerei", "Stickereien") : "",
+  ].filter((s) => s !== "");
+  return items.length > 0 ? `Montage: ${items.join(", ")}` : undefined;
+}
+
 // ---------------------------------------------------------------------------
 // Lines
 // ---------------------------------------------------------------------------
@@ -199,6 +260,8 @@ function sameRow(a: Row, b: Row): boolean {
     b.note === undefined &&
     a.label === undefined &&
     b.label === undefined &&
+    // A colour change starts a line of its own (it shows as a chip there).
+    b.color === undefined &&
     JSON.stringify(a.ops) === JSON.stringify(b.ops)
   );
 }
@@ -210,12 +273,14 @@ function findingText(finding: Finding, row: Row): string {
 
 /**
  * One line per row; consecutive identical stitch rows without remarks collapse into a range
- * ("Runde 5–8"), as patterns write them.
+ * ("Runde 5–8"), as patterns write them. A row that changes the colour carries the colour of
+ * `colors` it switches to.
  */
 export function previewLines(
   rows: readonly Row[],
   findings: readonly Finding[],
   issuesOf: (rowIndex: number) => readonly ImportIssue[],
+  colors: readonly ImportedColor[] = [],
 ): PreviewLine[] {
   const ordinals = rowOrdinals(rows);
   const findingsOf = new Map<string, Finding[]>();
@@ -259,6 +324,8 @@ export function previewLines(
       messages,
     };
     if (stitches && row.note) line.text += ` – ${row.note}`;
+    const color = row.color === undefined ? undefined : colors.find((c) => c.id === row.color);
+    if (color) line.color = color;
     const source = issues[0]?.line;
     if (source !== undefined) line.source = source;
     lines.push(line);

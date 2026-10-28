@@ -23,6 +23,16 @@ export interface ViewMesh {
   nodeRow: Uint32Array;
   /** Row ids, indexed by `nodeRow`. */
   rowIds: readonly string[];
+  /**
+   * Per graph node: index into `paletteIds` (format v2 colours, engine `nodeColorIndices`).
+   * Without it the piece has one yarn colour.
+   */
+  nodeColor?: ArrayLike<number>;
+  /**
+   * The palette ids `nodeColor` indexes, as the model was computed with them. The view looks
+   * the display colours up by id, so a palette edited meanwhile never paints wrong colours.
+   */
+  paletteIds?: readonly string[];
   /** Stitch width in mm — the size of a point in `"points"` style. Default 5. */
   stitchWidthMm?: number;
   /** Yarn diameter in mm (picking tolerance against the backing). Default 2.5. */
@@ -84,18 +94,113 @@ export function rowIndicesOf(mesh: Pick<ViewMesh, "rowIds">, rowIds: string | re
  * Writes into `out` when it has the right length.
  */
 export function vertexColors(
-  mesh: Pick<ViewMesh, "nodeIndex" | "nodeRow">,
+  mesh: Pick<ViewMesh, "nodeIndex" | "nodeRow" | "nodeColor">,
   row: number | readonly number[],
   base: Rgb,
   highlight: Rgb,
   out?: Float32Array,
 ): Float32Array {
+  return meshColors(mesh, { base, highlight, rows: typeof row === "number" ? [row] : row }, out);
+}
+
+/** Share of the highlight colour in a highlighted stitch of a coloured piece. */
+export const HIGHLIGHT_MIX = 0.4;
+
+const mix = (a: Rgb, b: Rgb, t: number): Rgb => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
+const distance = (a: Rgb, b: Rgb) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+const luminance = (c: Rgb) => 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+
+/**
+ * The colour of a highlighted stitch in yarn colour `base`: a tint of the highlight colour
+ * (`HIGHLIGHT_MIX`) plus a change of lightness — darker on light yarn, lighter on dark yarn —
+ * so the row reads as "this colour, marked" rather than as another yarn colour. Where that
+ * is still too close to the yarn (a yarn near the highlight colour) the lightness change is
+ * made stronger, so the row never disappears in it.
+ */
+export function highlightOn(base: Rgb, highlight: Rgb): Rgb {
+  const tinted = mix(base, highlight, HIGHLIGHT_MIX);
+  const light = luminance(base) > 0.35;
+  const cued = light ? mix(tinted, [0, 0, 0], 0.25) : mix(tinted, [1, 1, 1], 0.3);
+  if (distance(cued, base) >= 0.18) return cued;
+  return light ? mix(base, [0, 0, 0], 0.6) : mix(base, [1, 1, 1], 0.65);
+}
+
+/**
+ * Display colours (CSS) for a mesh's `nodeColor` indices: its `paletteIds` looked up in
+ * `colors` (palette id → CSS colour); an id missing there (a colour deleted meanwhile) gets
+ * `fallback`. Empty for a mesh without colours.
+ */
+export function meshPalette(
+  mesh: Pick<ViewMesh, "nodeColor" | "paletteIds">,
+  colors: Readonly<Record<string, string>>,
+  fallback: string,
+): string[] {
+  if (!mesh.nodeColor || !mesh.paletteIds) return [];
+  return mesh.paletteIds.map((id) => (Object.prototype.hasOwnProperty.call(colors, id) ? colors[id]! : fallback));
+}
+
+/** The fabric behind the stitches: a darker shade of the yarn, like the shadowed inside. */
+export const shade = (c: Rgb): Rgb => [c[0] * 0.55, c[1] * 0.5, c[2] * 0.48];
+
+/**
+ * Vertex colours of a mesh's `backing` (one vertex per graph node): every node in a shade of
+ * its own yarn colour (`palette` by `nodeColor`), else of `base`.
+ */
+export function backingColors(
+  mesh: Pick<ViewMesh, "nodeColor" | "nodeRow">,
+  base: Rgb,
+  palette: readonly Rgb[] = [],
+  out?: Float32Array,
+): Float32Array {
+  const n = mesh.nodeRow.length;
+  const colors = out && out.length === 3 * n ? out : new Float32Array(3 * n);
+  const plain = shade(base);
+  const shaded = palette.map(shade);
+  for (let node = 0; node < n; node++) {
+    const c = mesh.nodeColor && shaded.length > 0 ? (shaded[mesh.nodeColor[node] ?? 0] ?? plain) : plain;
+    colors[3 * node] = c[0];
+    colors[3 * node + 1] = c[1];
+    colors[3 * node + 2] = c[2];
+  }
+  return colors;
+}
+
+export interface ColorOptions {
+  /** Yarn colour without a palette (and for palette indices outside it). */
+  base: Rgb;
+  /** Colours (linear RGB) indexed by `nodeColor` (the mesh's `paletteIds` in order); empty: one yarn colour. */
+  palette?: readonly Rgb[];
+  /** Rows (indices into `rowIds`) to highlight; -1 entries are ignored. */
+  rows?: readonly number[];
+  highlight: Rgb;
+}
+
+/**
+ * Vertex colours (linear RGB, 3 floats per vertex) of a mesh: each stitch in its palette
+ * colour (`mesh.nodeColor` with `palette`), else in `base`; stitches of the highlighted rows
+ * in `highlight` — on a coloured piece blended with their yarn colour (`highlightOn`).
+ * Writes into `out` when it has the right length. Reusable for any view that shows a
+ * `ViewMesh` (preview, viewer, PDF image, assembled parts).
+ */
+export function meshColors(
+  mesh: Pick<ViewMesh, "nodeIndex" | "nodeRow" | "nodeColor">,
+  opts: ColorOptions,
+  out?: Float32Array,
+): Float32Array {
   const n = mesh.nodeIndex.length;
   const colors = out && out.length === 3 * n ? out : new Float32Array(3 * n);
-  const rows = new Set(typeof row === "number" ? [row] : row);
+  const rows = new Set(opts.rows ?? []);
   rows.delete(-1);
+  const palette = opts.palette ?? [];
+  const coloured = palette.length > 0 && mesh.nodeColor !== undefined;
+  // One highlight colour per palette entry (and the plain one), computed once.
+  const lit = coloured ? palette.map((c) => highlightOn(c, opts.highlight)) : [];
   for (let v = 0; v < n; v++) {
-    const c = rows.size > 0 && rows.has(mesh.nodeRow[mesh.nodeIndex[v]!]!) ? highlight : base;
+    const node = mesh.nodeIndex[v]!;
+    const index = coloured ? (mesh.nodeColor![node] ?? 0) : -1;
+    const own = coloured ? palette[index] : undefined;
+    const on = rows.size > 0 && rows.has(mesh.nodeRow[node]!);
+    const c = on ? (own ? lit[index]! : opts.highlight) : (own ?? opts.base);
     colors[3 * v] = c[0];
     colors[3 * v + 1] = c[1];
     colors[3 * v + 2] = c[2];
