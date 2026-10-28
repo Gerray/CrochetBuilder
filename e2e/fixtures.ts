@@ -80,8 +80,8 @@ export async function openExportMenu(page: Page): Promise<Locator> {
   return panel;
 }
 
-/** Load the sphere demo via the "Weitere Demos" menu. */
-export async function loadDemo(page: Page, label: "Kugel" | "Ball" | "Topflappen"): Promise<void> {
+/** Load a demo via the "Weitere Demos" menu ("Hase" is the multi-part bunny). */
+export async function loadDemo(page: Page, label: "Kugel" | "Ball" | "Topflappen" | "Hase"): Promise<void> {
   await page.getByRole("button", { name: "Weitere Demos" }).click();
   await page.getByRole("menuitem", { name: new RegExp(`^${label}`) }).click();
 }
