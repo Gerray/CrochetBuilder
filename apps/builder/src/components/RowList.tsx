@@ -1,9 +1,9 @@
-import { useCallback, useMemo, type Dispatch } from "react";
+import { useCallback, useMemo, useRef, type Dispatch } from "react";
 import type { Finding, Row } from "@crochetbuilder/engine";
 import type { EditorAction } from "../state/editor.js";
 import type { RowItem } from "../state/grouping.js";
 import { autoRowLabels, isInstructionLike } from "../state/labels.js";
-import { rowStartColors } from "../state/palette.js";
+import { reuseRowColors, rowStartColors, type RowColor } from "../state/palette.js";
 import { usePalette } from "./palette.js";
 import { previousCountAt, previousCounts, previousStitchRow, type RoundSpec } from "../state/rounds.js";
 import { suggestNextRow } from "../state/suggest.js";
@@ -50,10 +50,16 @@ export function RowList(props: RowListProps) {
   const previous = useMemo(() => previousCounts(rows), [rows]);
   // Colour at the start of every row: only with a palette, or where a row names a colour.
   const palette = usePalette();
-  const rowColors = useMemo(
-    () => (palette.colors.length > 0 || rows.some((r) => r.color !== undefined) ? rowStartColors(rows, palette.colors) : null),
-    [rows, palette.colors],
-  );
+  // Unchanged colours keep their objects, so memoised cards are not re-rendered for them.
+  const previousColors = useRef<RowColor[] | null>(null);
+  const rowColors = useMemo(() => {
+    const next =
+      palette.colors.length > 0 || rows.some((r) => r.color !== undefined)
+        ? reuseRowColors(rowStartColors(rows, palette.colors), previousColors.current)
+        : null;
+    previousColors.current = next;
+    return next;
+  }, [rows, palette.colors]);
 
   // A focused card keeps its rows together until the focus leaves it (`useRowGroups`).
   const select = useCallback(

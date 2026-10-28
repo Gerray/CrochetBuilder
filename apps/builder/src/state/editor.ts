@@ -33,7 +33,7 @@ import {
 import { emptyRow, instructionRow, type BuilderDoc } from "./document.js";
 import * as tree from "./op-tree.js";
 import type { OpPath } from "./op-tree.js";
-import { replaceColorInRow } from "./palette.js";
+import { colorNameProblem, replaceColorInRow } from "./palette.js";
 
 export const HISTORY_LIMIT = 200;
 
@@ -679,6 +679,7 @@ function applyPalette(doc: BuilderDoc, action: PaletteAction): BuilderDoc {
     case "addColor": {
       const c = action.color;
       if (!c.id || colors.some((x) => x.id === c.id) || (c.hex !== undefined && !HEX.test(c.hex))) return doc;
+      if (colorNameProblem(c.name, colors) !== null) return doc;
       return withColors(doc, [...colors, c.hex === undefined ? { ...c } : { ...c, hex: c.hex.toLowerCase() }]);
     }
 
@@ -686,7 +687,11 @@ function applyPalette(doc: BuilderDoc, action: PaletteAction): BuilderDoc {
       const color = colors[index];
       if (!color) return doc;
       const next: PaletteColor = { ...color };
-      if (action.patch.name !== undefined) next.name = action.patch.name;
+      if (action.patch.name !== undefined) {
+        // Names must read back unambiguously from the row text (E26).
+        if (colorNameProblem(action.patch.name, colors, color.id) !== null) return doc;
+        next.name = action.patch.name;
+      }
       if (action.patch.hex === null) delete next.hex;
       else if (action.patch.hex !== undefined) {
         if (!HEX.test(action.patch.hex)) return doc;
@@ -702,7 +707,13 @@ function applyPalette(doc: BuilderDoc, action: PaletteAction): BuilderDoc {
         action.replacement !== undefined && action.replacement !== action.id && colors.some((c) => c.id === action.replacement)
           ? action.replacement
           : undefined;
-      const next = withColors(doc, colors.filter((_, i) => i !== index));
+      let rest = colors.filter((_, i) => i !== index);
+      // The start colour replaced: the replacement becomes the start colour, so every part
+      // still starts in the colour chosen for it.
+      if (index === 0 && replacement !== undefined) {
+        rest = [...rest.filter((c) => c.id === replacement), ...rest.filter((c) => c.id !== replacement)];
+      }
+      const next = withColors(doc, rest);
       const parts = next.parts.map((part) => {
         const rows = part.content.rows.map((r) => replaceColorInRow(r, action.id, replacement));
         return rows.some((r, i) => r !== part.content.rows[i]) ? { ...part, content: { ...part.content, rows } } : part;
@@ -804,7 +815,12 @@ function applyAssist(state: EditorState, action: AssistAction): DocResult {
       if (newIds.length < missing || new Set(newIds).size !== newIds.length) return same;
       if (newIds.some((id) => partOfRow(doc, id) >= 0)) return same;
       const source = rows[start]!;
-      const copies = newIds.map((id): Row => ({ ...structuredClone(source), id }));
+      // The copies carry on in the colour of the run: a colour change stays on its first row (E26).
+      const copies = newIds.map((id): Row => {
+        const copy: Row = { ...structuredClone(source), id };
+        delete copy.color;
+        return copy;
+      });
       const end = start + rowIds.length;
       return {
         doc: withRows(doc, index, (list) => [...list.slice(0, end), ...copies, ...list.slice(end)]),

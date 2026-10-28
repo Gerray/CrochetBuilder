@@ -7,13 +7,13 @@
 
 import {
   DEFAULT_MAX_STITCHES,
-  buildGraph,
   computeRowStitches,
-  isClosedPiece,
   validate,
   type Finding,
   type Finish,
+  type Op,
   type PartContent,
+  type StitchCode,
   type Stuffing,
 } from "@crochetbuilder/engine";
 import type { BuilderDoc } from "./document.js";
@@ -97,14 +97,28 @@ export function totalText({ stitches, pieces }: PartsTotal): string {
 
 const closedCache = new WeakMap<PartContent, boolean>();
 
+const hasCode = (ops: readonly Op[], code: StitchCode): boolean =>
+  ops.some((op) => (op.kind === "stitch" ? op.code === code : hasCode(op.ops, code)));
+const onlyChains = (ops: readonly Op[]): boolean =>
+  ops.every((op) => (op.kind === "stitch" ? op.code === "CH" : onlyChains(op.ops)));
+
 /**
- * Whether the engine takes the part for a closed piece (magic ring, rounds only, decreased at
- * the end — `isClosedPiece`), cached per content. Over the stitch budget: no.
+ * Whether the engine takes the part for a closed piece (`isClosedPiece`: it starts with a magic
+ * ring, consists of rounds only and its last round has less than half the stitches of its
+ * widest), read from the rows — no stitch graph on the main thread. Cached per content.
+ * Over the stitch budget: no (the engine builds no graph then).
  */
 export function isClosedPart(content: PartContent): boolean {
   let closed = closedCache.get(content);
   if (closed === undefined) {
-    closed = isClosedPiece(buildGraph(content, undefined, { maxStitches: DEFAULT_MAX_STITCHES }));
+    const rows = content.rows.filter((r) => r.ops.length > 0);
+    const widths = rows.map((r) => computeRowStitches(r));
+    closed =
+      rows.length >= 3 &&
+      partStitches(content) <= DEFAULT_MAX_STITCHES &&
+      hasCode(rows[0]!.ops, "MR") &&
+      rows.every((r) => r.type === "round" && !onlyChains(r.ops)) &&
+      widths[widths.length - 1]! < 0.5 * Math.max(...widths);
     closedCache.set(content, closed);
   }
   return closed;

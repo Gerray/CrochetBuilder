@@ -17,7 +17,7 @@ import {
   type PaletteColor,
   type PartContent,
 } from "@crochetbuilder/engine";
-import { paletteCss } from "../state/palette.js";
+import { paletteColors } from "../state/palette.js";
 import { MAIN_THREAD_MAX_STITCHES } from "../preview/protocol.js";
 import type { ModelCanvasProps } from "../three/ModelCanvas.js";
 import { usePreviewModel, type PreviewOptions, type PreviewState } from "../preview/usePreviewModel.js";
@@ -187,10 +187,13 @@ const NO_GROUPS: readonly RowItem[] = [];
 const NO_PALETTE: readonly PaletteColor[] = [];
 
 /** Palette ids (for the model) and display colours (for the view), stable while unchanged. */
-export function usePaletteColors(palette: readonly PaletteColor[]): { ids: readonly string[]; css: readonly string[] } {
-  const ids = palette.map((c) => c.id).join("\u0000");
-  const css = paletteCss(palette).join("|");
-  return useMemo(() => ({ ids: ids ? ids.split("\u0000") : [], css: css ? css.split("|") : [] }), [ids, css]);
+export function usePaletteColors(palette: readonly PaletteColor[]): {
+  ids: readonly string[];
+  colors: Readonly<Record<string, string>>;
+} {
+  const ids = JSON.stringify(palette.map((c) => c.id));
+  const colors = JSON.stringify(paletteColors(palette));
+  return useMemo(() => ({ ids: JSON.parse(ids) as string[], colors: JSON.parse(colors) as Record<string, string> }), [ids, colors]);
 }
 
 export function PreviewPane({
@@ -208,7 +211,7 @@ export function PreviewPane({
   loadView = loadModelCanvas,
 }: PreviewPaneProps) {
   const resolved = resolveGauge(gauge);
-  const { ids: paletteIds, css: paletteColors } = usePaletteColors(palette);
+  const { ids: paletteIds, colors: paletteColors } = usePaletteColors(palette);
   const [style, setStyle] = useState<MeshStyle>(initialPreviewStyle);
   const [showGrid, setShowGrid] = useState(() => readSetting(GRID_KEY, ["on", "off"], "on") === "on");
   const [showBacking, setShowBacking] = useState(() => readSetting(BACKING_KEY, ["on", "off"], "off") === "on");
@@ -323,7 +326,7 @@ export function PreviewPane({
                     dimmed={stale}
                     showGrid={showGrid}
                     backing={style === "stitches" && showBacking ? BACKING_OPACITY : 0}
-                    palette={paletteColors}
+                    colors={paletteColors}
                     resetToken={resetToken}
                     onPickRow={onSelectRow}
                     onUnavailable={onUnavailable}

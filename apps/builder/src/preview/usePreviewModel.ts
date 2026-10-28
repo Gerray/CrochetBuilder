@@ -3,10 +3,10 @@
  * main thread) for a model and keeps the last good one around.
  */
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { Gauge, MeshStyle, PartContent } from "@crochetbuilder/engine";
 import { createPreviewClient } from "./client.js";
-import type { PreviewClient, PreviewModel, PreviewResult } from "./protocol.js";
+import { geometryKey, withColors, type PreviewClient, type PreviewModel, type PreviewResult } from "./protocol.js";
 
 export interface PreviewState {
   /**
@@ -49,6 +49,9 @@ export function applyResult(state: PreviewState, result: PreviewResult, stillCom
       };
     case "error":
       return { status: "error", model: state.model, computing, error: result.message };
+    case "colors":
+      // New colours for the model shown: same geometry arrays, so the view only recolours.
+      return state.model ? { ...state, status: "model", model: withColors(state.model, result.colors), computing } : state;
   }
 }
 
@@ -77,6 +80,9 @@ export function usePreviewModel(
   const clientRef = useRef<PreviewClient | null>(null);
   const scheduled = useRef(false);
   const last = useRef<{ content: PartContent; gauge: Gauge | undefined } | null>(null);
+  // What shapes the mesh (without colours, labels, targets) and the shape of the model shown.
+  const shape = useMemo(() => `${geometryKey(content, gauge, 0)}\u0001${style}`, [content, gauge, style]);
+  const shownShape = useRef<string | null>(null);
 
   useEffect(() => {
     const client = createClient();
@@ -90,7 +96,9 @@ export function usePreviewModel(
   useEffect(() => {
     const edited = last.current !== null && (last.current.content !== content || last.current.gauge !== gauge);
     last.current = { content, gauge };
-    setState((s) => (s.computing ? s : { ...s, computing: true }));
+    // The mesh shown has this shape already: only its colours (or nothing visible) changed.
+    const colorsOnly = shownShape.current === shape;
+    if (!colorsOnly) setState((s) => (s.computing ? s : { ...s, computing: true }));
     scheduled.current = true;
     const timer = setTimeout(
       () => {
@@ -98,11 +106,14 @@ export function usePreviewModel(
         const client = clientRef.current;
         if (!client) return;
         const ids = paletteKey === "" ? [] : paletteKey.split("\u0000");
+        const request = { content, gauge, style, ...(ids.length > 0 ? { palette: ids } : {}), ...(colorsOnly ? { colorsOnly } : {}) };
         client
-          .compute(ids.length > 0 ? { content, gauge, style, palette: ids } : { content, gauge, style })
+          .compute(request)
           .then((result) => {
             if (!result) return;
             const mainThread = client.degraded;
+            if (result.kind === "model") shownShape.current = shape;
+            else if (result.kind !== "colors") shownShape.current = null;
             setState((s) => ({ ...applyResult(s, result, scheduled.current || client.busy), ...(mainThread ? { mainThread } : {}) }));
           })
           .catch((err: unknown) => {
@@ -110,13 +121,13 @@ export function usePreviewModel(
             console.error(err);
           });
       },
-      edited ? debounceMs : 0,
+      edited && !colorsOnly ? debounceMs : 0,
     );
     return () => {
       clearTimeout(timer);
       scheduled.current = false;
     };
-  }, [content, gauge, style, debounceMs, paletteKey]);
+  }, [content, gauge, style, debounceMs, paletteKey, shape]);
 
   return state;
 }

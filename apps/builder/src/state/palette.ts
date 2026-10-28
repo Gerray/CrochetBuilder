@@ -81,6 +81,18 @@ export function paletteCss(palette: readonly Pick<PaletteColor, "name" | "hex">[
   return palette.map((c, i) => colorCss(c, i));
 }
 
+/**
+ * Display colour by palette id (what the 3D view looks colours up by); the first entry wins
+ * for a duplicate id, as in the engine's colouring.
+ */
+export function paletteColors(palette: readonly PaletteColor[]): Record<string, string> {
+  const out = Object.create(null) as Record<string, string>; // ids like "__proto__" stay plain keys
+  palette.forEach((c, i) => {
+    if (!Object.prototype.hasOwnProperty.call(out, c.id)) out[c.id] = colorCss(c, i);
+  });
+  return out;
+}
+
 /** Shown name of a palette entry ("Farbe 2" while it has none). */
 export function colorName(color: Pick<PaletteColor, "name"> | undefined, index: number): string {
   return color?.name.trim() || `Farbe ${index + 1}`;
@@ -139,15 +151,50 @@ export function nextSuggestion(palette: readonly PaletteColor[]): { name: string
   return COLOR_SUGGESTIONS.find((s) => !used.has(key(s.name))) ?? { name: `Farbe ${palette.length + 1}`, hex: FALLBACK_COLORS[0]! };
 }
 
-/** How many rows of the document (all parts) switch to colour `id`, at the row or at a stitch. */
-export function colorUsage(doc: BuilderDoc, id: string): number {
+/**
+ * Why a palette name cannot be used, or null: square brackets would break the colour marks of
+ * the row text (`[Farbe: …]`), and a name another colour has (case-insensitive) would read back
+ * ambiguously. `exceptId`: the colour being renamed. An empty name is allowed ("Farbe n").
+ */
+export function colorNameProblem(name: string, palette: readonly PaletteColor[], exceptId?: string): string | null {
+  if (/[[\]]/.test(name)) return "Ohne eckige Klammern, bitte.";
+  const k = key(name);
+  if (k && palette.some((c) => c.id !== exceptId && key(c.name) === k)) return "Diesen Namen hat schon eine andere Farbe.";
+  return null;
+}
+
+/** How many rows use a colour, and what they are: "Runden", "Reihen" or both. */
+export interface ColorUsage {
+  count: number;
+  /** "2 Runden", "1 Reihe", "3 Runden/Reihen". */
+  text: string;
+}
+
+/**
+ * The rows of the document (all parts) that use colour `id`: rows that switch to it, at the row
+ * or at a stitch — and for the start colour (palette index 0) also the stitch rows each part
+ * works in it before its first colour change.
+ */
+export function colorUsage(doc: BuilderDoc, id: string): ColorUsage {
   const usesOps = (ops: readonly Op[]): boolean =>
     ops.some((op) => (op.kind === "stitch" ? op.color === id : usesOps(op.ops)));
+  const start = doc.overview.colors?.[0]?.id === id;
+  let rounds = 0;
   let rows = 0;
   for (const part of doc.parts) {
-    for (const row of part.content.rows) if (row.color === id || usesOps(row.ops)) rows++;
+    let implicit = start;
+    for (const row of part.content.rows) {
+      if (row.color !== undefined) implicit = false;
+      const uses = row.color === id || usesOps(row.ops) || (implicit && row.ops.length > 0);
+      if (opsChangeColor(row.ops)) implicit = false;
+      if (!uses) continue;
+      if (row.type === "row") rows++;
+      else rounds++;
+    }
   }
-  return rows;
+  const count = rounds + rows;
+  const word = rows === 0 ? (count === 1 ? "Runde" : "Runden") : rounds === 0 ? (count === 1 ? "Reihe" : "Reihen") : "Runden/Reihen";
+  return { count, text: `${count} ${word}` };
 }
 
 /** `ops` with every switch to `from` changed to `to`, or removed (`to` undefined). Same array when unchanged. */
@@ -215,6 +262,18 @@ export function rowStartColors(rows: readonly Row[], palette: readonly Pick<Pale
   });
 }
 
+/**
+ * `next` with every entry that equals the one at the same place in `prev` replaced by that
+ * old object, so memoised row cards whose colour did not change see the same prop.
+ */
+export function reuseRowColors(next: RowColor[], prev: readonly RowColor[] | null): RowColor[] {
+  if (!prev) return next;
+  return next.map((c, i) => {
+    const old = prev[i];
+    return old && old.id === c.id && old.changed === c.changed && old.unknown === c.unknown && old.before === c.before ? old : c;
+  });
+}
+
 /** Whether `ops` switch colour anywhere (a stitch with `color`). */
 export function opsChangeColor(ops: readonly Op[]): boolean {
   return ops.some((op) => (op.kind === "stitch" ? op.color !== undefined : opsChangeColor(op.ops)));
@@ -225,11 +284,18 @@ export function opsChangeColor(ops: readonly Op[]): boolean {
  * palette entries: returns the new entries (name as written, built-in display colour if the
  * name is known) and the ops / row colour with the written names replaced by the new ids.
  * Names that match a palette entry were already resolved by the parser.
+ *
+ * The first palette colour is the one every part starts in. With an empty palette, a colour
+ * written anywhere but as the row colour of a part's first stitch row would become that start
+ * colour and colour the rows before it too; so unless `startsPart` (the row is the part's first
+ * stitch row and its own colour comes first), a start colour is added before it: "Weiß", or
+ * "Grundfarbe" when "Weiß" is among the colours written.
  */
 export function adoptWrittenColors(
   ops: Op[],
   rowColor: string | undefined,
   doc: BuilderDoc,
+  startsPart = false,
 ): { ops: Op[]; color: string | undefined; added: PaletteColor[] } {
   const palette = doc.overview.colors ?? [];
   const known = new Set(palette.map((c) => c.id));
@@ -237,17 +303,25 @@ export function adoptWrittenColors(
   const idFor = new Map<string, string>();
   // Ids taken so far: the document's plus the ones handed out here.
   let scratch: BuilderDoc = doc;
+  const push = (entry: PaletteColor) => {
+    added.push(entry);
+    scratch = { ...scratch, overview: { ...scratch.overview, colors: [...(scratch.overview.colors ?? []), entry] } };
+  };
+  const needsStart = palette.length === 0 && !(startsPart && rowColor !== undefined);
   const adopt = (written: string): string => {
     if (known.has(written)) return written;
     const k = key(written);
     const existing = idFor.get(k);
     if (existing) return existing;
+    if (needsStart && added.length === 0) {
+      const writesWhite = [rowColor, ...writtenColors(ops)].some((w) => w !== undefined && key(w) === key("Weiß"));
+      const name = writesWhite ? "Grundfarbe" : "Weiß";
+      push({ id: newColorId(name, scratch), name, hex: writesWhite ? FALLBACK_COLORS[0]! : suggestionFor("Weiß")!.hex });
+    }
     const id = newColorId(written, scratch);
     const hint = suggestionFor(written);
-    const entry: PaletteColor = hint ? { id, name: written.trim(), hex: hint.hex } : { id, name: written.trim() };
-    added.push(entry);
+    push(hint ? { id, name: written.trim(), hex: hint.hex } : { id, name: written.trim() });
     idFor.set(k, id);
-    scratch = { ...scratch, overview: { ...scratch.overview, colors: [...(scratch.overview.colors ?? []), entry] } };
     return id;
   };
   const walk = (list: Op[]): Op[] =>
@@ -259,4 +333,9 @@ export function adoptWrittenColors(
   const unknown = (list: readonly Op[]): boolean =>
     list.some((op) => (op.kind === "stitch" ? op.color !== undefined && !known.has(op.color) : unknown(op.ops)));
   return { ops: unknown(ops) ? walk(ops) : ops, color, added };
+}
+
+/** Colour ids / names written on the stitches of `ops`, in order. */
+function writtenColors(ops: readonly Op[]): string[] {
+  return ops.flatMap((op) => (op.kind === "stitch" ? (op.color === undefined ? [] : [op.color]) : writtenColors(op.ops)));
 }

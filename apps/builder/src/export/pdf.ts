@@ -10,6 +10,7 @@ import type { jsPDF as JsPdf } from "jspdf";
 import { createPreviewClient } from "../preview/client.js";
 import type { PreviewModel, PreviewResult } from "../preview/protocol.js";
 import type { BuilderDoc } from "../state/document.js";
+import { paletteColors } from "../state/palette.js";
 import { partName, partStitches, partsTotal, totalText } from "../state/parts.js";
 import { estimateNote, gaugeLine, materialLine, paletteEntries, partHeading, sizeLine } from "./labels.js";
 import { layoutPdf, type PdfImage, type PdfInput, type PdfLayout, type TextMeasure } from "./pdfLayout.js";
@@ -231,17 +232,20 @@ async function computeModel(exp: BuilderExport): Promise<PreviewModel | null> {
 }
 
 /**
- * Render the model off screen at `SNAPSHOT_SIZE`, in the palette's colours (CSS, indexed by
- * the model's `nodeColor`); null without WebGL or on any failure.
+ * Render the model off screen at `SNAPSHOT_SIZE`, in the palette's colours (palette id → CSS,
+ * see `paletteColors`); null without WebGL or on any failure.
  */
-export async function snapshotModel(model: PreviewModel, palette: readonly string[] = []): Promise<PdfImage | null> {
+export async function snapshotModel(
+  model: PreviewModel,
+  colors: Readonly<Record<string, string>> = {},
+): Promise<PdfImage | null> {
   try {
     const { createModelView } = await import("../three/modelView.js");
     const canvas = document.createElement("canvas");
     canvas.width = SNAPSHOT_SIZE.width;
     canvas.height = SNAPSHOT_SIZE.height;
     const view = createModelView(canvas, {
-      style: { background: SNAPSHOT_BACKGROUND, showGrid: false, yarn: "#e7b48f", backing: SNAPSHOT_BACKING, palette },
+      style: { background: SNAPSHOT_BACKGROUND, showGrid: false, yarn: "#e7b48f", backing: SNAPSHOT_BACKING, colors },
       autoResize: false,
       maxPixelRatio: 1,
     });
@@ -264,7 +268,7 @@ export async function snapshotModel(model: PreviewModel, palette: readonly strin
 export interface SavePdfDeps {
   loadJsPdf?: () => Promise<typeof JsPdf>;
   computeModel?: (exp: BuilderExport) => Promise<PreviewModel | null>;
-  snapshot?: (model: PreviewModel, palette: readonly string[]) => Promise<PdfImage | null>;
+  snapshot?: (model: PreviewModel, colors: Readonly<Record<string, string>>) => Promise<PdfImage | null>;
   save?: (blob: Blob, fileName: string) => void;
 }
 
@@ -277,8 +281,7 @@ export async function savePdf(doc: BuilderDoc, deps: SavePdfDeps = {}): Promise<
     (deps.loadJsPdf ?? loadJsPdf)(),
     (deps.computeModel ?? computeModel)(exp).catch(() => null),
   ]);
-  const palette = paletteEntries(exp.overview.colors ?? []).map((c) => c.css);
-  const image = model ? await (deps.snapshot ?? snapshotModel)(model, palette) : null;
+  const image = model ? await (deps.snapshot ?? snapshotModel)(model, paletteColors(exp.overview.colors ?? [])) : null;
   const { pdf } = renderPdf(JsPdfCtor, pdfInput(exp, model, image));
   const fileName = exportFileName(exp.title, "pdf");
   (deps.save ?? downloadBlob)(pdf.output("blob"), fileName);

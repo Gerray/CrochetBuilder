@@ -37,7 +37,7 @@ test("colours and finish: palette, colour change at round 5, export, flat finish
   const finish = page.getByRole("combobox", { name: "Abschluss des Teils" });
   await expect(finish.locator("option:checked")).toHaveText("Automatisch (Zusammengezogen)");
   await finish.selectOption("flat");
-  await expect(page.getByRole("combobox", { name: "Füllung des Teils" }).locator("option:checked")).toHaveText("Automatisch (Keine)");
+  await expect(page.getByRole("combobox", { name: "Füllung des Teils" }).locator("option:checked")).toHaveText("Automatisch (keine Füllung)");
 
   // Everything is in the exported JSON.
   const panel = await openExportMenu(page);

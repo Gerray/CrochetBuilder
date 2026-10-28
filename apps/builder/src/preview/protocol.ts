@@ -40,6 +40,12 @@ export interface PreviewRequest {
    * index of every stitch (`nodeColor`).
    */
   palette?: readonly string[];
+  /**
+   * Only the colours changed since the last model (same geometry and style): answer with the
+   * colour indices alone (`kind: "colors"`) when the relaxed model is still cached, else with
+   * a full model.
+   */
+  colorsOnly?: boolean;
 }
 
 /**
@@ -59,8 +65,10 @@ export interface PreviewModel {
   nodeRow: Uint32Array;
   /** Ids of the rows that produced stitches, in document order. */
   rowIds: string[];
-  /** Per graph node: palette index of its yarn colour; only with a palette in the request. */
+  /** Per graph node: index into `paletteIds` of its yarn colour; only with a palette in the request. */
   nodeColor?: Uint16Array;
+  /** The palette ids the colour indices refer to (the request's), so views look colours up by id. */
+  paletteIds?: string[];
   /** Bounding size of the relaxed piece, mm. */
   size: Size;
   /** Largest round diameter, mm; 0 for pieces without closed rounds. */
@@ -93,10 +101,28 @@ export type PreviewResult =
   | { id: number; kind: "empty" }
   /** Above the stitch budget: no model was built. */
   | { id: number; kind: "overBudget"; stitchCount: number; maxStitches: number }
-  | { id: number; kind: "error"; message: string };
+  | { id: number; kind: "error"; message: string }
+  /** Answer to `colorsOnly`: the new colours of the last model (no colours: both absent). */
+  | { id: number; kind: "colors"; colors: ModelColors };
+
+/** The colour part of a model. */
+export type ModelColors = Pick<PreviewModel, "nodeColor" | "paletteIds">;
+
+/** Colour indices of every node of `graph` for the palette ids (nothing without a palette). */
+export function modelColors(graph: StitchGraph, content: PartContent, palette: readonly string[] | undefined): ModelColors {
+  if (!palette || palette.length === 0) return {};
+  return { nodeColor: nodeColorIndices(graph, content, palette.map((id) => ({ id }))), paletteIds: [...palette] };
+}
+
+/** A model with new colours (a `colors` result) — the same geometry arrays. */
+export function withColors(model: PreviewModel, colors: ModelColors): PreviewModel {
+  const { nodeColor: _n, paletteIds: _p, ...rest } = model;
+  return { ...rest, ...colors };
+}
 
 /** Buffers of a result that can be moved (not copied) through `postMessage`. */
 export function transferablesOf(result: PreviewResult): ArrayBuffer[] {
+  if (result.kind === "colors") return result.colors.nodeColor ? [result.colors.nodeColor.buffer as ArrayBuffer] : [];
   if (result.kind !== "model") return [];
   const m = result.model;
   const arrays: ArrayBufferView[] = [m.positions, m.normals, m.indices, m.nodeIndex, m.nodeRow];
@@ -144,7 +170,12 @@ export class PreviewComputer {
     try {
       const maxStitches = req.maxStitches ?? DEFAULT_MAX_STITCHES;
       const key = geometryKey(req.content, req.gauge, maxStitches);
-      let model = key === this.lastKey ? this.lastModel : null;
+      const cached = key === this.lastKey ? this.lastModel : null;
+      // Only the colours changed: new colour indices, no relaxation and no new mesh.
+      if (req.colorsOnly && cached && !cached.graph.overBudget && cached.graph.nodes.length > 0) {
+        return { id, kind: "colors", colors: modelColors(cached.graph, req.content, req.palette) };
+      }
+      let model = cached;
       if (!model) {
         model = this.build(req.content, req.gauge, { maxStitches });
         this.lastKey = key;
@@ -166,9 +197,7 @@ export class PreviewComputer {
           indices: mesh.indices,
           nodeIndex: mesh.nodeIndex,
           ...nodeRows(model),
-          ...(req.palette && req.palette.length > 0
-            ? { nodeColor: nodeColorIndices(graph, req.content, req.palette.map((id) => ({ id }))) }
-            : {}),
+          ...modelColors(graph, req.content, req.palette),
           size: model.size,
           maxDiameter: model.maxDiameter,
           estimated: model.estimated,

@@ -1,13 +1,13 @@
 /** Colours of the model (format v2): palette per stitch, highlight on coloured pieces, worker side. */
 import { describe, expect, it } from "vitest";
 import { jsPDF } from "jspdf";
-import type { PartContent, Row } from "@crochetbuilder/engine";
+import { buildModel, type PartContent, type Row } from "@crochetbuilder/engine";
 import { hexRgb, pdfInput, renderPdf, savePdf } from "../export/pdf.js";
 import { layoutPdf, type PdfCommand } from "../export/pdfLayout.js";
 import { prepareExport } from "../export/prepare.js";
-import { geometryKey, PreviewComputer, transferablesOf } from "../preview/protocol.js";
+import { geometryKey, PreviewComputer, transferablesOf, withColors } from "../preview/protocol.js";
 import { demoDocument } from "../state/document.js";
-import { highlightOn, meshColors, vertexColors, type Rgb, type ViewMesh } from "./mapping.js";
+import { backingColors, highlightOn, meshColors, meshPalette, shade, vertexColors, type Rgb, type ViewMesh } from "./mapping.js";
 
 /** Four vertices on three nodes; nodes 0, 1 in row 0, node 2 in row 1; colours 0, 1, 1. */
 const MESH: Pick<ViewMesh, "nodeIndex" | "nodeRow" | "nodeColor"> = {
@@ -45,6 +45,37 @@ describe("meshColors", () => {
     expect(triples(meshColors(MESH, { base: YARN, palette: [WHITE, PINK], rows: [-1], highlight: HI }))[2]).toEqual(PINK.map(Math.fround));
   });
 
+  it("a highlighted coloured row keeps reading as its own colour: a 40 % tint plus a lightness cue", () => {
+    const lit = highlightOn(PINK, HI);
+    const dist = (a: Rgb, b: Rgb) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+    // Still pink in hue (red the strongest channel, as in the yarn — teal has none), but
+    // clearly marked.
+    expect(lit[0]).toBeGreaterThan(lit[1]);
+    expect(lit[0]).toBeGreaterThan(lit[2]);
+    expect(dist(lit, PINK)).toBeGreaterThanOrEqual(0.18);
+    // Light yarn gets darker, dark yarn lighter.
+    const lum = (c: Rgb) => 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+    expect(lum(highlightOn(WHITE, HI))).toBeLessThan(lum(WHITE));
+    const navy: Rgb = [0.02, 0.03, 0.15];
+    expect(lum(highlightOn(navy, HI))).toBeGreaterThan(lum(navy));
+  });
+
+  it("looks the display colours up by the model's palette ids", () => {
+    const mesh = { nodeColor: new Uint16Array([0, 1]), paletteIds: ["rosa", "weiss"] };
+    expect(meshPalette(mesh, { weiss: "#ffffff", rosa: "#ff0000" }, "#888888")).toEqual(["#ff0000", "#ffffff"]);
+    // A colour deleted meanwhile falls back to the yarn; no inherited keys.
+    expect(meshPalette({ nodeColor: new Uint16Array([0]), paletteIds: ["constructor"] }, {}, "#888888")).toEqual(["#888888"]);
+    expect(meshPalette({ paletteIds: ["rosa"] }, { rosa: "#ff0000" }, "#888888")).toEqual([]);
+  });
+
+  it("shades the backing behind each stitch in its own colour", () => {
+    const c = triples(backingColors(MESH, YARN, [WHITE, PINK]));
+    close(c[0]!, shade(WHITE));
+    close(c[2]!, shade(PINK));
+    const plain = triples(backingColors({ nodeRow: MESH.nodeRow }, YARN));
+    close(plain[1]!, shade(YARN));
+  });
+
   it("the highlight stays visible on a yarn in the highlight colour itself", () => {
     const dist = (a: Rgb, b: Rgb) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
     for (const yarn of [WHITE, PINK, [0, 0, 0] as Rgb, HI, [0.02, 0.45, 0.42] as Rgb, [0.1, 0.7, 0.65] as Rgb]) {
@@ -76,6 +107,32 @@ describe("preview model colours", () => {
     // No palette: no colour indices.
     const plain = computer.compute({ id: 2, content: STRIPES, gauge: undefined, style: "surface" });
     expect(plain.kind === "model" && plain.model.nodeColor).toBe(undefined);
+  });
+
+  it("a colours-only request returns new colour indices for the cached model, no new mesh", () => {
+    let builds = 0;
+    const computer = new PreviewComputer((...args) => {
+      builds++;
+      return buildModel(...args);
+    });
+    const full = computer.compute({ id: 1, content: STRIPES, gauge: undefined, style: "stitches", palette: ["weiss", "rosa"] });
+    if (full.kind !== "model") throw new Error(full.kind);
+    const recoloured: PartContent = { ...STRIPES, rows: STRIPES.rows.map((r, i) => (i === 1 ? { ...r, color: "weiss" } : r)) };
+    const colours = computer.compute({ id: 2, content: recoloured, gauge: undefined, style: "stitches", palette: ["rosa", "weiss"], colorsOnly: true });
+    expect(colours.kind).toBe("colors");
+    if (colours.kind !== "colors") return;
+    expect(builds).toBe(1);
+    expect(colours.colors.paletteIds).toEqual(["rosa", "weiss"]);
+    expect(transferablesOf(colours)).toEqual([colours.colors.nodeColor!.buffer]);
+    const merged = withColors(full.model, colours.colors);
+    expect(merged.positions).toBe(full.model.positions);
+    // Row 2 now in Weiß (index 1 of the new order).
+    const row2 = Array.from(merged.nodeColor!).filter((_, n) => merged.nodeRow[n] === 1);
+    expect(new Set(row2)).toEqual(new Set([1]));
+    // Without a palette the colours go away; a colours-only request for another shape gets a model.
+    expect(withColors(full.model, {})).not.toHaveProperty("nodeColor");
+    const other = computer.compute({ id: 3, content: { ...STRIPES, rows: STRIPES.rows.slice(0, 2) }, gauge: undefined, style: "stitches", colorsOnly: true });
+    expect(other.kind).toBe("model");
   });
 
   it("a colour change is no reason to relax again", () => {
@@ -122,7 +179,7 @@ describe("PDF colours", () => {
   });
 
   it("renders the model image in the palette colours", async () => {
-    const palettes: Array<readonly string[]> = [];
+    const palettes: Array<Readonly<Record<string, string>>> = [];
     await savePdf(coloured(), {
       loadJsPdf: async () => jsPDF,
       computeModel: async () => ({ size: { width: 1, height: 1, depth: 1 }, maxDiameter: 0 }) as never,
@@ -132,7 +189,7 @@ describe("PDF colours", () => {
       },
       save: () => {},
     });
-    expect(palettes).toEqual([["#ffffff", "#f2aec3"]]);
+    expect(palettes).toEqual([{ weiss: "#ffffff", rosa: "#f2aec3" }]);
     expect(hexRgb("nope")).toEqual([136, 136, 136]);
   });
 });

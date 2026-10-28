@@ -76,7 +76,8 @@ describe("ViewerApp", () => {
     expect((items[1]!.querySelector(".swatch") as HTMLElement).style.background).toBe("rgb(242, 174, 195)");
     expect(screen.getByText("Runde 5: [Farbe: Rosa] 24 fM (24)")).toBeTruthy();
     await waitFor(() => expect(fakeViews.last?.mesh?.nodeColor).toBeDefined());
-    expect(fakeViews.last!.style.palette).toEqual(["#ffffff", "#f2aec3"]);
+    expect(fakeViews.last!.style.colors).toEqual({ weiss: "#ffffff", rosa: "#f2aec3" });
+    expect(fakeViews.last!.mesh!.paletteIds).toEqual(["weiss", "rosa"]);
   });
 
   it("with broken data: German error", async () => {

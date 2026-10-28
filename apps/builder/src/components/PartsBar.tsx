@@ -314,7 +314,7 @@ function PartFinishFields({ content, index, dispatch }: { content: PartContent; 
             dispatch({ type: "setPartStuffing", index, stuffing: e.target.value === "" ? null : (e.target.value as Stuffing) })
           }
         >
-          <option value="">Automatisch ({STUFFING_LABELS[autoStuffing]})</option>
+          <option value="">Automatisch ({autoStuffing === "none" ? "keine Füllung" : STUFFING_LABELS[autoStuffing]})</option>
           {STUFFINGS.map((s) => (
             <option key={s} value={s}>
               {STUFFING_LABELS[s]}
@@ -334,11 +334,10 @@ function FinishHint({ content, index, dispatch }: { content: PartContent; index:
   // Only while the engine decides: a finish chosen on purpose is not questioned.
   const count = content.finish === undefined ? largeGatheredRound(content) : null;
   if (count === null) return null;
+  // No live region: it would be announced again on every switch to this part.
   return (
-    <p className="part-hint" role="status">
-      <span>
-        Zum Zusammenziehen ist die letzte Runde groß ({count} M) – flach zusammenhäkeln?
-      </span>
+    <p className="part-hint">
+      <span>Die letzte Runde hat {count} M – flach zusammenhäkeln statt zusammenziehen?</span>
       <button
         type="button"
         className="btn btn-small"

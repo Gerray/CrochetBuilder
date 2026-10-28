@@ -99,30 +99,103 @@ describe("Palette in the parts bar", () => {
     expect(within(strip()).getByRole("button", { name: "Pink bearbeiten (Anfangsfarbe)" })).toBeTruthy();
     expect(chip("Runde 1").getAttribute("aria-label")).toBe("Farbe von Runde 1: Pink (weiter)");
 
-    // Deleting a colour in use asks what the rows switch to instead (the popover is still open).
+    // Deleting the start colour always asks — it is used where nothing is written: rounds 1–2
+    // start in it, round 3 switches to it (the popover is still open).
     dialog = screen.getByRole("dialog", { name: "Pink bearbeiten" });
     fireEvent.click(within(dialog).getByRole("button", { name: "Pink löschen" }));
-    expect(within(dialog).getByText("Pink wird in 1 Zeile verwendet.")).toBeTruthy();
-    expect((within(dialog).getByLabelText("Ersatz für Pink") as HTMLSelectElement).value).toBe("weiss");
+    expect(within(dialog).getByText(/^Pink wird in 3 Runden verwendet\. Jedes Teil beginnt in der Farbe/)).toBeTruthy();
+    const replacement = within(dialog).getByLabelText("Ersatz für Pink") as HTMLSelectElement;
+    expect(replacement.value).toBe("weiss");
+    // Without a replacement the button says what it does.
+    fireEvent.change(replacement, { target: { value: "" } });
+    expect(within(dialog).queryByRole("button", { name: "Löschen und ersetzen" })).toBeNull();
+    expect(within(dialog).getByRole("option", { name: "Kein Farbwechsel (Anfangsfarbe wird Weiß)" })).toBeTruthy();
+    fireEvent.change(replacement, { target: { value: "weiss" } });
     fireEvent.click(within(dialog).getByRole("button", { name: "Löschen und ersetzen" }));
     expect(within(strip()).queryByRole("button", { name: /^Pink/ })).toBeNull();
+    // Weiß is the start colour now: every part still starts in the chosen colour.
+    expect(within(strip()).getByRole("button", { name: "Weiß bearbeiten (Anfangsfarbe)" })).toBeTruthy();
+    expect(chip("Runde 1").getAttribute("aria-label")).toBe("Farbe von Runde 1: Weiß (weiter)");
     expect(chip("Runde 3").getAttribute("aria-label")).toBe("Farbe von Runde 3: Weiß (Farbwechsel)");
     expect((await textField("Runde 3")).value).toBe("[Farbe: Weiß] 6× (1 fM, 1 Zun)");
+    // The focus goes to the next swatch, not to the page.
+    await waitFor(() => expect(document.activeElement).toBe(within(strip()).getByRole("button", { name: "Weiß bearbeiten (Anfangsfarbe)" })));
 
     // One undo brings colour and rows back.
     fireEvent.click(screen.getByRole("button", { name: "Rückgängig" }));
     expect(chip("Runde 3").getAttribute("aria-label")).toBe("Farbe von Runde 3: Pink (Farbwechsel)");
   });
 
-  it("deleting an unused colour needs no question; the last one removes the chips", async () => {
+  it("an unused colour goes without a question, so does the only one; the last one removes the chips", async () => {
     await loadSphere();
     addSuggested("Gelb");
+    addSuggested("Blau");
+    fireEvent.click(within(strip()).getByRole("button", { name: "Blau bearbeiten" }));
+    fireEvent.click(within(screen.getByRole("dialog", { name: "Blau bearbeiten" })).getByRole("button", { name: "Blau löschen" }));
+    expect(within(strip()).queryByRole("button", { name: /^Blau/ })).toBeNull();
+    await waitFor(() => expect(document.activeElement).toBe(within(strip()).getByRole("button", { name: "Gelb bearbeiten (Anfangsfarbe)" })));
     fireEvent.click(within(strip()).getByRole("button", { name: "Gelb bearbeiten (Anfangsfarbe)" }));
     fireEvent.click(within(screen.getByRole("dialog", { name: "Gelb bearbeiten" })).getByRole("button", { name: "Gelb löschen" }));
     expect(screen.queryByRole("button", { name: /^Farbe von Runde 1:/ })).toBeNull();
+    await waitFor(() => expect(document.activeElement).toBe(within(strip()).getByRole("button", { name: "Farbe hinzufügen" })));
     const doc = await storedDoc();
     await waitFor(async () => expect((await storedDoc()).overview).not.toHaveProperty("colors"));
     expect(doc).toBeTruthy();
+  });
+
+  it("names must read back: no duplicates (any case), no brackets; rename, add and type an id", async () => {
+    await loadSphere();
+    addSuggested("Weiß");
+    addSuggested("Rosa");
+    fireEvent.click(within(strip()).getByRole("button", { name: "Rosa bearbeiten" }));
+    const name = within(screen.getByRole("dialog", { name: "Rosa bearbeiten" })).getByLabelText("Name von Farbe 2") as HTMLInputElement;
+    fireEvent.change(name, { target: { value: "weiß" } });
+    expect(name.getAttribute("aria-invalid")).toBe("true");
+    expect(screen.getByText("Diesen Namen hat schon eine andere Farbe.")).toBeTruthy();
+    expect(within(strip()).getByRole("button", { name: "Rosa bearbeiten" })).toBeTruthy(); // not taken over
+    fireEvent.change(name, { target: { value: "Pink" } });
+    expect(within(strip()).getByRole("button", { name: "Pink bearbeiten" })).toBeTruthy();
+    fireEvent.keyDown(screen.getByRole("dialog", { name: "Pink bearbeiten" }), { key: "Escape" });
+
+    // "Rosa" again is a new colour (id rosa-2); the own name field drops brackets.
+    fireEvent.click(within(strip()).getByRole("button", { name: "Farbe hinzufügen" }));
+    const add = screen.getByRole("dialog", { name: "Farbe hinzufügen" });
+    const own = within(add).getByPlaceholderText("Name, z. B. Altrosa") as HTMLInputElement;
+    fireEvent.change(own, { target: { value: "[Pink]" } });
+    expect(own.value).toBe("Pink");
+    expect((within(add).getByRole("button", { name: "Hinzufügen" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(within(add).getByRole("button", { name: "Rosa" }));
+
+    // Typed names win over ids: "Rosa" is the new colour, "Pink" the renamed one, "weiss" an id.
+    const field = await textField("Runde 5");
+    fireEvent.change(field, { target: { value: "[Farbe: Rosa] 12 fM, [Farbe: Pink] 6 fM, [Farbe: weiss] 6 fM" } });
+    fireEvent.blur(field);
+    expect(field.value).toBe("[Farbe: Rosa] 12 fM, [Farbe: Pink] 6 fM, [Farbe: Weiß] 6 fM");
+    await waitFor(async () =>
+      expect((await storedDoc()).parts[0]!.content.rows[4]).toMatchObject({
+        color: "rosa-2",
+        ops: [
+          { kind: "stitch", code: "SC", count: 12 },
+          { kind: "stitch", code: "SC", count: 6, color: "rosa" },
+          { kind: "stitch", code: "SC", count: 6, color: "weiss" },
+        ],
+      }),
+    );
+  });
+
+  it("an edit popover closes when the focus tabs out of it", async () => {
+    await loadSphere();
+    addSuggested("Weiß");
+    const swatch = within(strip()).getByRole("button", { name: "Weiß bearbeiten (Anfangsfarbe)" });
+    fireEvent.click(swatch);
+    const dialog = screen.getByRole("dialog", { name: "Weiß bearbeiten" });
+    const inside = within(dialog).getByLabelText("Name von Farbe 1");
+    // Focus moving inside (or to nowhere) keeps it open; to a control outside closes it.
+    fireEvent.blur(inside, { relatedTarget: within(dialog).getByLabelText("Farbton von Weiß") });
+    fireEvent.blur(inside, { relatedTarget: null });
+    expect(screen.queryByRole("dialog", { name: "Weiß bearbeiten" })).not.toBeNull();
+    fireEvent.blur(inside, { relatedTarget: screen.getByRole("textbox", { name: "Titel der Anleitung" }) });
+    expect(screen.queryByRole("dialog", { name: "Weiß bearbeiten" })).toBeNull();
   });
 });
 
@@ -199,12 +272,24 @@ describe("Colours in the row text", () => {
     const field = await textField("Runde 2");
     fireEvent.change(field, { target: { value: "[Farbe: Mint] 6 Zun" } });
     fireEvent.blur(field);
-    expect(within(strip()).getByRole("button", { name: "Mint bearbeiten (Anfangsfarbe)" })).toBeTruthy();
+    // An empty palette gets a start colour first, so the change really starts at round 2.
+    expect(within(strip()).getByRole("button", { name: "Weiß bearbeiten (Anfangsfarbe)" })).toBeTruthy();
+    expect(within(strip()).getByRole("button", { name: "Mint bearbeiten" })).toBeTruthy();
+    expect(chip("Runde 1").getAttribute("aria-label")).toBe("Farbe von Runde 1: Weiß (weiter)");
     expect(chip("Runde 2").getAttribute("aria-label")).toBe("Farbe von Runde 2: Mint (Farbwechsel)");
     expect((await textField("Runde 2")).value).toBe("[Farbe: Mint] 6 Zun");
     fireEvent.click(screen.getByRole("button", { name: "Rückgängig" }));
-    expect(within(strip()).queryByRole("button", { name: /^Mint/ })).toBeNull();
+    expect(within(strip()).queryByRole("button", { name: /^(Mint|Weiß)/ })).toBeNull();
     expect((await textField("Runde 2")).value).toBe("6 Zun");
+  });
+
+  it("a colour typed as the first round's own colour is the start colour itself", async () => {
+    await loadSphere();
+    const field = await textField("Runde 1");
+    fireEvent.change(field, { target: { value: "[Farbe: Gelb] 1 MR, 6 fM" } });
+    fireEvent.blur(field);
+    expect(within(strip()).getByRole("button", { name: "Gelb bearbeiten (Anfangsfarbe)" })).toBeTruthy();
+    expect(within(strip()).queryByRole("button", { name: /^Weiß/ })).toBeNull();
   });
 });
 
@@ -236,27 +321,34 @@ describe("Colours in the 3D preview", () => {
     await loadSphere();
     await waitFor(() => expect(fakeViews.last?.mesh?.rowIds).toHaveLength(8));
     expect(fakeViews.last!.mesh!.nodeColor).toBeUndefined();
-    expect(fakeViews.last!.style.palette ?? []).toEqual([]);
+    expect(fakeViews.last!.style.colors ?? {}).toEqual({});
+    const geometry = fakeViews.last!.mesh!.positions;
 
     addSuggested("Weiß");
     addSuggested("Rosa");
     fireEvent.click(chip("Runde 5"));
     fireEvent.click(within(screen.getByRole("dialog", { name: "Farbwechsel ab Runde 5" })).getByRole("button", { name: "Rosa" }));
-    await waitFor(() => expect(fakeViews.last!.style.palette).toEqual([suggestionFor("Weiß")!.hex, suggestionFor("Rosa")!.hex]));
+    await waitFor(() => expect(fakeViews.last!.style.colors).toEqual({ weiss: suggestionFor("Weiß")!.hex, rosa: suggestionFor("Rosa")!.hex }));
     await waitFor(() => {
       const mesh = fakeViews.last!.mesh!;
-      expect(mesh.nodeColor).toBeDefined();
+      expect(mesh.paletteIds).toEqual(["weiss", "rosa"]);
       // Rounds 1–4 in the first colour, 5–8 in the second.
       const rowOf = (node: number) => mesh.nodeRow[node]!;
       for (let node = 0; node < mesh.nodeRow.length; node++) expect(mesh.nodeColor![node]).toBe(rowOf(node) >= 4 ? 1 : 0);
     });
+    // Only colours changed: the same geometry, recoloured (no new mesh, no relaxation).
+    expect(fakeViews.last!.mesh!.positions).toBe(geometry);
 
     // A new display colour reaches the view without a new model.
     const mesh = fakeViews.last!.mesh;
     fireEvent.click(within(strip()).getByRole("button", { name: "Rosa bearbeiten" }));
     fireEvent.change(screen.getByLabelText("Farbton von Rosa"), { target: { value: "#aa0000" } });
-    await waitFor(() => expect(fakeViews.last!.style.palette).toEqual([suggestionFor("Weiß")!.hex, "#aa0000"]));
+    await waitFor(() => expect(fakeViews.last!.style.colors).toEqual({ weiss: suggestionFor("Weiß")!.hex, rosa: "#aa0000" }));
     expect(fakeViews.last!.mesh).toBe(mesh);
+    // Reordering the palette: the model's ids say which colour each index means.
+    fireEvent.click(within(screen.getByRole("dialog", { name: "Rosa bearbeiten" })).getByRole("button", { name: "Rosa als Anfangsfarbe" }));
+    await waitFor(() => expect(fakeViews.last!.mesh!.paletteIds).toEqual(["rosa", "weiss"]));
+    expect(fakeViews.last!.mesh!.positions).toBe(geometry);
   });
 });
 
@@ -294,7 +386,7 @@ describe("Part finish and stuffing", () => {
     fireEvent.change(finish, { target: { value: "flat" } });
     expect(finish.value).toBe("flat");
     // A flat finish is not stuffed by itself.
-    expect(stuffing.selectedOptions[0]!.textContent).toBe("Automatisch (Keine)");
+    expect(stuffing.selectedOptions[0]!.textContent).toBe("Automatisch (keine Füllung)");
     fireEvent.change(stuffing, { target: { value: "light" } });
     await waitFor(async () => expect((await storedDoc()).parts[0]!.content).toMatchObject({ finish: "flat", stuffing: "light" }));
     // The 3D model is built again.
@@ -330,14 +422,70 @@ describe("Part finish and stuffing", () => {
     localStorage.setItem(LS_KEY, JSON.stringify({ doc, pinned: [], savedAt: Date.now() }));
     render(<App />);
     await textField("Runde 11");
-    const hint = await screen.findByText(/Zum Zusammenziehen ist die letzte Runde groß \(18 M\)/);
+    const hint = await screen.findByText(/Die letzte Runde hat 18 M – flach zusammenhäkeln statt zusammenziehen/);
+    // No live region: switching back to this part must not announce it again.
+    expect(hint.closest("[role='status'], [role='alert'], [aria-live]")).toBeNull();
     const finish = screen.getByRole("combobox", { name: "Abschluss des Teils" }) as HTMLSelectElement;
     expect(finish.selectedOptions[0]!.textContent).toBe("Automatisch (Zusammengezogen)");
     fireEvent.click(within(hint.closest("p")!).getByRole("button", { name: "Flach zusammenhäkeln" }));
     expect(finish.value).toBe("flat");
-    expect(screen.queryByText(/Zum Zusammenziehen ist die letzte Runde groß/)).toBeNull();
+    expect(screen.queryByText(/flach zusammenhäkeln statt zusammenziehen/)).toBeNull();
     // Gathering chosen on purpose is not questioned.
     fireEvent.change(finish, { target: { value: "gather" } });
-    expect(screen.queryByText(/Zum Zusammenziehen ist die letzte Runde groß/)).toBeNull();
+    expect(screen.queryByText(/flach zusammenhäkeln statt zusammenziehen/)).toBeNull();
+  });
+});
+
+describe("Colour change on a card of identical rounds (E26)", () => {
+  async function loadBall() {
+    render(<App />);
+    await textField("Runde 1");
+    fireEvent.click(screen.getByRole("button", { name: "Weitere Demos" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: /^Ball/ }));
+    await textField("Runde 5–8");
+    addSuggested("Weiß");
+    addSuggested("Rosa");
+  }
+  const colorsOfRows = async () => (await storedDoc()).parts[0]!.content.rows.map((r) => r.color ?? null);
+
+  it("the chip of „Runde 5–8“ sets the change on round 5 only; the card stays together", async () => {
+    await loadBall();
+    fireEvent.click(chip("Runde 5–8"));
+    fireEvent.click(within(screen.getByRole("dialog", { name: "Farbwechsel ab Runde 5–8" })).getByRole("button", { name: "Rosa" }));
+    expect(chip("Runde 5–8").getAttribute("aria-label")).toBe("Farbe von Runde 5–8: Rosa (Farbwechsel)");
+    expect(screen.getByRole("article", { name: "Runde 5–8" })).toBeTruthy();
+    expect(chip("Runde 9").getAttribute("aria-label")).toBe("Farbe von Runde 9: Rosa (weiter)");
+    await waitFor(async () =>
+      expect(await colorsOfRows()).toEqual([null, null, null, null, "rosa", null, null, null, null, null, null]),
+    );
+    // Editing the card's text keeps the change on its first round only.
+    const field = await textField("Runde 5–8");
+    expect(field.value).toBe("[Farbe: Rosa] 24 fM");
+    fireEvent.change(field, { target: { value: "[Farbe: Weiß] 24 fM" } });
+    fireEvent.blur(field);
+    await waitFor(async () =>
+      expect(await colorsOfRows()).toEqual([null, null, null, null, "weiss", null, null, null, null, null, null]),
+    );
+    expect(screen.getByRole("article", { name: "Runde 5–8" })).toBeTruthy();
+    // Clearing it clears round 5.
+    fireEvent.click(chip("Runde 5–8"));
+    fireEvent.click(within(screen.getByRole("dialog", { name: "Farbwechsel ab Runde 5–8" })).getByRole("button", { name: /^Kein Farbwechsel/ }));
+    await waitFor(async () => expect((await colorsOfRows()).every((c) => c === null)).toBe(true));
+  });
+
+  it("„[Farbe: Rosa] 24 fM (4 Runden)“ makes four rounds with the change on the first", async () => {
+    await loadBall();
+    const field = await textField("Runde 9");
+    fireEvent.change(field, { target: { value: "[Farbe: Rosa] 24 fM (4 Runden)" } });
+    fireEvent.blur(field);
+    await waitFor(async () => {
+      const rows = (await storedDoc()).parts[0]!.content.rows;
+      expect(rows.slice(8, 12).map((r) => [r.color ?? null, r.ops])).toEqual([
+        ["rosa", [{ kind: "stitch", code: "SC", count: 24 }]],
+        [null, [{ kind: "stitch", code: "SC", count: 24 }]],
+        [null, [{ kind: "stitch", code: "SC", count: 24 }]],
+        [null, [{ kind: "stitch", code: "SC", count: 24 }]],
+      ]);
+    });
   });
 });

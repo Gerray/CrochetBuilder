@@ -144,29 +144,28 @@ function RowCardImpl(props: RowCardProps) {
     let color = extras.color;
     const before: EditorAction[] = [];
     if (color !== undefined) {
-      const adopted = adoptWrittenColors(written, color ?? undefined, palette.getDoc());
+      const index = props.partRows.findIndex((r) => r.id === row.id);
+      const startsPart = !props.partRows.slice(0, Math.max(0, index)).some((r) => r.ops.length > 0);
+      const adopted = adoptWrittenColors(written, color ?? undefined, palette.getDoc(), startsPart);
       ops = adopted.ops;
       color = adopted.color ?? null;
       for (const c of adopted.added) before.push({ type: "addColor", color: c });
     }
-    const edit: EditorAction = {
-      type: "setRowOps",
-      rowId: row.id,
-      ops,
-      ...(target === undefined ? {} : { target }),
-      ...(color === undefined ? {} : { color }),
-    };
+    // The ops go to every row of the card; the row's colour only to its first row (E26).
+    const edit: EditorAction = { type: "setRowOps", rowId: row.id, ops, ...(target === undefined ? {} : { target }) };
+    const actions: EditorAction[] = [...before, fanOut(edit, rowIds)];
+    if (color !== undefined) actions.push({ type: "setRowColor", rowId: row.id, color });
     const rounds = extras.rounds;
     if (rounds === undefined || rounds === rowIds.length) {
       runEnd.current = null;
-      if (before.length === 0) rowDispatch(edit);
-      else dispatch({ type: "batch", actions: [...before, fanOut(edit, rowIds)] });
-      return;
+    } else {
+      // "(4 Runden)": copies of the first row, without its colour change.
+      const length = setRunLength(rowIds, Math.min(rounds, MAX_RUN_LENGTH));
+      runEnd.current = length.newIds[length.newIds.length - 1] ?? rowIds[length.length - 1] ?? null;
+      props.onExtendHold(length.newIds);
+      actions.push(length);
     }
-    const length = setRunLength(rowIds, Math.min(rounds, MAX_RUN_LENGTH));
-    runEnd.current = length.newIds[length.newIds.length - 1] ?? rowIds[length.length - 1] ?? null;
-    props.onExtendHold(length.newIds);
-    dispatch({ type: "batch", actions: [...before, fanOut(edit, rowIds), length] });
+    dispatch(actions.length === 1 ? actions[0]! : { type: "batch", actions });
   };
 
   const applyFix = (fix: QuickFix, ids: readonly string[]) => {
@@ -223,7 +222,8 @@ function RowCardImpl(props: RowCardProps) {
             start={props.startColor}
             inherited={props.startColor.before}
             own={row.color}
-            onSet={(color) => rowDispatch({ type: "setRowColor", rowId: row.id, color })}
+            // Only the first row of a card changes colour; the others carry on in it (E26).
+            onSet={(color) => dispatch({ type: "setRowColor", rowId: row.id, color })}
           />
         )}
         {!instruction && (

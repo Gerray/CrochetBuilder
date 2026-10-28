@@ -10,10 +10,12 @@ import { createContext, useContext, useEffect, useId, useRef, useState, type Dis
 import type { PaletteColor } from "@crochetbuilder/engine";
 import type { BuilderDoc } from "../state/document.js";
 import type { EditorAction } from "../state/editor.js";
+import { focusLater } from "./focus.js";
 import {
   COLOR_SUGGESTIONS,
   colorCss,
   colorName,
+  colorNameProblem,
   colorUsage,
   newColorId,
   suggestionFor,
@@ -80,6 +82,7 @@ function PopoverButton({
   popoverClass = "",
   children,
   align = "left",
+  focusId,
 }: {
   label: string;
   title?: string;
@@ -89,6 +92,8 @@ function PopoverButton({
   popoverClass?: string;
   children: (close: () => void) => ReactNode;
   align?: "left" | "right";
+  /** `data-focus-id` of the button (for `focusLater`). */
+  focusId?: string;
 }) {
   const [open, setOpen] = useState(false);
   const wrap = useRef<HTMLSpanElement>(null);
@@ -107,11 +112,21 @@ function PopoverButton({
     target?.focus();
   }, [open]);
   return (
-    <span className="popover-anchor" ref={wrap}>
+    <span
+      className="popover-anchor"
+      ref={wrap}
+      // Tabbing out of the popover (focus to another control outside it) closes it. A click on
+      // a non-focusable spot inside moves focus nowhere (relatedTarget null) and keeps it open.
+      onBlur={(e) => {
+        const next = e.relatedTarget as Node | null;
+        if (open && next !== null && !e.currentTarget.contains(next)) setOpen(false);
+      }}
+    >
       <button
         ref={button}
         type="button"
         className={className}
+        data-focus-id={focusId}
         aria-label={label}
         aria-expanded={open}
         aria-haspopup="dialog"
@@ -310,7 +325,9 @@ function AddColorForm({ doc, dispatch, onDone }: { doc: BuilderDoc; dispatch: Di
   const [name, setName] = useState("");
   const [hex, setHex] = useState<string | null>(null);
   const nameId = useId();
+  const errorId = useId();
   const shownHex = hex ?? suggestionFor(name)?.hex ?? "#e7b48f";
+  const problem = name.trim() ? colorNameProblem(name, palette) : null;
   const add = (colorNameText: string, colorHex: string) => {
     const trimmed = colorNameText.trim();
     dispatch({ type: "addColor", color: { id: newColorId(trimmed, doc), name: trimmed, hex: colorHex } });
@@ -332,7 +349,7 @@ function AddColorForm({ doc, dispatch, onDone }: { doc: BuilderDoc; dispatch: Di
         className="color-custom"
         onSubmit={(e) => {
           e.preventDefault();
-          if (name.trim()) add(name, shownHex);
+          if (name.trim() && problem === null) add(name, shownHex);
         }}
       >
         <label htmlFor={nameId} className="muted small">
@@ -344,7 +361,10 @@ function AddColorForm({ doc, dispatch, onDone }: { doc: BuilderDoc; dispatch: Di
           placeholder="Name, z. B. Altrosa"
           maxLength={40}
           value={name}
-          onChange={(e) => setName(e.target.value)}
+          aria-invalid={problem !== null ? true : undefined}
+          aria-describedby={problem !== null ? errorId : undefined}
+          // Square brackets would end the colour mark in the row text.
+          onChange={(e) => setName(e.target.value.replace(/[[\]]/g, ""))}
         />
         <input
           type="color"
@@ -353,18 +373,34 @@ function AddColorForm({ doc, dispatch, onDone }: { doc: BuilderDoc; dispatch: Di
           value={shownHex}
           onChange={(e) => setHex(e.target.value)}
         />
-        <button type="submit" className="btn btn-small btn-primary" disabled={!name.trim()}>
+        <button type="submit" className="btn btn-small btn-primary" disabled={!name.trim() || problem !== null}>
           Hinzufügen
         </button>
+        {problem !== null && (
+          <p id={errorId} className="field-error color-name-error" role="alert">
+            {problem}
+          </p>
+        )}
       </form>
     </>
   );
 }
 
 /** "+ Farbe" with its popover (parts bar and "Material & Hinweise"). */
-export function AddColorButton({ doc, dispatch, compact = false }: { doc: BuilderDoc; dispatch: Dispatch<EditorAction>; compact?: boolean }) {
+export function AddColorButton({
+  doc,
+  dispatch,
+  compact = false,
+  focusId,
+}: {
+  doc: BuilderDoc;
+  dispatch: Dispatch<EditorAction>;
+  compact?: boolean;
+  focusId?: string;
+}) {
   return (
     <PopoverButton
+      {...(focusId ? { focusId } : {})}
       className={compact ? "btn btn-small btn-quiet palette-add" : "btn btn-small palette-add"}
       label="Farbe hinzufügen"
       title="Farbe zur Palette hinzufügen – Vorschlag anklicken oder eigene Farbe anlegen"
@@ -401,6 +437,10 @@ function DeleteColor({
   const index = palette.findIndex((c) => c.id === color.id);
   const others = palette.filter((c) => c.id !== color.id);
   const usage = colorUsage(doc, color.id);
+  const start = index === 0;
+  // The start colour is always asked about: every part starts in it, written or not. The only
+  // colour goes without a question (nothing to choose; one undo brings it back).
+  const ask = others.length > 0 && (usage.count > 0 || start);
   const [asking, setAsking] = useState(false);
   const [replacement, setReplacement] = useState<string>(others[0]?.id ?? "");
   const name = colorName(color, index);
@@ -414,17 +454,19 @@ function DeleteColor({
         type="button"
         className="btn btn-small btn-quiet btn-danger"
         aria-label={`${name} löschen`}
-        title={usage > 0 ? `In ${usage} ${usage === 1 ? "Zeile" : "Zeilen"} verwendet` : "Farbe löschen (rückgängig machbar)"}
-        onClick={() => (usage > 0 ? setAsking(true) : remove())}
+        title={usage.count > 0 ? `In ${usage.text} verwendet` : "Farbe löschen (rückgängig machbar)"}
+        onClick={() => (ask ? setAsking(true) : remove())}
       >
         Löschen
       </button>
     );
   }
+  const nextStart = others[0] ? colorName(others[0], 1) : null;
   return (
     <div className="color-delete" role="group" aria-label={`${name} löschen`}>
       <p className="color-delete-warning">
-        {name} wird in {usage} {usage === 1 ? "Zeile" : "Zeilen"} verwendet.
+        {usage.count > 0 ? `${name} wird in ${usage.text} verwendet.` : `${name} ist die Anfangsfarbe.`}
+        {start && " Jedes Teil beginnt in der Farbe, die du stattdessen wählst."}
       </p>
       <label className="inline-field">
         <span>Stattdessen</span>
@@ -434,18 +476,65 @@ function DeleteColor({
               {colorName(c, palette.indexOf(c))}
             </option>
           ))}
-          <option value="">kein Farbwechsel</option>
+          <option value="">{start && nextStart ? `Kein Farbwechsel (Anfangsfarbe wird ${nextStart})` : "Kein Farbwechsel"}</option>
         </select>
       </label>
       <span className="color-delete-actions">
         <button type="button" className="btn btn-small btn-danger" onClick={() => remove(replacement || undefined)}>
-          Löschen und ersetzen
+          {replacement ? "Löschen und ersetzen" : "Löschen"}
         </button>
         <button type="button" className="btn btn-small btn-quiet" onClick={() => setAsking(false)}>
           Abbrechen
         </button>
       </span>
     </div>
+  );
+}
+
+/**
+ * A colour's name, renamed as typed. A name the row text could not read back (taken by another
+ * colour, with square brackets) stays in the field with a message and is not taken over.
+ */
+function ColorNameField({
+  doc,
+  color,
+  index,
+  dispatch,
+}: {
+  doc: BuilderDoc;
+  color: PaletteColor;
+  index: number;
+  dispatch: Dispatch<EditorAction>;
+}) {
+  const [draft, setDraft] = useState<string | null>(null);
+  const errorId = useId();
+  const value = draft ?? color.name;
+  const problem = colorNameProblem(value, doc.overview.colors ?? [], color.id);
+  return (
+    <span className="color-name-field">
+      <input
+        className="color-name-input"
+        aria-label={`Name von Farbe ${index + 1}`}
+        placeholder={`Farbe ${index + 1}`}
+        maxLength={40}
+        value={value}
+        aria-invalid={problem !== null ? true : undefined}
+        aria-describedby={problem !== null ? errorId : undefined}
+        onChange={(e) => {
+          const next = e.target.value;
+          setDraft(next);
+          if (colorNameProblem(next, doc.overview.colors ?? [], color.id) === null) {
+            dispatch({ type: "updateColor", id: color.id, patch: { name: next } });
+          }
+        }}
+        onBlur={() => setDraft(null)}
+      />
+      {problem !== null && (
+        <span id={errorId} className="field-error color-name-error" role="alert">
+          {problem}
+        </span>
+      )}
+    </span>
   );
 }
 
@@ -474,14 +563,7 @@ function ColorFields({
           value={colorCss(color, index)}
           onChange={(e) => dispatch({ type: "updateColor", id: color.id, patch: { hex: e.target.value } })}
         />
-        <input
-          className="color-name-input"
-          aria-label={`Name von Farbe ${index + 1}`}
-          placeholder={`Farbe ${index + 1}`}
-          maxLength={40}
-          value={color.name}
-          onChange={(e) => dispatch({ type: "updateColor", id: color.id, patch: { name: e.target.value } })}
-        />
+        <ColorNameField doc={doc} color={color} index={index} dispatch={dispatch} />
         {index === 0 ? (
           <span className="color-start-badge" title="Mit dieser Farbe beginnt jedes Teil, bis eine Runde die Farbe wechselt">
             Anfangsfarbe
@@ -519,6 +601,7 @@ export function PaletteStrip({ doc, dispatch }: { doc: BuilderDoc; dispatch: Dis
         return (
           <PopoverButton
             key={c.id}
+            focusId={`palette:${c.id}`}
             className="palette-swatch"
             label={`${name} bearbeiten${i === 0 ? " (Anfangsfarbe)" : ""}`}
             title={`${name}${i === 0 ? " – Anfangsfarbe" : ""} – Klick bearbeitet`}
@@ -531,11 +614,24 @@ export function PaletteStrip({ doc, dispatch }: { doc: BuilderDoc; dispatch: Dis
               </>
             }
           >
-            {(close) => <ColorFields doc={doc} color={c} index={i} dispatch={dispatch} onDeleted={close} />}
+            {() => (
+              <ColorFields
+                doc={doc}
+                color={c}
+                index={i}
+                dispatch={dispatch}
+                // The swatch is gone with its colour: the focus moves to the next colour's
+                // swatch, else to "+ Farbe".
+                onDeleted={() => {
+                  const near = [palette.colors[i + 1], palette.colors[i - 1]].filter((x) => x !== undefined);
+                  focusLater(...near.map((x) => `palette:${x.id}`), "palette:add");
+                }}
+              />
+            )}
           </PopoverButton>
         );
       })}
-      <AddColorButton doc={doc} dispatch={dispatch} compact={palette.colors.length > 0} />
+      <AddColorButton doc={doc} dispatch={dispatch} compact={palette.colors.length > 0} focusId="palette:add" />
     </span>
   );
 }
@@ -558,13 +654,19 @@ export function PaletteEditor({ doc, dispatch }: { doc: BuilderDoc; dispatch: Di
         <ul className="palette-list">
           {colors.map((c, i) => (
             <li key={c.id} className="palette-row">
-              <ColorFields doc={doc} color={c} index={i} dispatch={dispatch} />
+              <ColorFields
+                doc={doc}
+                color={c}
+                index={i}
+                dispatch={dispatch}
+                onDeleted={() => focusLater("palette-editor:add")}
+              />
             </li>
           ))}
         </ul>
       )}
       <span className="palette-editor-actions">
-        <AddColorButton doc={doc} dispatch={dispatch} />
+        <AddColorButton doc={doc} dispatch={dispatch} focusId="palette-editor:add" />
         {adopt && (
           <button
             type="button"

@@ -280,7 +280,7 @@ function ViewerModel({
                 highlightRowId={null}
                 dimmed={false}
                 showGrid={!embed}
-                palette={palette.css}
+                colors={palette.colors}
                 resetToken={resetToken}
                 onPickRow={ignorePick}
                 onUnavailable={onUnavailable}

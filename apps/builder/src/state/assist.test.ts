@@ -255,7 +255,11 @@ describe("grouping", () => {
     expect(pair(stitchRow("a", [group], 2), stitchRow("b", [{ kind: "group", ops: [sc(1), sc(1)] }], 2))).toBe(2);
     expect(pair(stitchRow("a", [sc(6)], 6, { color: "c1" }), stitchRow("b", [sc(6)], 6, { color: "c2" }))).toBe(2);
     expect(pair(stitchRow("a", [sc(6)], 6), stitchRow("b", [{ kind: "stitch", code: "SC", count: 6, color: "c2" }], 6))).toBe(2);
-    expect(pair(stitchRow("a", [sc(6)], 6, { color: "c1" }), stitchRow("b", [sc(6)], 6, { color: "c1" }))).toBe(1);
+    // E26: a row colour belongs to the first row of a card; a later row with its own colour
+    // (even the same) starts a new card, a row without one carries on in the card.
+    expect(pair(stitchRow("a", [sc(6)], 6, { color: "c1" }), stitchRow("b", [sc(6)], 6, { color: "c1" }))).toBe(2);
+    expect(pair(stitchRow("a", [sc(6)], 6, { color: "c1" }), stitchRow("b", [sc(6)], 6))).toBe(1);
+    expect(pair(stitchRow("a", [sc(6)], 6), stitchRow("b", [sc(6)], 6, { color: "c1" }))).toBe(2);
   });
 
   it("rows with different findings never share a card", () => {

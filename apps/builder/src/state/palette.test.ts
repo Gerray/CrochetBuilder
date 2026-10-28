@@ -1,14 +1,18 @@
 import { describe, expect, it } from "vitest";
-import { BuilderExportSchema, type Op, type Row } from "@crochetbuilder/engine";
-import { emptyDocument, type BuilderDoc } from "./document.js";
+import { BuilderExportSchema, buildGraph, isClosedPiece, type Op, type PartContent, type Row } from "@crochetbuilder/engine";
+import { demoDocument, emptyDocument, type BuilderDoc } from "./document.js";
+import { naturalRuns } from "./grouping.js";
+import { isClosedPart } from "./parts.js";
 import { canUndo, editorReducer, initEditorState, type EditorAction, type EditorState } from "./editor.js";
 import {
   adoptWrittenColors,
   colorCss,
+  colorNameProblem,
   colorUsage,
   newColorId,
   nextSuggestion,
   paletteCss,
+  reuseRowColors,
   rowStartColors,
   suggestionFor,
 } from "./palette.js";
@@ -78,10 +82,43 @@ describe("palette helpers", () => {
     expect(nextSuggestion(PALETTE).name).toBe("Schwarz");
   });
 
-  it("counts the rows that use a colour, in all parts", () => {
-    expect(colorUsage(doc(), "rosa")).toBe(2);
-    expect(colorUsage(doc(), "weiss")).toBe(1);
-    expect(colorUsage(doc(), "gelb")).toBe(0);
+  it("counts the rows that use a colour, in all parts — the start colour also where it is implicit", () => {
+    expect(colorUsage(doc(), "rosa")).toEqual({ count: 2, text: "2 Runden" });
+    // Weiß is the start colour: Kopf round 1 (before the first change), round 3 (a stitch
+    // switches to it) and the Ohr's only round (no change at the row).
+    expect(colorUsage(doc(), "weiss")).toEqual({ count: 3, text: "3 Runden" });
+    expect(colorUsage(doc(), "gelb")).toEqual({ count: 0, text: "0 Runden" });
+    const flat = doc();
+    flat.parts[1]!.content.rows[0]!.type = "row";
+    expect(colorUsage(flat, "rosa").text).toBe("2 Runden/Reihen");
+    delete flat.parts[0]!.content.rows[1]!.color;
+    expect(colorUsage(flat, "rosa").text).toBe("1 Reihe");
+  });
+
+  it("refuses palette names with brackets or taken by another colour (any case)", () => {
+    expect(colorNameProblem("Alt[rosa]", PALETTE)).toMatch(/Klammern/);
+    expect(colorNameProblem("rosa", PALETTE)).toMatch(/schon/);
+    expect(colorNameProblem(" ROSA ", PALETTE, "weiss")).toMatch(/schon/);
+    expect(colorNameProblem("Rosa", PALETTE, "rosa")).toBeNull();
+    expect(colorNameProblem("", PALETTE)).toBeNull();
+  });
+
+  it("an empty palette gets a start colour before a colour written after the start of a part", () => {
+    const empty = emptyDocument("r1");
+    const later = adoptWrittenColors([sc(6)], "Rosa", empty);
+    expect(later.added.map((c) => [c.id, c.name])).toEqual([
+      ["weiss", "Weiß"],
+      ["rosa", "Rosa"],
+    ]);
+    expect(later.color).toBe("rosa");
+    // Weiß written: the start colour is a neutral "Grundfarbe".
+    const white = adoptWrittenColors([sc(3), sc(3, "Weiß")], undefined, empty, true);
+    expect(white.added.map((c) => c.name)).toEqual(["Grundfarbe", "Weiß"]);
+    expect(white.ops).toEqual([sc(3), sc(3, "weiss")]);
+    // The first row's own colour is the start colour itself.
+    expect(adoptWrittenColors([sc(6)], "Rosa", empty, true).added.map((c) => c.name)).toEqual(["Rosa"]);
+    // With a palette nothing extra.
+    expect(adoptWrittenColors([sc(6)], "Mint", doc()).added.map((c) => c.name)).toEqual(["Mint"]);
   });
 
   it("the colour at the start of each row: first palette colour, row changes, mid-row changes carry over", () => {
@@ -218,5 +255,86 @@ describe("part finish and stuffing", () => {
     expect(s.part).toBe(0);
     expect(s.doc.parts[0]!.content.finish).toBe("flat");
     expect(run(s, { type: "setPartFinish", index: 9, finish: "open" })).toBe(s);
+  });
+
+  it("tells a closed piece from the rows exactly as the engine does from the graph", () => {
+    const cases: PartContent[] = [
+      ...(["sphere", "ball", "potholder", "bunny"] as const).flatMap((k) => demoDocument(undefined, k).parts.map((p) => p.content)),
+      // A straight tube, an increase-only disc, a piece in rows.
+      { schemaVersion: 2, rows: [row("a", [{ kind: "stitch", code: "MR", count: 1 }, sc(6)]), row("b", [sc(6)]), row("c", [sc(6)])] },
+      { schemaVersion: 2, rows: [row("a", [{ kind: "stitch", code: "MR", count: 1 }, sc(6)]), row("b", [{ kind: "stitch", code: "INC", count: 6 }])] },
+    ];
+    for (const content of cases) {
+      expect(isClosedPart(content), JSON.stringify(content.rows.map((r) => r.ops))).toBe(isClosedPiece(buildGraph(content)));
+    }
+    expect(cases.filter(isClosedPart).length).toBeGreaterThan(2);
+  });
+});
+
+describe("colour changes on a run of identical rounds (E26)", () => {
+  const ball = () => {
+    const d = demoDocument((() => {
+      let n = 0;
+      return () => `b${++n}`;
+    })(), "ball");
+    d.overview.colors = structuredClone(PALETTE);
+    return d;
+  };
+
+  it("a colour on the first row keeps the run together; a later row with its own colour starts a new card", () => {
+    const d = ball();
+    const rows = d.parts[0]!.content.rows;
+    rows[4]!.color = "rosa"; // Runde 5 of "Runde 5–8"
+    const runs = naturalRuns(rows).map((r) => r.rows.map((x) => x.id));
+    expect(runs).toContainEqual(["b5", "b6", "b7", "b8"]);
+    rows[6]!.color = "weiss";
+    const split = naturalRuns(rows).map((r) => r.rows.map((x) => x.id));
+    expect(split).toContainEqual(["b5", "b6"]);
+    expect(split).toContainEqual(["b7", "b8"]);
+  });
+
+  it("keeps the colour objects of unchanged rows (memoised row cards see the same prop)", () => {
+    const rows = ball().parts[0]!.content.rows;
+    const first = rowStartColors(rows, PALETTE);
+    rows[8] = { ...rows[8]!, color: "rosa" };
+    const next = reuseRowColors(rowStartColors(rows, PALETTE), first);
+    expect(next.slice(0, 8).every((c, i) => c === first[i])).toBe(true);
+    expect(next[8]).not.toBe(first[8]);
+    expect(next[8]).toMatchObject({ id: "rosa", changed: true });
+    expect(reuseRowColors(first, null)).toBe(first);
+  });
+
+  it("Runde ×N copies the row without its colour change", () => {
+    let s = initEditorState(emptyDocument("r1"));
+    s = run(
+      s,
+      { type: "addColor", color: { id: "rosa", name: "Rosa" } },
+      { type: "setRowOps", rowId: "r1", ops: [sc(24)], color: "rosa" },
+      { type: "setRunLength", rowIds: ["r1"], length: 3, newIds: ["r2", "r3"] },
+    );
+    const rows = s.doc.parts[0]!.content.rows;
+    expect(rows.map((r) => r.color)).toEqual(["rosa", undefined, undefined]);
+    expect(naturalRuns(rows)).toHaveLength(1);
+  });
+
+  it("deleting the start colour with a replacement makes the replacement the start colour", () => {
+    const d = doc();
+    d.overview.colors = [...PALETTE, { id: "gelb", name: "Gelb" }];
+    const s = run(initEditorState(d), { type: "removeColor", id: "weiss", replacement: "gelb" });
+    expect(s.doc.overview.colors!.map((c) => c.id)).toEqual(["gelb", "rosa"]);
+    // Round 1 of the head started in Weiß and starts in Gelb now; the stitch switch follows.
+    expect(rowStartColors(s.doc.parts[0]!.content.rows, s.doc.overview.colors!)[0]!.id).toBe("gelb");
+    expect(s.doc.parts[0]!.content.rows[2]!.ops[1]).toEqual(sc(3, "gelb"));
+    // Without a replacement the next colour becomes the start colour.
+    expect(run(initEditorState(d), { type: "removeColor", id: "weiss" }).doc.overview.colors!.map((c) => c.id)).toEqual(["rosa", "gelb"]);
+  });
+
+  it("refuses duplicate names and brackets when adding or renaming", () => {
+    const s = initEditorState(doc());
+    expect(run(s, { type: "addColor", color: { id: "x", name: "ROSA" } })).toBe(s);
+    expect(run(s, { type: "addColor", color: { id: "x", name: "[x]" } })).toBe(s);
+    expect(run(s, { type: "updateColor", id: "weiss", patch: { name: "rosa" } })).toBe(s);
+    expect(run(s, { type: "updateColor", id: "weiss", patch: { name: "We]ß" } })).toBe(s);
+    expect(run(s, { type: "updateColor", id: "rosa", patch: { name: "Rosa " } }).doc.overview.colors![1]!.name).toBe("Rosa ");
   });
 });
