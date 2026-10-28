@@ -6,8 +6,22 @@
  *   Alt+↑ / Alt+↓ → previous / next part
  *
  * Alt+↑/↓ is free in browsers (Alt+←/→ is history navigation, Ctrl+PageUp/PageDown switches
- * browser tabs).
+ * browser tabs). The app leaves it to the control in lists and text areas, on macOS also in
+ * text fields (Option+↑/↓ moves the caret there), and while a menu or dialog is open. Text
+ * typed into a row is committed before the switch; unreadable text stops it.
  */
+
+interface NavigatorInfo {
+  platform?: string;
+  /** Chromium's User-Agent Client Hints. */
+  userAgentData?: { platform?: string };
+}
+
+/** macOS / iOS, where Option+arrow keys move the caret in text fields. */
+export function isMacPlatform(nav: NavigatorInfo | undefined = globalThis.navigator as NavigatorInfo | undefined): boolean {
+  const platform = nav?.userAgentData?.platform || nav?.platform || "";
+  return /mac|iphone|ipad|ipod/i.test(platform);
+}
 
 export type Shortcut = "undo" | "redo" | "addRow" | "prevPart" | "nextPart";
 

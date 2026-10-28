@@ -2,6 +2,7 @@ import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import type { ExportActions } from "./components/ExportMenu.js";
 import { focusLater } from "./components/focus.js";
 import { PART_PANEL_ID, PartsBar, partTabId } from "./components/PartsBar.js";
+import { commitPendingEdits } from "./components/pendingEdits.js";
 import { PreviewPane } from "./components/PreviewPane.js";
 import { RowList, type FocusRequest } from "./components/RowList.js";
 import { SplitPane } from "./components/SplitPane.js";
@@ -12,7 +13,7 @@ import { addPart, addRow, duplicatePart, duplicateRow, loadDemo, newDocument } f
 import { emptyDocument, type BuilderDoc } from "./state/document.js";
 import { canRedo, canUndo, editorReducer, initEditorState, selectedPart } from "./state/editor.js";
 import { partFindings, partName } from "./state/parts.js";
-import { shortcutFor } from "./state/shortcuts.js";
+import { isMacPlatform, shortcutFor } from "./state/shortcuts.js";
 import { usePersistence } from "./state/usePersistence.js";
 
 function isEditable(target: EventTarget | null): boolean {
@@ -20,9 +21,19 @@ function isEditable(target: EventTarget | null): boolean {
   return target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName);
 }
 
-/** Alt+↑/↓ belongs to the control itself here (opening a list, moving by paragraph). */
+/**
+ * Alt+↑/↓ belongs to the control itself here: a list opens, a text area moves by paragraph,
+ * and on macOS Option+↑/↓ moves the caret in any text field.
+ */
 function keepsAltArrows(target: EventTarget | null): boolean {
-  return target instanceof HTMLElement && ["TEXTAREA", "SELECT"].includes(target.tagName);
+  if (!(target instanceof HTMLElement)) return false;
+  if (["TEXTAREA", "SELECT"].includes(target.tagName)) return true;
+  return isMacPlatform() && isEditable(target);
+}
+
+/** A menu or dialog (demos, export, storage notice) is open: it owns the keyboard. */
+function overlayOpen(): boolean {
+  return document.querySelector("[role='menu'], [role='dialog'], [role='alertdialog']") !== null;
 }
 
 export interface AppProps {
@@ -79,22 +90,35 @@ export function App({ exportActions }: AppProps = {}) {
   const findings = partFindings(part);
   const rows = part.rows;
 
-  const selectPart = useCallback((index: number) => dispatch({ type: "selectPart", index }), []);
+  // Everything that swaps the rows in view first commits typed text; an unreadable text stops
+  // it (the field keeps its error and the focus).
+  const selectPart = useCallback(
+    (index: number) => {
+      if (index === state.part) return true;
+      if (!commitPendingEdits()) return false;
+      dispatch({ type: "selectPart", index });
+      return true;
+    },
+    [state.part],
+  );
 
   const addNewPart = useCallback(() => {
+    if (!commitPendingEdits()) return;
     dispatch(addPart());
     setNameFocusToken((t) => t + 1);
   }, []);
 
   const duplicateSelectedPart = useCallback(
-    (index: number) => dispatch(duplicatePart(state.doc, index)),
+    (index: number) => {
+      if (commitPendingEdits()) dispatch(duplicatePart(state.doc, index));
+    },
     [state.doc],
   );
 
   const deletePart = useCallback(
     (index: number) => {
       const target = state.doc.parts[index];
-      if (!target || state.doc.parts.length <= 1) return;
+      if (!target || state.doc.parts.length <= 1 || !commitPendingEdits()) return;
       const next = editorReducer(state, { type: "deletePart", index });
       dispatch({ type: "deletePart", index });
       setDeleted({ name: partName(target.name, index), index, before: state.doc });
@@ -149,18 +173,17 @@ export function App({ exportActions }: AppProps = {}) {
         const exists = rows.some((r) => r.id === selectedRowId);
         addRowAfter(exists ? selectedRowId : null, false);
       } else if (shortcut === "prevPart" || shortcut === "nextPart") {
-        if (keepsAltArrows(e.target)) return;
+        if (keepsAltArrows(e.target) || overlayOpen()) return;
         e.preventDefault();
         const count = state.doc.parts.length;
         const next = (state.part + (shortcut === "nextPart" ? 1 : count - 1)) % count;
         if (next === state.part) return;
-        // Leaving a field commits it (to its own part) before the rows are swapped.
         const active = document.activeElement;
-        const inRows = active instanceof HTMLElement && active.closest(`#${PART_PANEL_ID}`) !== null;
-        if (isEditable(active) && active instanceof HTMLElement) active.blur();
-        dispatch({ type: "selectPart", index: next });
-        // Focus follows into the bar unless it was elsewhere (title, preview …).
-        if (inRows || active?.closest?.("[role='tablist']")) focusLater(partTabId(next));
+        const inEditor = active instanceof HTMLElement && active.closest(`.parts-bar, #${PART_PANEL_ID}`) !== null;
+        if (!selectPart(next)) return;
+        // From the rows or the parts bar (name, quantity, tabs) focus moves to the new tab;
+        // from elsewhere (title, preview) it stays where it was.
+        if (inEditor) focusLater(partTabId(next));
       } else if (shortcut && !isEditable(e.target)) {
         // Inside text fields the browser's own undo applies.
         e.preventDefault();
@@ -169,7 +192,7 @@ export function App({ exportActions }: AppProps = {}) {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [rows, selectedRowId, addRowAfter, state.doc.parts.length, state.part]);
+  }, [rows, selectedRowId, addRowAfter, selectPart, state.doc.parts.length, state.part]);
 
   useEffect(() => {
     document.title = state.doc.title.trim() ? `${state.doc.title.trim()} – CrochetBuilder` : "CrochetBuilder";

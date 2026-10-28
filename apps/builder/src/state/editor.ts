@@ -130,9 +130,12 @@ export function partOfRow(doc: BuilderDoc, rowId: string): number {
   return doc.parts.findIndex((p) => p.content.rows.some((r) => r.id === rowId));
 }
 
-/** "Teil n" for a new part: n = number of parts after adding, skipping names in use. */
+/**
+ * "Teil n" for a new part: n = number of parts after adding, skipping names in use — also
+ * the "Teil n" shown for an unnamed part.
+ */
 export function nextPartName(doc: BuilderDoc): string {
-  const used = new Set(doc.parts.map((p) => p.name.trim()));
+  const used = new Set(doc.parts.map((p, i) => p.name.trim() || `Teil ${i + 1}`));
   let n = doc.parts.length + 1;
   while (used.has(`Teil ${n}`)) n++;
   return `Teil ${n}`;

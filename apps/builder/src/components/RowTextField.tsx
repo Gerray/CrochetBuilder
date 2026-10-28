@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState, type Ref } from "react";
+import { useCallback, useEffect, useRef, useState, type Ref } from "react";
 import { parseRowText, renderRow, type Op, type Row } from "@crochetbuilder/engine";
 import { parseErrorMessage } from "../state/messages.js";
+import { registerPendingEdit } from "./pendingEdits.js";
 
 interface RowTextFieldProps {
   row: Row;
@@ -14,7 +15,8 @@ interface RowTextFieldProps {
 
 /**
  * The row as editable text: shows `renderRow(row, "de")`, parses on Enter or blur. An
- * unreadable text stays in the field with an inline error; Escape restores the row.
+ * unreadable text stays in the field with an inline error; Escape restores the row. The
+ * field is registered as a pending edit, so switching parts commits it first (or stops).
  */
 export function RowTextField({ row, inputRef, onCommit, onEnter, label }: RowTextFieldProps) {
   const rendered = renderRow(row, "de");
@@ -39,6 +41,26 @@ export function RowTextField({ row, inputRef, onCommit, onEnter, label }: RowTex
   }, [row.ops]);
   const errorId = `row-text-error-${row.id}`;
 
+  const input = useRef<HTMLInputElement | null>(null);
+  const setInput = useCallback(
+    (el: HTMLInputElement | null) => {
+      input.current = el;
+      if (typeof inputRef === "function") inputRef(el);
+      else if (inputRef) (inputRef as { current: HTMLInputElement | null }).current = el;
+    },
+    [inputRef],
+  );
+  // The latest commit, for the pending-edit registry.
+  const commitRef = useRef<() => boolean | null>(() => null);
+  useEffect(
+    () =>
+      registerPendingEdit({
+        commit: () => commitRef.current() !== null,
+        focus: () => input.current?.focus(),
+      }),
+    [],
+  );
+
   /** Returns whether the row has stitches afterwards, or null if the text is invalid. */
   const commit = (): boolean | null => {
     const text = draftRef.current;
@@ -59,11 +81,12 @@ export function RowTextField({ row, inputRef, onCommit, onEnter, label }: RowTex
     setError(null);
     return result.ops.length > 0;
   };
+  commitRef.current = commit;
 
   return (
     <div className="row-text">
       <input
-        ref={inputRef}
+        ref={setInput}
         className="row-text-input"
         type="text"
         aria-label={label}

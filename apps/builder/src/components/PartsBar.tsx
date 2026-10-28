@@ -12,6 +12,7 @@ import {
 } from "../state/parts.js";
 import { NumberField } from "./fields.js";
 import { focusLater } from "./focus.js";
+import { registerPendingEdit } from "./pendingEdits.js";
 
 /** Id of the element the tabs control (the row editor of the shown part). */
 export const PART_PANEL_ID = "part-panel";
@@ -23,7 +24,8 @@ interface PartsBarProps {
   /** Index of the part shown. */
   selected: number;
   dispatch: Dispatch<EditorAction>;
-  onSelect: (index: number) => void;
+  /** Show part `index`; false when a field with unreadable text stopped the switch. */
+  onSelect: (index: number) => boolean;
   onAdd: () => void;
   onDuplicate: (index: number) => void;
   onDelete: (index: number) => void;
@@ -47,12 +49,6 @@ export function PartsBar(props: PartsBarProps) {
   const parts = doc.parts;
   const part = parts[selected]!;
   const total = partsTotal(doc);
-  const tabs = useRef<HTMLDivElement>(null);
-
-  // Keep the shown tab visible in the (horizontally scrolling) tab strip.
-  useEffect(() => {
-    tabs.current?.querySelector<HTMLElement>(`#${partTabId(selected)}`)?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
-  }, [selected, parts.length]);
 
   const onTabKey = (e: KeyboardEvent<HTMLDivElement>) => {
     let next: number;
@@ -69,8 +65,7 @@ export function PartsBar(props: PartsBarProps) {
       return;
     } else return;
     e.preventDefault();
-    onSelect(next);
-    focusLater(partTabId(next));
+    if (onSelect(next)) focusLater(partTabId(next));
   };
 
   const move = (delta: number) => {
@@ -85,7 +80,6 @@ export function PartsBar(props: PartsBarProps) {
     <section className="parts-bar" aria-label="Teile">
       <div className="parts-strip">
         <div
-          ref={tabs}
           className="parts-tabs"
           role="tablist"
           aria-label="Teile der Anleitung"
@@ -119,8 +113,7 @@ export function PartsBar(props: PartsBarProps) {
                 title={`${label} – ${PART_SWITCH_HINT}, Doppelklick benennt um`}
                 onClick={() => onSelect(i)}
                 onDoubleClick={() => {
-                  onSelect(i);
-                  onRequestNameFocus();
+                  if (onSelect(i)) onRequestNameFocus();
                 }}
               >
                 <span className="part-dot" aria-hidden="true" />
@@ -147,7 +140,7 @@ export function PartsBar(props: PartsBarProps) {
           name={part.name}
           index={selected}
           focusToken={nameFocusToken}
-          onRename={(name) => dispatch({ type: "renamePart", index: selected, name })}
+          onRename={(index, name) => dispatch({ type: "renamePart", index, name })}
         />
         <span className="part-quantity" role="group" aria-label="Anzahl">
           <span className="part-tools-label" aria-hidden="true">
@@ -159,7 +152,14 @@ export function PartsBar(props: PartsBarProps) {
             aria-label="Anzahl verringern"
             title="Anzahl verringern"
             disabled={part.quantity <= 1}
-            onClick={() => dispatch({ type: "setPartQuantity", index: selected, quantity: part.quantity - 1 })}
+            // Also brings a quantity above the limit (old or foreign data) back into range.
+            onClick={() =>
+              dispatch({
+                type: "setPartQuantity",
+                index: selected,
+                quantity: Math.min(part.quantity - 1, MAX_PART_QUANTITY),
+              })
+            }
           >
             −
           </button>
@@ -213,7 +213,7 @@ export function PartsBar(props: PartsBarProps) {
             className="btn btn-small btn-quiet"
             disabled={parts.length >= MAX_PARTS}
             aria-label="Teil duplizieren"
-            title="Kopie mit allen Runden anlegen, z. B. für linkes und rechtes Bein"
+            title="Kopie mit allen Zeilen anlegen, z. B. für linkes und rechtes Bein"
             onClick={() => onDuplicate(selected)}
           >
             Duplizieren
@@ -228,7 +228,7 @@ export function PartsBar(props: PartsBarProps) {
             Teil löschen
           </button>
         </span>
-        <span className="parts-total" aria-label="Summe aller Teile">
+        <span className="parts-total">
           {totalText(total)}
         </span>
       </div>
@@ -264,10 +264,16 @@ function PartNameField({
   name: string;
   index: number;
   focusToken: number;
-  onRename: (name: string) => void;
+  onRename: (index: number, name: string) => void;
 }) {
   // A draft belongs to the part it was typed for; switching parts shows the other name.
-  const [draft, setDraft] = useState<{ index: number; text: string } | null>(null);
+  const [draft, setDraftState] = useState<{ index: number; text: string } | null>(null);
+  // Mirrored in a ref, so a commit from the pending-edit registry sees the latest text.
+  const draftRef = useRef(draft);
+  const setDraft = (value: { index: number; text: string } | null) => {
+    draftRef.current = value;
+    setDraftState(value);
+  };
   const text = draft?.index === index ? draft.text : null;
   const input = useRef<HTMLInputElement>(null);
   const handled = useRef(focusToken);
@@ -280,12 +286,27 @@ function PartNameField({
     input.current?.select();
   }, [focusToken]);
 
+  /** Keep the typed name (an empty one keeps the old name) for the part it was typed for. */
   const commit = () => {
-    if (text === null) return;
-    const next = text.trim();
+    const current = draftRef.current;
+    if (current === null) return;
     setDraft(null);
-    if (next !== "" && next !== name) onRename(next);
+    const next = current.text.trim();
+    if (next !== "") onRename(current.index, next);
   };
+  const commitRef = useRef(commit);
+  commitRef.current = commit;
+  useEffect(
+    () =>
+      registerPendingEdit({
+        commit: () => {
+          commitRef.current();
+          return true;
+        },
+        focus: () => input.current?.focus(),
+      }),
+    [],
+  );
 
   return (
     <input

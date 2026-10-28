@@ -72,8 +72,11 @@ export function partsTotal(doc: BuilderDoc): PartsTotal {
   );
 }
 
-/** "Gesamt: 1.234 Maschen in 8 Teilen". */
+/**
+ * "Gesamt: 1.140 Maschen, 8 Teile zu häkeln" — pieces count every quantity (a part ×2 is
+ * crocheted twice), so the number may be larger than the number of part tabs.
+ */
 export function totalText({ stitches, pieces }: PartsTotal): string {
   const s = stitches.toLocaleString("de-DE");
-  return `Gesamt: ${s} ${stitches === 1 ? "Masche" : "Maschen"} in ${pieces} ${pieces === 1 ? "Teil" : "Teilen"}`;
+  return `Gesamt: ${s} ${stitches === 1 ? "Masche" : "Maschen"}, ${pieces} ${pieces === 1 ? "Teil" : "Teile"} zu häkeln`;
 }

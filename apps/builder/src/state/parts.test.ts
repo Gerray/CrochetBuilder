@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { BuilderExportSchema, type Op } from "@crochetbuilder/engine";
 import { addPart, duplicatePart } from "./actions.js";
 import { emptyDocument } from "./document.js";
+import { isMacPlatform } from "./shortcuts.js";
 import {
   MAX_PART_QUANTITY,
   MAX_PARTS,
@@ -79,6 +80,29 @@ describe("parts", () => {
     s = run(s, { type: "addRow", id: "r3b", afterId: "r3" });
     expect(rowIds(s, 2)).toEqual(["r3", "r3b"]);
     expect(rowIds(s, 1)).toEqual(["r2"]);
+  });
+
+  it("a new name never repeats one shown on a tab, also the 'Teil n' of unnamed parts", () => {
+    const doc = threeParts().doc;
+    doc.parts[0]!.name = "Teil 4";
+    doc.parts[1]!.name = "";
+    doc.parts[2]!.name = " ";
+    // Shown: "Teil 4", "Teil 2", "Teil 3".
+    expect(nextPartName(doc)).toBe("Teil 5");
+    doc.parts[0]!.name = "Kopf";
+    expect(nextPartName(doc)).toBe("Teil 4");
+    // A named "Teil 4" behind an unnamed part showing "Teil 2": skipped as well.
+    doc.parts.push({ ...doc.parts[0]!, name: "Teil 4" });
+    expect(nextPartName(doc)).toBe("Teil 5");
+  });
+
+  it("isMacPlatform: macOS and iOS by platform or client hints", () => {
+    expect(isMacPlatform({ platform: "MacIntel" })).toBe(true);
+    expect(isMacPlatform({ platform: "iPhone" })).toBe(true);
+    expect(isMacPlatform({ platform: "", userAgentData: { platform: "macOS" } })).toBe(true);
+    expect(isMacPlatform({ platform: "Win32" })).toBe(false);
+    expect(isMacPlatform({ platform: "Linux x86_64" })).toBe(false);
+    expect(isMacPlatform(undefined)).toBe(false);
   });
 
   it("renames a part; typing the name is one undo step", () => {

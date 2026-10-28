@@ -252,7 +252,7 @@ describe("PDF with several parts", () => {
         "Arm ×2: 8 Runden, 69 Maschen je Teil",
         "Bein ×2: 8 Runden, 81 Maschen je Teil",
       ],
-      total: "Gesamt: 1.140 Maschen in 8 Teilen",
+      total: "Gesamt: 1.140 Maschen, 8 Teile zu häkeln",
     });
     // The image and the finished size are the first part's — the line says which.
     expect(input.size).toBe("4,0 × 4,0 × 4,0 cm (B × H × T), max. Ø 3,7 cm – Kopf");
@@ -261,7 +261,7 @@ describe("PDF with several parts", () => {
     expect(at("Teile")).toBeGreaterThan(at("Hase (einfach)"));
     expect(at("Teile")).toBeLessThan(at("Material"));
     expect(at("• Ohr ×2: 13 Runden, 138 Maschen je Teil")).toBeGreaterThan(at("Teile"));
-    expect(at("Gesamt: 1.140 Maschen in 8 Teilen")).toBeLessThan(at("Material"));
+    expect(at("Gesamt: 1.140 Maschen, 8 Teile zu häkeln")).toBeLessThan(at("Material"));
   });
 
   it("gives every part its own section with name and ×n, rows numbered per part", () => {
