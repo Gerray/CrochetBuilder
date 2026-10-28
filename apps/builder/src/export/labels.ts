@@ -133,3 +133,9 @@ export function sizeLine(size: SizeInfo): string {
   if (size.maxDiameter > 0) line += `, max. Ø ${cm(size.maxDiameter)} cm`;
   return line;
 }
+
+/** Heading of a part: "Kopf", "Ohr ×2"; an unnamed part is "Teil n" (`index` counts from 0). */
+export function partHeading(name: string, quantity: number, index: number): string {
+  const label = name.trim() || `Teil ${index + 1}`;
+  return quantity > 1 ? `${label} ×${quantity}` : label;
+}
