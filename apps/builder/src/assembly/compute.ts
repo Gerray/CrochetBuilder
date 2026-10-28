@@ -5,14 +5,18 @@
  * `composeAssembly` places them. Like the part preview it runs in a Worker
  * (`assembly.worker.ts`) or, as a fallback, on the main thread.
  *
- * Meshes are the bulk of a result. The client says which part meshes it already holds
- * (`have`, by key); only the others are sent. Editing a placement therefore only sends the
- * new transforms.
+ * - Meshes are the bulk of a result. The client says which part meshes it already holds
+ *   (`have`, by key); only the others are sent. Editing a placement only sends transforms.
+ * - Relaxed models are cached by shape, independent of the mesh style: the PDF (stitches)
+ *   after the view (any style) relaxes nothing again.
+ * - A total stitch budget keeps big documents responsive: parts beyond it (in document
+ *   order) are left out and reported as `skipped`.
  */
 
 import {
   buildModel,
   composeAssembly,
+  countPartAtoms,
   DEFAULT_MAX_STITCHES,
   nodeAnchorAngles,
   type AssemblyScene,
@@ -32,6 +36,11 @@ import {
 
 /** What the assembly needs of the document. */
 export type AssemblyDoc = Pick<BuilderExport, "parts" | "assembly" | "overview">;
+
+/** Stitches of all parts together (each part once) the Montage builds in a Worker. */
+export const MAX_ASSEMBLY_STITCHES = 60_000;
+/** The same on the main thread (no Worker): keeps the page responsive. */
+export const MAIN_THREAD_ASSEMBLY_STITCHES = 15_000;
 
 /** Main thread → worker. */
 export interface AssemblyRequest {
@@ -55,9 +64,10 @@ export interface PartMesh {
 export interface AssemblyPartResult {
   /** Index into `doc.parts`. */
   part: number;
-  /** Key of the part's mesh (shape, gauge, budget and style). */
+  /** Key of the part's mesh (shape, gauge, budget, colours and style). */
   key: string;
-  status: "model" | "empty" | "overBudget" | "error";
+  /** `skipped`: left out, over the total stitch budget of the Montage. */
+  status: "model" | "empty" | "overBudget" | "error" | "skipped";
   /** The mesh, unless the client said it has it. */
   mesh?: PartMesh;
   message?: string;
@@ -65,17 +75,19 @@ export interface AssemblyPartResult {
 
 /** Worker → main thread. */
 export type AssemblyResult =
-  | { id: number; kind: "scene"; parts: AssemblyPartResult[]; scene: AssemblyScene }
+  | { id: number; kind: "scene"; parts: AssemblyPartResult[]; scene: AssemblyScene; maxTotal: number }
   | { id: number; kind: "error"; message: string };
 
-/**
- * The mesh key of a part: its geometry key (see `geometryKey`), the mesh style and the
- * colours (palette and row colour changes), which the mesh may carry.
- */
-export function partMeshKey(doc: AssemblyDoc, index: number, style: MeshStyle, maxStitches: number): string {
+/** Shape key of a part: what its relaxed model depends on, plus the colours its mesh carries. */
+function shapeKey(doc: AssemblyDoc, index: number, maxStitches: number): string {
   const part = doc.parts[index]!;
   const colors = JSON.stringify([doc.overview.colors ?? null, part.content.rows.map((r) => r.color ?? null)]);
-  return `${style}|${colors}|${geometryKey(part.content, doc.overview.gauge, maxStitches)}`;
+  return `${colors}|${geometryKey(part.content, doc.overview.gauge, maxStitches)}`;
+}
+
+/** The mesh key of a part: its shape key (geometry and colours) and the mesh style. */
+export function partMeshKey(doc: AssemblyDoc, index: number, style: MeshStyle, maxStitches: number): string {
+  return `${style}|${shapeKey(doc, index, maxStitches)}`;
 }
 
 /**
@@ -87,20 +99,28 @@ export function partRequest(doc: AssemblyDoc, index: number, style: MeshStyle, m
   return { id: 0, content: doc.parts[index]!.content, gauge, style, maxStitches };
 }
 
+/** Stitches of all parts (each once), as the budget counts them. */
+export function totalStitches(doc: Pick<AssemblyDoc, "parts">): number {
+  return doc.parts.reduce((sum, p) => sum + countPartAtoms(p.content), 0);
+}
+
 interface CacheEntry {
   computer: PreviewComputer;
   /** The relaxed model (set by the computer's build). */
   model: Model | null;
-  /** Kind of the last preview result (only "model" has a mesh). */
+  /** Kind of the last preview result (style-independent: it depends on the model). */
   kind: PreviewResult["kind"] | null;
   message?: string;
 }
 
 export class AssemblyComputer {
-  /** Per mesh key: the part's computer and its last model (only the keys of the last request). */
+  /** Per shape key: the part's computer and its model (the keys of the last request). */
   private cache = new Map<string, CacheEntry>();
 
-  constructor(private readonly build: typeof buildModel = buildModel) {}
+  constructor(
+    private readonly build: typeof buildModel = buildModel,
+    private readonly maxTotal: number = MAX_ASSEMBLY_STITCHES,
+  ) {}
 
   compute(req: AssemblyRequest): AssemblyResult {
     const { id, doc, style } = req;
@@ -108,12 +128,24 @@ export class AssemblyComputer {
       const maxStitches = req.maxStitches ?? DEFAULT_MAX_STITCHES;
       const have = new Set(req.have);
       const next = new Map<string, CacheEntry>();
+      const sent = new Set<string>();
       const parts: AssemblyPartResult[] = [];
       const models: Array<Model | null> = [];
-      doc.parts.forEach((_, index) => {
+      let budget = this.maxTotal;
+      doc.parts.forEach((part, index) => {
         const key = partMeshKey(doc, index, style, maxStitches);
-        const seen = next.get(key);
-        let entry = seen ?? this.cache.get(key);
+        const shape = shapeKey(doc, index, maxStitches);
+        let entry = next.get(shape) ?? this.cache.get(shape);
+        // A shape built before (another copy or style) costs nothing; anything else counts.
+        if (!next.has(shape)) {
+          const stitches = countPartAtoms(part.content);
+          if (stitches > budget) {
+            parts.push({ part: index, key, status: "skipped" });
+            models.push(null);
+            return;
+          }
+          budget -= stitches;
+        }
         if (!entry) {
           const fresh: CacheEntry = { computer: null as unknown as PreviewComputer, model: null, kind: null };
           fresh.computer = new PreviewComputer((content, gauge, opts) => {
@@ -122,10 +154,10 @@ export class AssemblyComputer {
           });
           entry = fresh;
         }
-        next.set(key, entry);
-        // The client holds the mesh (or it is sent for an earlier part of this request): only
+        next.set(shape, entry);
+        // The client holds the mesh (or gets it with an earlier part of this request): only
         // the model is needed. Otherwise mesh it — the model itself stays cached.
-        const known = (have.has(key) || seen !== undefined) && entry.kind === "model" && entry.model !== null;
+        const known = (have.has(key) || sent.has(key)) && entry.kind === "model" && entry.model !== null;
         let mesh: PreviewModel | undefined;
         if (!known) {
           const result = entry.computer.compute(partRequest(doc, index, style, maxStitches));
@@ -138,6 +170,7 @@ export class AssemblyComputer {
         if (entry.message !== undefined) out.message = entry.message;
         if (mesh && entry.model) {
           out.mesh = { key, model: mesh, nodeAngle: Float32Array.from(nodeAnchorAngles(entry.model.graph)) };
+          sent.add(key);
         }
         models.push(entry.kind === "model" ? entry.model : null);
         parts.push(out);
@@ -145,12 +178,19 @@ export class AssemblyComputer {
       this.cache = next;
       // The toy faces the viewer (the default camera looks from +Z).
       const scene = composeAssembly(doc, models, { faceFront: true });
-      return { id, kind: "scene", parts, scene };
+      return { id, kind: "scene", parts, scene, maxTotal: this.maxTotal };
     } catch (err) {
       this.cache.clear();
       return { id, kind: "error", message: err instanceof Error ? err.message : String(err) };
     }
   }
+}
+
+/** The part meshes of a result by part, also for parts whose mesh came with an earlier part. */
+export function meshesByPart(result: Extract<AssemblyResult, { kind: "scene" }>, held: ReadonlyMap<string, PartMesh> = new Map()): Array<PartMesh | undefined> {
+  const byKey = new Map(held);
+  for (const p of result.parts) if (p.mesh) byKey.set(p.key, p.mesh);
+  return result.parts.map((p) => (p.status === "model" ? byKey.get(p.key) : undefined));
 }
 
 /** Buffers of a result that can be moved (not copied) through `postMessage`. */

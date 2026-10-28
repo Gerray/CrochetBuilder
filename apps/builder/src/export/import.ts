@@ -18,6 +18,7 @@ import {
 } from "@crochetbuilder/engine";
 import { newId, type BuilderDoc } from "../state/document.js";
 import { MAX_PART_QUANTITY, MAX_PARTS } from "../state/editor.js";
+import { slug, uniqueId } from "../state/assembly.js";
 
 /** Files above this size are not read at all (bytes). */
 export const MAX_IMPORT_FILE_BYTES = 5 * 1024 * 1024;
@@ -94,8 +95,31 @@ function uniqueRowIds(doc: BuilderDoc, makeId: () => string): BuilderDoc {
 }
 
 /**
+ * Give every part with an id a unique one: a later part repeating an earlier part's id gets a
+ * fresh id (from its name). Placements stay as they are — they resolve to the first part with
+ * an id (as `validateExport` and the assembly do), and that one keeps it.
+ */
+export function uniquePartIds(doc: BuilderDoc): BuilderDoc {
+  const ids = doc.parts.flatMap((p) => (p.id === undefined ? [] : [p.id]));
+  if (new Set(ids).size === ids.length) return doc;
+  const used = new Set(ids);
+  const seen = new Set<string>();
+  const parts = doc.parts.map((part, i) => {
+    if (part.id === undefined) return part;
+    if (!seen.has(part.id)) {
+      seen.add(part.id);
+      return part;
+    }
+    const id = uniqueId(slug(part.name) || `teil-${i + 1}`, used);
+    used.add(id);
+    return { ...part, id };
+  });
+  return { ...doc, parts };
+}
+
+/**
  * A validated export as an editor document: `rendered` is dropped (it is regenerated on
- * every export), duplicate row ids are replaced, the editor limits are checked.
+ * every export), duplicate row and part ids are replaced, the editor limits are checked.
  */
 export function documentFromExport(exp: BuilderExport, makeId: () => string = newId): ImportResult {
   if (exp.parts.length === 0) return { ok: false, message: "Die Anleitung enthält keine Teile." };
@@ -121,7 +145,7 @@ export function documentFromExport(exp: BuilderExport, makeId: () => string = ne
   }
   const { rendered: _rendered, ...rest } = exp;
   // The editor holds every document in the current format version (version 1 is a subset).
-  const doc = uniqueRowIds(withCurrentVersion(rest), makeId);
+  const doc = uniquePartIds(uniqueRowIds(withCurrentVersion(rest), makeId));
   const pinned = doc.parts.flatMap((p) => p.content.rows.map((r) => r.id));
   return { ok: true, doc, pinned };
 }

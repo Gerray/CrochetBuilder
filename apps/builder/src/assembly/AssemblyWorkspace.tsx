@@ -2,10 +2,14 @@
  * "Montage" mode of the preview pane: the assembled 3D view plus the placement list.
  *
  * Creating a placement takes two clicks: "+ Annähen" (the part shown in the editor is
- * preselected) or "+ Augen", then a click on the target in the 3D view — the round under the
- * pointer lights up, the click sets target, row and angle. Escape cancels. Every edit goes
- * through the editor reducer (one undo step); small fields fine-tune row, angle, spacing and
- * size afterwards.
+ * preselected) or "+ Augen", then a click on the target in the 3D view — the round where the
+ * placement will land lights up, the click sets target, row and angle. Without a mouse the
+ * small form under the buttons does the same (Zielteil, Runde, Winkel, "Setzen"). Escape
+ * cancels. Every edit goes through the editor reducer (one undo step); small fields
+ * fine-tune target, row, angle, spacing and size afterwards.
+ *
+ * Placements always sit on copy 1 of their target (the format has no copy field): a click on
+ * a further copy lands on copy 1 — highlighted there, mirrored when the copy is a mirror.
  */
 
 import { lazy, Suspense, useCallback, useEffect, useMemo, useState, type ComponentType, type ReactNode } from "react";
@@ -20,7 +24,7 @@ import type { PickResult } from "../three/mapping.js";
 import type { AssemblyCanvasProps } from "./AssemblyCanvas.js";
 import { rowKey, scenePick, sceneSize, type CombinedScene, type ScenePick } from "./combine.js";
 import { useAssemblyScene, type AssemblySceneOptions } from "./useAssemblyScene.js";
-import { partIndexById, placementText, rowPositionText } from "./wording.js";
+import { partIndexById, placementText, rowPositionText, rowWord } from "./wording.js";
 import "./assembly.css";
 
 export type AssemblyCanvasLoader = () => Promise<{ default: ComponentType<AssemblyCanvasProps> }>;
@@ -35,13 +39,39 @@ export const DEFAULT_EYE_SIZE_MM = 10;
 export const DEFAULT_EYE_SPACING = 6;
 export const DEFAULT_MARK_SIZE_MM = 4;
 
-/** What a click in the 3D view will set. */
+/** What a click in the 3D view will set (parts by index, resolved at the moment of use). */
 export type PlacingMode =
   | { kind: "attach"; part: number }
   | { kind: "eyes" }
   | { kind: "embroidery" }
   /** Set an existing placement anew (target, row, angle). */
   | { kind: "move"; id: string };
+
+/**
+ * The placing state as the component keeps it: the part being attached by its id, or — for a
+ * part without an id yet — by the part object, never by its index (parts may move meanwhile).
+ */
+type PlacingState =
+  | { kind: "attach"; partId: string | undefined; partRef: BuilderDoc["parts"][number] }
+  | Exclude<PlacingMode, { kind: "attach" }>;
+
+/** Index of the part a placing state attaches, or -1 when it is gone. */
+export function attachedIndex(doc: BuilderDoc, state: { partId: string | undefined; partRef: BuilderDoc["parts"][number] }): number {
+  if (state.partId !== undefined) return doc.parts.findIndex((p) => p.id === state.partId);
+  return doc.parts.indexOf(state.partRef);
+}
+
+function attachState(doc: BuilderDoc, index: number): PlacingState {
+  const part = doc.parts[index]!;
+  return { kind: "attach", partId: part.id, partRef: part };
+}
+
+/** The mode of a placing state for the current document (null when its part is gone). */
+function modeOf(doc: BuilderDoc, state: PlacingState): PlacingMode | null {
+  if (state.kind !== "attach") return state;
+  const part = attachedIndex(doc, state);
+  return part < 0 ? null : { kind: "attach", part };
+}
 
 export interface AssemblyWorkspaceProps {
   doc: BuilderDoc;
@@ -74,16 +104,18 @@ export function assemblyFindingText(f: AssemblyFinding): string {
     case "SELF_ATTACH":
       return "Ein Teil kann nicht an sich selbst genäht werden.";
     case "CYCLE":
-      return "Die Teile sind gegenseitig aneinander genäht – eines davon muss das Zielteil sein. Sie stehen daneben.";
+      return "Diese Teile sind im Kreis aneinander genäht – eines muss frei bleiben. Sie stehen daneben.";
     case "NO_MODEL":
-      return "Für das Teil gibt es noch kein Modell (keine Maschen oder zu viele).";
+      return "Für das Teil gibt es kein Modell in der Montage (keine Maschen, zu viele, oder über der Grenze der Montage).";
     case "EXTRA_PLACEMENT":
       return "Mehr Platzierungen als Teile – diese wird nicht gezeigt.";
+    case "MIRROR_OVERLAP":
+      return "Beide Kopien landen an derselben Stelle (0°, 180° oder mittig auf dem Ende) – Winkel ändern oder für jede Kopie eine eigene Platzierung anlegen.";
   }
 }
 
 /** The action of a pick in placing mode, or null when the pick does not fit the mode. */
-export function placementForPick(doc: BuilderDoc, mode: PlacingMode, pick: ScenePick): EditorAction | null {
+export function placementForPick(doc: BuilderDoc, mode: PlacingMode, pick: Pick<ScenePick, "part" | "rowId" | "angleDeg">): EditorAction | null {
   if (mode.kind === "move") {
     const p = (doc.assembly ?? []).find((x) => x.id === mode.id);
     if (!p) return null;
@@ -91,8 +123,8 @@ export function placementForPick(doc: BuilderDoc, mode: PlacingMode, pick: Scene
     return { type: "updatePlacement", id: p.id, patch: { target: pick.part, row: pick.rowId, angle: pick.angleDeg } };
   }
   if (mode.kind === "attach") {
-    if (pick.part === mode.part) return null;
-    const name = partName(doc.parts[mode.part]?.name ?? "", mode.part);
+    if (pick.part === mode.part || !doc.parts[mode.part]) return null;
+    const name = partName(doc.parts[mode.part]!.name, mode.part);
     return {
       type: "addPlacement",
       placement: { id: nextPlacementId(doc, name), kind: "attach", part: mode.part, target: pick.part, row: pick.rowId, angle: pick.angleDeg },
@@ -112,15 +144,29 @@ export function placementForPick(doc: BuilderDoc, mode: PlacingMode, pick: Scene
   };
 }
 
+/** Whether the placement will be drawn twice, the second copy mirrored. */
+function mirroredOnPlace(doc: BuilderDoc, mode: PlacingMode): boolean {
+  if (mode.kind === "attach") return (doc.parts[mode.part]?.quantity ?? 1) >= 2;
+  if (mode.kind === "move") {
+    const p = (doc.assembly ?? []).find((x) => x.id === mode.id);
+    const i = partIndexById(doc, p?.part);
+    return p?.kind === "attach" && i >= 0 && doc.parts[i]!.quantity >= 2;
+  }
+  return false;
+}
+
 /**
- * Where the pointer is, for the hint: rows as in the list. Parts without an id yet (nothing
- * placed on them so far) are looked up by index.
+ * Where a pick will really land, as combined row keys to highlight: the row on copy 1 of the
+ * target, and on its copy 2 too when a mirrored second copy of the part goes there.
  */
-function hoverPosition(doc: BuilderDoc, hover: ScenePick): string {
-  const part = doc.parts[hover.part];
-  if (!part) return "";
-  const withId = part.id !== undefined ? doc : { ...doc, parts: doc.parts.map((p, i) => (i === hover.part ? { ...p, id: "\u0000" } : p)) };
-  return rowPositionText(withId, withId.parts[hover.part]!.id!, hover.rowId).replace(/^auf /, "");
+export function landingKeys(combined: CombinedScene, pick: ScenePick, mirrored: boolean): string[] {
+  const at = (copy: number) => combined.ranges.find((r) => r.part === pick.part && r.copy === copy);
+  const first = at(0);
+  if (!first) return [];
+  const keys = [rowKey(first.instance, pick.rowId)];
+  const second = mirrored ? at(1) : undefined;
+  if (second) keys.push(rowKey(second.instance, pick.rowId));
+  return keys;
 }
 
 /** The instruction shown while placing. */
@@ -137,6 +183,22 @@ function placingHint(doc: BuilderDoc, mode: PlacingMode): string {
   }
 }
 
+/**
+ * Where the pointer is, for the hint: rows as in the list. Parts without an id yet (nothing
+ * placed on them so far) are looked up by index.
+ */
+function hoverPosition(doc: BuilderDoc, part: number, rowId: string): string {
+  const p = doc.parts[part];
+  if (!p) return "";
+  const withId = p.id !== undefined ? doc : { ...doc, parts: doc.parts.map((q, i) => (i === part ? { ...q, id: "\u0000" } : q)) };
+  return rowPositionText(withId, withId.parts[part]!.id!, rowId).replace(/^auf /, "");
+}
+
+/** Stitch rows of a part (the "Runde" fields count these). */
+function stitchRows(doc: BuilderDoc, partIndex: number) {
+  return (doc.parts[partIndex]?.content.rows ?? []).filter((r) => r.ops.length > 0);
+}
+
 export function AssemblyWorkspace({
   doc,
   dispatch,
@@ -150,20 +212,29 @@ export function AssemblyWorkspace({
   loadCanvas = loadAssemblyCanvas,
 }: AssemblyWorkspaceProps) {
   const scene = useAssemblyScene(doc, style, sceneOptions);
-  const [placing, setPlacing] = useState<PlacingMode | null>(null);
+  const [placingState, setPlacingState] = useState<PlacingState | null>(null);
   const [hover, setHover] = useState<ScenePick | null>(null);
   const [editing, setEditing] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  /** Read out once when a placement is set (the hover hint is not a live region). */
+  const [announcement, setAnnouncement] = useState("");
   const [webgl, setWebgl] = useState(true);
   const [attempt, setAttempt] = useState(0);
   const Canvas = useMemo(() => lazy(loadCanvas), [loadCanvas, attempt]);
   const combined = scene.combined;
+  const placing = placingState ? modeOf(doc, placingState) : null;
 
   const cancel = useCallback(() => {
-    setPlacing(null);
+    setPlacingState(null);
     setHover(null);
+    setNotice(null);
   }, []);
+  // The part being attached was deleted meanwhile: stop placing.
   useEffect(() => {
-    if (!placing) return;
+    if (placingState && !placing) cancel();
+  }, [placingState, placing, cancel]);
+  useEffect(() => {
+    if (!placingState) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         e.preventDefault();
@@ -172,40 +243,47 @@ export function AssemblyWorkspace({
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [placing, cancel]);
+  }, [placingState, cancel]);
 
-  const valid = useCallback(
-    (pick: ScenePick | null): pick is ScenePick => {
-      if (!pick || !placing) return false;
-      return placementForPick(doc, placing, pick) !== null;
+  const apply = useCallback(
+    (action: EditorAction) => {
+      dispatch(action);
+      const id = action.type === "addPlacement" ? action.placement.id : (action as Extract<AssemblyAction, { type: "updatePlacement" }>).id;
+      setEditing(id);
+      setAnnouncement(action.type === "addPlacement" ? "Platzierung gesetzt." : "Platzierung neu gesetzt.");
+      cancel();
     },
-    [doc, placing],
+    [dispatch, cancel],
   );
+
   const onHover = useCallback(
     (hit: PickResult | null) => {
       const pick = hit && combined ? scenePick(combined, hit) : null;
-      setHover(valid(pick) ? pick : null);
+      setHover(pick && placing && placementForPick(doc, placing, pick) ? pick : null);
     },
-    [combined, valid],
+    [combined, doc, placing],
   );
   const onPick = useCallback(
     (hit: PickResult) => {
       if (!placing || !combined) return;
+      // The view may still show the document before the last edit: never place on it.
+      if (scene.computing) {
+        setNotice("Die Montage wird gerade neu berechnet – bitte gleich noch einmal klicken.");
+        return;
+      }
       const pick = scenePick(combined, hit);
-      if (!pick) return;
-      const action = placementForPick(doc, placing, pick);
-      if (!action) return;
-      dispatch(action);
-      setEditing(action.type === "addPlacement" ? action.placement.id : (action as Extract<AssemblyAction, { type: "updatePlacement" }>).id);
-      cancel();
+      const action = pick ? placementForPick(doc, placing, pick) : null;
+      if (action) apply(action);
     },
-    [placing, combined, doc, dispatch, cancel],
+    [placing, combined, scene.computing, doc, apply],
   );
 
-  const highlight = hover ? [rowKey(hover.instance, hover.rowId)] : [];
+  const mirrored = placing ? mirroredOnPlace(doc, placing) : false;
+  const highlight = hover && combined ? landingKeys(combined, hover, mirrored) : [];
   const size = combined ? sceneSize(combined) : null;
   const findingsOf = (id: string) => scene.scene?.findings.filter((f) => f.placementId === id) ?? [];
   const parts = doc.parts;
+  const skipped = scene.parts.filter((p) => p.status === "skipped").map((p) => partName(parts[p.part]?.name ?? "", p.part));
 
   let overlay: ReactNode = null;
   if (!webgl) overlay = <Message title="3D-Ansicht nicht verfügbar">Dein Browser kann hier kein WebGL anzeigen.</Message>;
@@ -235,16 +313,22 @@ export function AssemblyWorkspace({
         )}
         {overlay}
         {placing && (
-          <div className="assembly-hint" role="status">
+          <div className="assembly-hint">
             <span>
-              {placingHint(doc, placing)}
+              {notice ?? placingHint(doc, placing)}
               {hover && (
                 <strong className="assembly-hover">
                   {" "}
-                  {partName(parts[hover.part]?.name ?? "", hover.part)}: {hoverPosition(doc, hover)}
+                  {partName(parts[hover.part]?.name ?? "", hover.part)}: {hoverPosition(doc, hover.part, hover.rowId)}
                 </strong>
               )}
               {hover && <span className="muted"> · {hover.angleDeg}°</span>}
+              {hover && hover.copy > 0 && (
+                <span className="assembly-copy-note">
+                  {" "}
+                  – wird an Kopie 1 gesetzt{mirrored ? ", die zweite wird gespiegelt" : ""}
+                </span>
+              )}
             </span>
             <button type="button" className="btn btn-small" onClick={cancel}>
               Abbrechen <span className="muted">(Esc)</span>
@@ -262,21 +346,29 @@ export function AssemblyWorkspace({
         )}
         {scene.computing && <span className="muted">berechne …</span>}
       </p>
+      {skipped.length > 0 && (
+        <p className="model-note assembly-skipped" role="note">
+          Zu viele Maschen für die Montage – nicht gezeigt: {skipped.join(", ")} (höchstens{" "}
+          {scene.maxTotal.toLocaleString("de-DE")} Maschen zusammen).
+        </p>
+      )}
+      <p className="sr-only" aria-live="polite">
+        {announcement}
+      </p>
 
       {/* Read-only (the viewer) lists the placements with the pattern text instead. */}
       {!readOnly && (
-      <section className="assembly-list" aria-labelledby="assembly-title">
-        <h2 id="assembly-title" className="section-title">
-          Montage
-        </h2>
-        {!readOnly && (
+        <section className="assembly-list" aria-labelledby="assembly-title">
+          <h2 id="assembly-title" className="section-title">
+            Montage
+          </h2>
           <div className="assembly-actions">
             {placing?.kind === "attach" ? (
               <label className="assembly-part-pick">
                 Teil
                 <select
                   value={placing.part}
-                  onChange={(e) => setPlacing({ kind: "attach", part: Number(e.target.value) })}
+                  onChange={(e) => setPlacingState(attachState(doc, Number(e.target.value)))}
                   aria-label="Welches Teil wird angenäht?"
                 >
                   {parts.map((p, i) => (
@@ -293,7 +385,7 @@ export function AssemblyWorkspace({
                 className="btn btn-small"
                 disabled={parts.length < 2}
                 title={parts.length < 2 ? "Erst ein zweites Teil anlegen" : "Ein Teil an ein anderes nähen: Teil wählen, dann im 3D-Bild auf die Stelle klicken"}
-                onClick={() => setPlacing({ kind: "attach", part: Math.min(selectedPart, parts.length - 1) })}
+                onClick={() => setPlacingState(attachState(doc, Math.min(selectedPart, parts.length - 1)))}
               >
                 + Annähen
               </button>
@@ -302,7 +394,7 @@ export function AssemblyWorkspace({
               type="button"
               className="btn btn-small"
               aria-pressed={placing?.kind === "eyes"}
-              onClick={() => setPlacing(placing?.kind === "eyes" ? null : { kind: "eyes" })}
+              onClick={() => (placing?.kind === "eyes" ? cancel() : setPlacingState({ kind: "eyes" }))}
             >
               + Augen
             </button>
@@ -310,42 +402,41 @@ export function AssemblyWorkspace({
               type="button"
               className="btn btn-small"
               aria-pressed={placing?.kind === "embroidery"}
-              onClick={() => setPlacing(placing?.kind === "embroidery" ? null : { kind: "embroidery" })}
+              onClick={() => (placing?.kind === "embroidery" ? cancel() : setPlacingState({ kind: "embroidery" }))}
             >
               + Stickerei
             </button>
           </div>
-        )}
-        {(doc.assembly ?? []).length === 0 ? (
-          <p className="muted small">
-            Noch keine Montage. „+ Annähen“ setzt ein Teil an ein anderes (z. B. Ohren an den Kopf), „+ Augen“ die
-            Sicherheitsaugen – jeweils mit einem Klick ins 3D-Bild.
-          </p>
-        ) : (
-          <ul className="placement-list">
-            {(doc.assembly ?? []).map((p) => (
-              <PlacementItem
-                key={p.id}
-                doc={doc}
-                placement={p}
-                findings={findingsOf(p.id)}
-                readOnly={readOnly}
-                open={editing === p.id}
-                moving={placing?.kind === "move" && placing.id === p.id}
-                onToggle={() => setEditing((e) => (e === p.id ? null : p.id))}
-                onMove={() => setPlacing({ kind: "move", id: p.id })}
-                dispatch={dispatch}
-              />
-            ))}
-          </ul>
-        )}
-        {(doc.assembly ?? []).length > 0 && (
-          <p className="muted small">
-            Zwei gleiche Teile mit einer Platzierung werden gespiegelt angenäht (Winkel ±). Winkel 0° ist vorne, positiv nach
-            rechts (von vorne gesehen).
-          </p>
-        )}
-      </section>
+          {placing && <PlacingForm key={JSON.stringify(placing)} doc={doc} mode={placing} onSet={apply} />}
+          {(doc.assembly ?? []).length === 0 ? (
+            <p className="muted small">
+              Noch keine Montage. „+ Annähen“ setzt ein Teil an ein anderes (z. B. Ohren an den Kopf), „+ Augen“ die
+              Sicherheitsaugen – jeweils mit einem Klick ins 3D-Bild.
+            </p>
+          ) : (
+            <ul className="placement-list">
+              {(doc.assembly ?? []).map((p) => (
+                <PlacementItem
+                  key={p.id}
+                  doc={doc}
+                  placement={p}
+                  findings={findingsOf(p.id)}
+                  open={editing === p.id}
+                  moving={placing?.kind === "move" && placing.id === p.id}
+                  onToggle={() => setEditing((e) => (e === p.id ? null : p.id))}
+                  onMove={() => setPlacingState({ kind: "move", id: p.id })}
+                  dispatch={dispatch}
+                />
+              ))}
+            </ul>
+          )}
+          {(doc.assembly ?? []).length > 0 && (
+            <p className="muted small">
+              Zwei gleiche Teile mit einer Platzierung werden gespiegelt angenäht (Winkel ±). Winkel 0° ist vorne, positiv nach
+              rechts (von vorne gesehen).
+            </p>
+          )}
+        </section>
       )}
     </div>
   );
@@ -360,16 +451,74 @@ function Message({ title, children }: { title?: string; children: ReactNode }) {
   );
 }
 
-/** Stitch rows of a part (the "Runde" field counts these). */
-function stitchRows(doc: BuilderDoc, partIndex: number) {
-  return (doc.parts[partIndex]?.content.rows ?? []).filter((r) => r.ops.length > 0);
+/** Target parts a mode can place on (not the part being attached). */
+function targetsFor(doc: BuilderDoc, mode: PlacingMode): number[] {
+  let own = -1;
+  if (mode.kind === "attach") own = mode.part;
+  if (mode.kind === "move") {
+    const p = (doc.assembly ?? []).find((x) => x.id === mode.id);
+    if (p?.kind === "attach") own = partIndexById(doc, p.part);
+  }
+  return doc.parts.map((_, i) => i).filter((i) => i !== own && stitchRows(doc, i).length > 0);
+}
+
+/** The keyboard way to place: target, row and angle, then "Setzen". */
+function PlacingForm({ doc, mode, onSet }: { doc: BuilderDoc; mode: PlacingMode; onSet: (action: EditorAction) => void }) {
+  const targets = targetsFor(doc, mode);
+  const [target, setTarget] = useState(targets[0] ?? -1);
+  const rows = stitchRows(doc, target);
+  const [round, setRound] = useState(Math.max(1, Math.ceil(rows.length / 2)));
+  const [angle, setAngle] = useState(0);
+  if (targets.length === 0) return null;
+  const row = rows[Math.min(round, rows.length) - 1];
+  const word = rowWord(doc, target);
+  return (
+    <form
+      className="placement-fields placing-form"
+      aria-label="Platzierung ohne Maus setzen"
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (!row) return;
+        const action = placementForPick(doc, mode, { part: target, rowId: row.id, angleDeg: angle });
+        if (action) onSet(action);
+      }}
+    >
+      <label>
+        Zielteil
+        <select
+          value={target}
+          onChange={(e) => {
+            const t = Number(e.target.value);
+            setTarget(t);
+            setRound((r) => Math.min(r, Math.max(1, stitchRows(doc, t).length)));
+          }}
+        >
+          {targets.map((i) => (
+            <option key={i} value={i}>
+              {partName(doc.parts[i]!.name, i)}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label>
+        {word}
+        <NumberField className="placement-number" value={round} min={1} max={Math.max(1, rows.length)} onValue={(n) => n !== undefined && setRound(n)} />
+      </label>
+      <label>
+        Winkel °
+        <AngleField value={angle} onValue={setAngle} />
+      </label>
+      <button type="submit" className="btn btn-small btn-primary">
+        Setzen
+      </button>
+    </form>
+  );
 }
 
 interface PlacementItemProps {
   doc: BuilderDoc;
   placement: Placement;
   findings: readonly AssemblyFinding[];
-  readOnly: boolean;
   open: boolean;
   moving: boolean;
   onToggle: () => void;
@@ -377,7 +526,7 @@ interface PlacementItemProps {
   dispatch: (action: EditorAction) => void;
 }
 
-function PlacementItem({ doc, placement: p, findings, readOnly, open, moving, onToggle, onMove, dispatch }: PlacementItemProps) {
+function PlacementItem({ doc, placement: p, findings, open, moving, onToggle, onMove, dispatch }: PlacementItemProps) {
   const target = partIndexById(doc, p.target);
   const rows = target < 0 ? [] : stitchRows(doc, target);
   const round = rows.findIndex((r) => r.id === p.row) + 1;
@@ -385,35 +534,55 @@ function PlacementItem({ doc, placement: p, findings, readOnly, open, moving, on
     dispatch({ type: "updatePlacement", id: p.id, patch });
   const label = placementText(doc, p);
   const fieldId = (name: string) => `placement-${p.id}-${name}`;
+  const own = p.kind === "attach" ? partIndexById(doc, p.part) : -1;
+  const targets = doc.parts.map((_, i) => i).filter((i) => i !== own && stitchRows(doc, i).length > 0);
   return (
     <li className={`placement-item${moving ? " is-moving" : ""}`} data-placement={p.id}>
       <div className="placement-line">
         <span className="placement-text">{label}</span>
-        {!readOnly && (
-          <span className="placement-tools">
-            <button type="button" className="btn btn-small btn-quiet" aria-expanded={open} onClick={onToggle} aria-label={`Ändern: ${label}`}>
-              Ändern
-            </button>
-            <button
-              type="button"
-              className="btn btn-small btn-quiet btn-danger"
-              onClick={() => dispatch({ type: "removePlacement", id: p.id })}
-              aria-label={`Entfernen: ${label}`}
-            >
-              Entfernen
-            </button>
-          </span>
-        )}
+        <span className="placement-tools">
+          <button type="button" className="btn btn-small btn-quiet" aria-expanded={open} onClick={onToggle} aria-label={`Ändern: ${label}`}>
+            Ändern
+          </button>
+          <button
+            type="button"
+            className="btn btn-small btn-quiet btn-danger"
+            onClick={() => dispatch({ type: "removePlacement", id: p.id })}
+            aria-label={`Entfernen: ${label}`}
+          >
+            Entfernen
+          </button>
+        </span>
       </div>
       {findings.map((f, i) => (
         <p key={i} className="placement-finding" role="note">
           {assemblyFindingText(f)}
         </p>
       ))}
-      {open && !readOnly && (
+      {open && (
         <div className="placement-fields">
+          <label htmlFor={fieldId("target")}>
+            Zielteil
+            <select
+              id={fieldId("target")}
+              value={target}
+              onChange={(e) => {
+                const t = Number(e.target.value);
+                const next = stitchRows(doc, t);
+                const row = next[Math.min(Math.max(round, 1), next.length) - 1];
+                if (row) update({ target: t, row: row.id });
+              }}
+            >
+              {target < 0 && <option value={-1}>?</option>}
+              {targets.map((i) => (
+                <option key={i} value={i}>
+                  {partName(doc.parts[i]!.name, i)}
+                </option>
+              ))}
+            </select>
+          </label>
           <label htmlFor={fieldId("round")}>
-            Runde
+            {target < 0 ? "Runde" : rowWord(doc, target)}
             <NumberField
               id={fieldId("round")}
               className="placement-number"
@@ -480,9 +649,8 @@ export function parseAngle(text: string): number | null {
   return Number.isFinite(n) && n >= -180 && n <= 180 ? n : null;
 }
 
-function AngleField({ id, value, onValue }: { id: string; value: number; onValue: (n: number) => void }) {
+function AngleField({ id, value, onValue }: { id?: string; value: number; onValue: (n: number) => void }) {
   const [draft, setDraft] = useState<string | null>(null);
-  const shown = draft !== null && parseAngle(draft) !== value ? draft : String(value);
   const invalid = draft !== null && draft.trim() !== "" && draft.trim() !== "-" && parseAngle(draft) === null;
   return (
     <input
@@ -493,7 +661,7 @@ function AngleField({ id, value, onValue }: { id: string; value: number; onValue
       className="number-field placement-number"
       aria-invalid={invalid || undefined}
       title="−180 bis 180; 0 = vorne, positiv nach rechts"
-      value={draft ?? shown}
+      value={draft ?? String(value)}
       onChange={(e) => {
         setDraft(e.target.value);
         const n = parseAngle(e.target.value);

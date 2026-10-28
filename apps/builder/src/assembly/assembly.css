@@ -115,3 +115,24 @@
 .placement-note input {
   width: 14em;
 }
+.placing-form {
+  padding: 0;
+}
+.assembly-copy-note {
+  color: var(--c-text-mute);
+}
+.assembly-skipped {
+  color: var(--c-warn-text);
+}
+/* Read by screen readers only (the placement announcement). */
+.assembly-workspace .sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}

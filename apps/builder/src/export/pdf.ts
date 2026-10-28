@@ -18,6 +18,7 @@ import { exportFileName, downloadBlob, prepareExport } from "./prepare.js";
 import { assemblyLines } from "../assembly/wording.js";
 import type { ViewMesh } from "../three/mapping.js";
 import type { ViewSphere } from "../three/modelView.js";
+import type { AssemblyResult } from "../assembly/compute.js";
 
 /**
  * Pixel size the model is rendered at (square, like the framing). The image is then cropped
@@ -224,23 +225,30 @@ export interface AssembledModel {
   size: { width: number; height: number; depth: number };
 }
 
-/** Compute the assembled toy once (Worker when available); null when nothing is placed. */
-async function computeAssembly(exp: BuilderExport): Promise<AssembledModel | null> {
-  const [{ createAssemblyClient }, { combineScene, sceneSize }, { sceneSpheres }] = await Promise.all([
-    import("../assembly/client.js"),
+/**
+ * The assembled toy from an assembly result: every drawn part (also parts sharing a mesh with
+ * an earlier part), eyes and size; null when nothing is placed.
+ */
+export async function assembledFromResult(result: AssemblyResult | null): Promise<AssembledModel | null> {
+  if (result?.kind !== "scene" || !result.scene.instances.some((i) => i.placement)) return null;
+  const [{ combineScene, sceneSize }, { sceneSpheres }, { meshesByPart }] = await Promise.all([
     import("../assembly/combine.js"),
     import("../assembly/spheres.js"),
+    import("../assembly/compute.js"),
   ]);
-  const client = createAssemblyClient();
-  try {
-    const result = await client.compute({ doc: exp, style: SNAPSHOT_STYLE, have: [] });
-    if (result?.kind !== "scene" || !result.scene.instances.some((i) => i.placement)) return null;
-    const combined = combineScene(result.scene, result.parts.map((p) => p.mesh));
-    const size = combined ? sceneSize(combined) : null;
-    return combined && size ? { mesh: combined.mesh, spheres: sceneSpheres(combined), size } : null;
-  } finally {
-    client.dispose();
-  }
+  const combined = combineScene(result.scene, meshesByPart(result));
+  const size = combined ? sceneSize(combined) : null;
+  return combined && size ? { mesh: combined.mesh, spheres: sceneSpheres(combined), size } : null;
+}
+
+/**
+ * Compute the assembled toy with the app's shared assembly client — the Montage view's
+ * worker and its cache of relaxed parts; null when nothing is placed.
+ */
+async function computeAssembly(exp: BuilderExport): Promise<AssembledModel | null> {
+  const { sharedAssemblyClient, computeAssembly: compute } = await import("../assembly/client.js");
+  const result = await compute(sharedAssemblyClient(), { doc: exp, style: SNAPSHOT_STYLE, have: [] });
+  return assembledFromResult(result);
 }
 
 /** Render the model off screen at `SNAPSHOT_SIZE`; null without WebGL or on any failure. */

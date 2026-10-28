@@ -2,7 +2,10 @@ import { describe, expect, it } from "vitest";
 import { anchorOfNode, buildModel, placementAnchor } from "@crochetbuilder/engine";
 import { demoDocument } from "../state/document.js";
 import { combineScene, rowKey, scenePick, sceneSize } from "./combine.js";
-import { AssemblyComputer, assemblyTransferables, partMeshKey, type AssemblyResult, type PartMesh } from "./compute.js";
+import { AssemblyComputer, assemblyTransferables, meshesByPart, partMeshKey, totalStitches, type AssemblyResult, type PartMesh } from "./compute.js";
+import { assemblyWatchdogMs, WATCHDOG_MS_PER_STITCH } from "./client.js";
+import { WATCHDOG_MS } from "../preview/protocol.js";
+import { documentFromExport } from "../export/import.js";
 
 let n = 0;
 const doc = demoDocument(() => `s${++n}`, "bunny");
@@ -125,5 +128,51 @@ describe("scenePick", () => {
     const b = scenePick(combined, { node: ear1.nodeStart + 20 })!;
     expect(b.angleDeg === -a.angleDeg || Math.abs(a.angleDeg) === 180).toBe(true);
     expect(scenePick(combined, { node: 1e9 })).toBeNull();
+  });
+});
+
+describe("review fixes: budget, shared meshes, watchdog, imported ids", () => {
+  it("leaves parts beyond the total stitch budget out, in document order", () => {
+    // Kopf 277, Körper 247, Ohr 133, Arm 67, Bein 76 stitches (atoms, as the graph has nodes).
+    const r = scene(new AssemblyComputer(buildModel, 600).compute({ id: 1, doc, style: STYLE, have: [] }));
+    expect(r.parts.map((p) => p.status)).toEqual(["model", "model", "skipped", "model", "skipped"]);
+    expect(r.maxTotal).toBe(600);
+    expect(r.scene.instances.map((i) => i.part)).not.toContain(2);
+    expect(r.scene.findings.map((f) => f.code)).toContain("NO_MODEL");
+  });
+
+  it("relaxes a part once for every style (the PDF after the view)", () => {
+    let builds = 0;
+    const counting = ((...args: Parameters<typeof buildModel>) => {
+      builds++;
+      return buildModel(...args);
+    }) as typeof buildModel;
+    const computer = new AssemblyComputer(counting);
+    computer.compute({ id: 1, doc, style: "surface", have: [] });
+    computer.compute({ id: 2, doc, style: "stitches", have: [] });
+    expect(builds).toBe(5);
+  });
+
+  it("draws every part that shares a mesh with an earlier one", async () => {
+    const twin = { ...doc, parts: [doc.parts[0]!, { ...doc.parts[0]!, id: "kopf-2", name: "Kopf 2" }], assembly: [] };
+    const r = scene(new AssemblyComputer().compute({ id: 1, doc: twin, style: STYLE, have: [] }));
+    expect(r.parts.map((p) => p.mesh !== undefined)).toEqual([true, false]);
+    const meshes = meshesByPart(r);
+    expect(meshes.every((m) => m !== undefined)).toBe(true);
+    expect(combineScene(r.scene, meshes)!.ranges).toHaveLength(2);
+  });
+
+  it("gives big documents more time before the worker counts as dead", () => {
+    expect(assemblyWatchdogMs({ doc })).toBe(WATCHDOG_MS + WATCHDOG_MS_PER_STITCH * totalStitches(doc));
+    expect(totalStitches(doc)).toBe(277 + 247 + 133 + 67 + 76);
+  });
+
+  it("renames a later duplicate part id on import and keeps the placements on the first", () => {
+    const exp = structuredClone(doc);
+    exp.parts[1]!.id = "kopf";
+    const result = documentFromExport(exp);
+    if (!result.ok) throw new Error(result.message);
+    expect(result.doc.parts.map((p) => p.id)).toEqual(["kopf", "koerper", "ohr", "arm", "bein"]);
+    expect(result.doc.assembly).toEqual(exp.assembly);
   });
 });

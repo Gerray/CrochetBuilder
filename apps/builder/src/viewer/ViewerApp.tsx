@@ -259,7 +259,7 @@ function ViewerModel({
   const onUnavailable = useCallback(() => setWebgl(false), []);
   const ignorePick = useCallback(() => {}, []);
   const part = exp.parts[index]!;
-  const preview = usePreviewModel(part.content, exp.overview.gauge, style, previewOptions);
+  const preview = usePreviewModel(part.content, exp.overview.gauge, style, { ...previewOptions, paused: montage });
   const size = preview.model;
 
   let overlay: ReactNode = null;

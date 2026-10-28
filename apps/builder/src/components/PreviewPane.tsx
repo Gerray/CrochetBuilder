@@ -225,7 +225,8 @@ export function PreviewPane({
   const [attempt, setAttempt] = useState(0);
   const ModelCanvas = useMemo(() => lazy(loadView), [loadView, attempt]);
   const retry = useCallback(() => setAttempt((a) => a + 1), []);
-  const preview = usePreviewModel(content, gauge, style, previewOptions);
+  // In "Montage" the assembly builds every part itself: the part preview waits meanwhile.
+  const preview = usePreviewModel(content, gauge, style, { ...previewOptions, paused: mode === "assembly" });
 
   const stats = useMemo(() => {
     const stitchRows = content.rows.filter((r) => r.ops.length > 0);

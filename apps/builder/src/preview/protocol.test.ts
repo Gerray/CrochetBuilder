@@ -286,6 +286,26 @@ describe("PreviewClient", () => {
     expect(client.busy).toBe(false);
   });
 
+  it("a per-request watchdog gives big requests more time", () => {
+    vi.useFakeTimers();
+    try {
+      const silent = manualBackend();
+      const fallback = manualBackend();
+      const client = new PreviewClient(silent.factory, {
+        fallback: fallback.factory,
+        watchdogMs: 1000,
+        watchdogFor: (req) => (req.maxStitches ?? 0) * 10,
+      });
+      void client.compute({ ...input, maxStitches: 500 });
+      vi.advanceTimersByTime(4999);
+      expect(fallback.posted).toHaveLength(0);
+      vi.advanceTimersByTime(1);
+      expect(fallback.posted).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("a backend that never answers is given up after the watchdog timeout", async () => {
     vi.useFakeTimers();
     try {

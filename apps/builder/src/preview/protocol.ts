@@ -220,6 +220,8 @@ export interface PreviewClientOptions<Req = PreviewRequest, Res = PreviewResult>
   fallbackMaxStitches?: number;
   /** Treat the backend as dead when a request has no answer after this long. */
   watchdogMs?: number;
+  /** Per request instead of `watchdogMs`: big requests (many stitches) may take longer. */
+  watchdogFor?: (req: Req) => number;
   /** Budget for requests computed by the primary backend (default: as requested). */
   maxStitches?: number;
   /** The primary backend already runs on the main thread (no Worker available). */
@@ -309,7 +311,7 @@ export class PreviewClient<Req extends ClientRequest = PreviewRequest, Res exten
         : { ...req, maxStitches: Math.min(req.maxStitches ?? DEFAULT_MAX_STITCHES, this.budget) };
     this.inFlight = sent;
     this.clearWatchdog();
-    const ms = this.options.watchdogMs ?? WATCHDOG_MS;
+    const ms = this.options.watchdogFor?.(sent) ?? this.options.watchdogMs ?? WATCHDOG_MS;
     if (Number.isFinite(ms) && ms > 0) {
       this.watchdog = setTimeout(() => this.onFailure(new Error("Keine Antwort von der Vorschau-Berechnung")), ms);
     }
