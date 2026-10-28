@@ -7,10 +7,10 @@ import {
   STITCH_ABBREVIATIONS,
   STITCH_NAMES,
   modifierAllowed,
-  renderOp,
   type Mod,
   type Op,
   type RepeatGroup,
+  type StitchGroup,
   type StitchCode,
   type StitchOp,
 } from "@crochetbuilder/engine";
@@ -19,9 +19,21 @@ import type { OpPath } from "../state/op-tree.js";
 import { NumberField } from "./fields.js";
 import { focusLater } from "./focus.js";
 
-/** Picker order: the MVP stitches first, then the rest. */
-const PICKER_CODES: StitchCode[] = ["MR", "CH", "SL_ST", "SC", "HDC", "DC", "INC", "DEC", "INVDEC", "TR", "DTR", "ST"];
-const MODS: Mod[] = ["BLO", "FLO", "TOG"];
+/** Picker order: the MVP stitches first, then the rest, then the special stitches (format v2). */
+const PICKER_CODES: StitchCode[] = [
+  "MR", "CH", "SL_ST", "SC", "HDC", "DC", "INC", "DEC", "INVDEC", "TR", "DTR", "ST",
+  "BOBBLE", "PUFF", "POPCORN", "PICOT",
+];
+/** Modifier chips; FP/BP (relief, format v2) only show where they are allowed or set. */
+const MODS: Mod[] = ["BLO", "FLO", "TOG", "FP", "BP"];
+const RELIEF: readonly Mod[] = ["FP", "BP"];
+
+/** Picker label: "fM – Feste Masche", or just the name when it is its own abbreviation ("Noppe"). */
+function pickerLabel(code: StitchCode): string {
+  const abbr = STITCH_ABBREVIATIONS[code].de;
+  const name = STITCH_NAMES[code].de;
+  return abbr === name ? name : `${abbr} – ${name}`;
+}
 
 interface OpEditorProps {
   rowId: string;
@@ -45,9 +57,21 @@ export function OpEditor(props: OpEditorProps) {
   );
 }
 
-function OpList({ rowId, rowTitle, ops, path, dispatch }: OpEditorProps & { path: OpPath }) {
-  const nested = path.length > 0;
-  const where = nested ? `Wiederholung ${position(path)} von ${rowTitle}` : rowTitle;
+interface OpListProps extends OpEditorProps {
+  path: OpPath;
+  /** What the list belongs to: the row, a repeat group or a stitch group. */
+  container?: "row" | "repeat" | "group";
+  /** The list lies inside a stitch group (no further group may be made in it). */
+  inGroup?: boolean;
+}
+
+function OpList({ rowId, rowTitle, ops, path, dispatch, container = "row", inGroup = false }: OpListProps) {
+  const where =
+    container === "repeat"
+      ? `Wiederholung ${position(path)} von ${rowTitle}`
+      : container === "group"
+        ? `Gruppe ${position(path)} von ${rowTitle}`
+        : rowTitle;
   return (
     <>
       {ops.length > 0 && (
@@ -60,6 +84,7 @@ function OpList({ rowId, rowTitle, ops, path, dispatch }: OpEditorProps & { path
               first: i === 0,
               last: i === ops.length - 1,
               dispatch,
+              inGroup,
             };
             return (
               <li key={`${i}-${op.kind}`}>
@@ -68,8 +93,7 @@ function OpList({ rowId, rowTitle, ops, path, dispatch }: OpEditorProps & { path
                 ) : op.kind === "repeat" ? (
                   <RepeatEditor {...item} op={op} />
                 ) : (
-                  // Stitch groups (format v2) are shown read-only until the editor supports them.
-                  <span className="op-group">{renderOp(op, "de")}</span>
+                  <GroupEditor {...item} op={op} />
                 )}
               </li>
             );
@@ -88,7 +112,7 @@ function OpList({ rowId, rowTitle, ops, path, dispatch }: OpEditorProps & { path
             focusLater(focusId(rowId, at, "count"));
           }}
         >
-          + Masche{nested ? " in Wiederholung" : ""}
+          + Masche{container === "repeat" ? " in Wiederholung" : container === "group" ? " in Gruppe" : ""}
         </button>
         {ops.length > 1 && (
           <button
@@ -118,6 +142,8 @@ interface ItemProps<T> {
   first: boolean;
   last: boolean;
   dispatch: Dispatch<EditorAction>;
+  /** The item lies inside a stitch group. */
+  inGroup?: boolean;
 }
 
 function ItemActions({ rowId, path, first, last, dispatch, name }: Omit<ItemProps<unknown>, "op" | "rowTitle"> & { name: string }) {
@@ -182,14 +208,16 @@ function ItemActions({ rowId, path, first, last, dispatch, name }: Omit<ItemProp
   );
 }
 
-function StitchEditor({ rowId, rowTitle, op, path, first, last, dispatch }: ItemProps<StitchOp>) {
+function StitchEditor({ rowId, rowTitle, op, path, first, last, dispatch, inGroup }: ItemProps<StitchOp>) {
   const mods = op.modifiers ?? [];
   const name = `Masche ${position(path)} von ${rowTitle}`;
   const toggle = (mod: Mod) => {
     let next = mods.includes(mod) ? mods.filter((m) => m !== mod) : [...mods, mod];
-    // Back and front loop exclude each other.
+    // Back and front loop exclude each other, as do front and back post.
     if (mod === "BLO" && !mods.includes("BLO")) next = next.filter((m) => m !== "FLO");
     if (mod === "FLO" && !mods.includes("FLO")) next = next.filter((m) => m !== "BLO");
+    if (mod === "FP" && !mods.includes("FP")) next = next.filter((m) => m !== "BP");
+    if (mod === "BP" && !mods.includes("BP")) next = next.filter((m) => m !== "FP");
     dispatch({ type: "updateStitch", rowId, path, patch: { modifiers: next } });
   };
 
@@ -212,13 +240,15 @@ function StitchEditor({ rowId, rowTitle, op, path, first, last, dispatch }: Item
       >
         {PICKER_CODES.map((code) => (
           <option key={code} value={code}>
-            {STITCH_ABBREVIATIONS[code].de} – {STITCH_NAMES[code].de}
+            {pickerLabel(code)}
           </option>
         ))}
       </select>
       <span className="op-mods" role="group" aria-label={`Besonderheiten, ${name}`}>
         {MODS.map((mod) => {
           const allowed = modifierAllowed(op.code, mod);
+          // Relief only where it can be worked (or where it is set and must be removable).
+          if (RELIEF.includes(mod) && !allowed && !mods.includes(mod)) return null;
           return (
             <button
               key={mod}
@@ -247,12 +277,56 @@ function StitchEditor({ rowId, rowTitle, op, path, first, last, dispatch }: Item
       >
         ( )×
       </button>
+      {!inGroup && (
+        <button
+          type="button"
+          className="btn btn-small btn-quiet"
+          aria-label={`${name} in dieselbe Masche`}
+          title="Alle diese Maschen in dieselbe Einstichstelle arbeiten (z. B. 3 fM in 1 M)"
+          onClick={() => {
+            dispatch({ type: "wrapInGroup", rowId, path });
+            focusLater(focusId(rowId, [...path, 0], "count"));
+          }}
+        >
+          in 1 M
+        </button>
+      )}
       <ItemActions rowId={rowId} path={path} first={first} last={last} dispatch={dispatch} name={name} />
     </div>
   );
 }
 
-function RepeatEditor({ rowId, rowTitle, op, path, first, last, dispatch }: ItemProps<RepeatGroup>) {
+/** A stitch group (format v2): its ops, all worked into the same stitch. */
+function GroupEditor({ rowId, rowTitle, op, path, first, last, dispatch }: ItemProps<StitchGroup>) {
+  const name = `Gruppe ${position(path)} von ${rowTitle}`;
+  return (
+    <div className="op op-repeat op-group" role="group" aria-label={`${name}, in dieselbe Masche`}>
+      <div className="repeat-head">
+        <span className="repeat-times" data-focus-id={focusId(rowId, path, "times")} tabIndex={-1}>
+          in dieselbe Masche
+        </span>
+        <button
+          type="button"
+          className="btn btn-small btn-quiet"
+          aria-label={`${name} auflösen`}
+          title="Gruppe auflösen (jede Masche wieder in ihre eigene Einstichstelle)"
+          onClick={() => {
+            dispatch({ type: "unwrapRepeat", rowId, path });
+            focusLater(focusId(rowId, path, "count"), focusId(rowId, path, "times"), listAddId(rowId, path.slice(0, -1)));
+          }}
+        >
+          Auflösen
+        </button>
+        <ItemActions rowId={rowId} path={path} first={first} last={last} dispatch={dispatch} name={name} />
+      </div>
+      <div className="repeat-body">
+        <OpList rowId={rowId} rowTitle={rowTitle} ops={op.ops} path={path} dispatch={dispatch} container="group" inGroup />
+      </div>
+    </div>
+  );
+}
+
+function RepeatEditor({ rowId, rowTitle, op, path, first, last, dispatch, inGroup }: ItemProps<RepeatGroup>) {
   const name = `Wiederholung ${position(path)} von ${rowTitle}`;
   return (
     <div className="op op-repeat" role="group" aria-label={`${name}, ${op.times}×`}>
@@ -284,7 +358,7 @@ function RepeatEditor({ rowId, rowTitle, op, path, first, last, dispatch }: Item
         <ItemActions rowId={rowId} path={path} first={first} last={last} dispatch={dispatch} name={name} />
       </div>
       <div className="repeat-body">
-        <OpList rowId={rowId} rowTitle={rowTitle} ops={op.ops} path={path} dispatch={dispatch} />
+        <OpList rowId={rowId} rowTitle={rowTitle} ops={op.ops} path={path} dispatch={dispatch} container="repeat" inGroup={inGroup} />
       </div>
     </div>
   );

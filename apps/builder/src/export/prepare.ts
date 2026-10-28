@@ -3,7 +3,7 @@
  * `BuilderExport` with `rendered` filled in German, validated against `BuilderExportSchema`.
  */
 
-import { BuilderExportSchema, renderedRows, type BuilderExport } from "@crochetbuilder/engine";
+import { BuilderExportSchema, renderedRows, withCurrentVersion, type BuilderExport } from "@crochetbuilder/engine";
 import type { BuilderDoc } from "../state/document.js";
 import { partHeading } from "./labels.js";
 
@@ -20,28 +20,30 @@ export class ExportValidationError extends Error {
  * and the viewer ("Ohr ×2:", an unnamed part "Teil n:").
  */
 export function renderedLines(doc: BuilderDoc): string[] {
-  if (doc.parts.length === 1) return renderedRows(doc.parts[0]!.content, "de");
+  const palette = doc.overview.colors ?? [];
+  if (doc.parts.length === 1) return renderedRows(doc.parts[0]!.content, "de", palette);
   return doc.parts.flatMap((part, i) => [
     `${partHeading(part.name, part.quantity, i)}:`,
-    ...renderedRows(part.content, "de"),
+    ...renderedRows(part.content, "de", palette),
   ]);
 }
 
 /**
- * The export of `doc`: materials without a name are left out, `rendered` holds the German
- * text of every row. Throws `ExportValidationError` when the result does not match the
+ * The export of `doc`, stamped with the current format version (2) on the export and every
+ * part: materials without a name are left out, `rendered` holds the German text of every
+ * row, every other field (palette, part ids, finish, stuffing, assembly) is kept as it is. Throws `ExportValidationError` when the result does not match the
  * schema (so nothing invalid ever leaves the app).
  */
 export function prepareExport(doc: BuilderDoc): BuilderExport {
   const overview = { ...doc.overview };
   if (overview.materials) overview.materials = overview.materials.filter((m) => m.label.trim() !== "");
-  const candidate: BuilderExport = {
-    schemaVersion: doc.schemaVersion,
+  const { rendered: _stale, ...rest } = doc;
+  const candidate: BuilderExport = withCurrentVersion({
+    ...rest,
     title: doc.title.trim(),
     overview,
-    parts: doc.parts,
     rendered: { locale: "de", rows: renderedLines(doc) },
-  };
+  });
   const parsed = BuilderExportSchema.safeParse(candidate);
   if (!parsed.success) {
     throw new ExportValidationError(parsed.error.issues.map((i) => `${i.path.join(".") || "(Dokument)"}: ${i.message}`));

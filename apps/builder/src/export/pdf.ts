@@ -140,7 +140,7 @@ export function pdfInput(exp: BuilderExport, model: PdfModel | null, image: PdfI
     estimate: model ? estimateNote(gauge) : null,
     parts: exp.parts.map((part, i) => ({
       heading: several || part.quantity > 1 ? partHeading(part.name, part.quantity, i) : null,
-      rows: renderedRows(part.content, "de"),
+      rows: renderedRows(part.content, "de", exp.overview.colors ?? []),
     })),
     image,
   };

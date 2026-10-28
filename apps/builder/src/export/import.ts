@@ -6,11 +6,13 @@
 
 import {
   BuilderExportSchema,
+  CURRENT_SCHEMA_VERSION,
   exceedsJsonDepth,
   MAX_STITCH_COUNT_TARGET,
   opsWithinLimits,
   PartContentSchema,
   ShareDecodeError,
+  withCurrentVersion,
   type BuilderExport,
   type PartContent,
 } from "@crochetbuilder/engine";
@@ -48,13 +50,17 @@ function withinLimits(content: PartContent): boolean {
 }
 
 /**
- * Give every row a unique id: the editor relies on it, the schema does not enforce it.
- * Unique ids are kept as they are (they are stable identities).
+ * Give every row a unique id across the document: the editor relies on it, the schema does
+ * not enforce it. Unique ids are kept as they are (they are stable identities). A placement
+ * of the assembly that points at a renamed row follows it: placements resolve their target
+ * to the first part with that id (as `validateExport` does), so the row is renamed there.
  */
 function uniqueRowIds(doc: BuilderDoc, makeId: () => string): BuilderDoc {
   const seen = new Set<string>();
   let changed = false;
-  const parts = doc.parts.map((part) => {
+  /** Per part index: old row id → new row id. */
+  const renamed = new Map<number, Map<string, string>>();
+  const parts = doc.parts.map((part, partIndex) => {
     const rows = part.content.rows.map((row) => {
       if (!seen.has(row.id)) {
         seen.add(row.id);
@@ -64,11 +70,27 @@ function uniqueRowIds(doc: BuilderDoc, makeId: () => string): BuilderDoc {
       let id = makeId();
       while (seen.has(id)) id = makeId();
       seen.add(id);
+      const map = renamed.get(partIndex) ?? new Map<string, string>();
+      if (!map.has(row.id)) map.set(row.id, id);
+      renamed.set(partIndex, map);
       return { ...row, id };
     });
     return { ...part, content: { ...part.content, rows } };
   });
-  return changed ? { ...doc, parts } : doc;
+  if (!changed) return doc;
+  const out: BuilderDoc = { ...doc, parts };
+  if (doc.assembly) {
+    const firstWithId = new Map<string, number>();
+    doc.parts.forEach((p, i) => {
+      if (p.id !== undefined && !firstWithId.has(p.id)) firstWithId.set(p.id, i);
+    });
+    out.assembly = doc.assembly.map((pl) => {
+      const target = firstWithId.get(pl.target);
+      const row = target === undefined ? undefined : renamed.get(target)?.get(pl.row);
+      return row ? { ...pl, row } : pl;
+    });
+  }
+  return out;
 }
 
 /**
@@ -98,7 +120,8 @@ export function documentFromExport(exp: BuilderExport, makeId: () => string = ne
     };
   }
   const { rendered: _rendered, ...rest } = exp;
-  const doc = uniqueRowIds(rest, makeId);
+  // The editor holds every document in the current format version (version 1 is a subset).
+  const doc = uniqueRowIds(withCurrentVersion(rest), makeId);
   const pinned = doc.parts.flatMap((p) => p.content.rows.map((r) => r.id));
   return { ok: true, doc, pinned };
 }
@@ -106,7 +129,7 @@ export function documentFromExport(exp: BuilderExport, makeId: () => string = ne
 /** A bare part content becomes a one-part document (title from the file name). */
 function documentFromPart(content: PartContent, title: string, makeId: () => string): ImportResult {
   return documentFromExport(
-    { schemaVersion: 1, title, overview: {}, parts: [{ name: "Teil 1", quantity: 1, content }] },
+    { schemaVersion: CURRENT_SCHEMA_VERSION, title, overview: {}, parts: [{ name: "Teil 1", quantity: 1, content }] },
     makeId,
   );
 }

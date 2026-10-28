@@ -13,6 +13,7 @@
  */
 
 import {
+  CURRENT_SCHEMA_VERSION,
   GaugeSchema,
   MAX_STITCH_COUNT_TARGET,
   computeRowStitches,
@@ -88,6 +89,8 @@ export type EditorAction =
   | { type: "moveOp"; rowId: string; path: OpPath; delta: number }
   | { type: "wrapInRepeat"; rowId: string; path: OpPath; times?: number; length?: number }
   | { type: "unwrapRepeat"; rowId: string; path: OpPath }
+  /** Put `length` ops (default 1) into a stitch group "in dieselbe Masche" (format v2). */
+  | { type: "wrapInGroup"; rowId: string; path: OpPath; length?: number }
   // parts
   | { type: "selectPart"; index: number }
   | { type: "addPart"; rowId: string }
@@ -425,12 +428,15 @@ function applyEdit(state: EditorState, action: EditorAction): DocResult {
     case "unwrapRepeat":
       return opsEdit(action.rowId, (ops) => tree.unwrapRepeat(ops, action.path));
 
+    case "wrapInGroup":
+      return opsEdit(action.rowId, (ops) => tree.wrapInGroup(ops, action.path, action.length ?? 1));
+
     case "addPart": {
       if (doc.parts.length >= MAX_PARTS || partOfRow(doc, action.rowId) >= 0) return same;
       const part: Part = {
         name: nextPartName(doc),
         quantity: 1,
-        content: { schemaVersion: 1, rows: [emptyRow(action.rowId)] },
+        content: { schemaVersion: CURRENT_SCHEMA_VERSION, rows: [emptyRow(action.rowId)] },
       };
       return { doc: { ...doc, parts: [...doc.parts, part] }, pinned, scope: state.part, select: doc.parts.length };
     }
@@ -462,6 +468,8 @@ function applyEdit(state: EditorState, action: EditorAction): DocResult {
       if (ids.some((id) => partOfRow(doc, id) >= 0)) return same;
       const copy: Part = structuredClone(source);
       copy.name = `${source.name.trim() || `Teil ${action.index + 1}`} (Kopie)`;
+      // A copy is a new part: placements that refer to the original keep referring to it.
+      delete copy.id;
       copy.content.rows = copy.content.rows.map((r, i) => ({ ...r, id: ids[i]! }));
       const at = action.index + 1;
       const copiedPins = rows.flatMap((r, i) => (pinned.includes(r.id) ? [ids[i]!] : []));
