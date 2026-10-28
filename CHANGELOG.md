@@ -4,7 +4,46 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the engine package
 (`@crochetbuilder/engine`) follows [Semantic Versioning](https://semver.org/).
 
-## [Unreleased] — engine 0.2.0
+## [Unreleased] — engine 1.0.0, format version 2
+
+### Breaking
+
+- **Format version 2.** `PartContent.schemaVersion` and `BuilderExport.schemaVersion` are
+  `1 | 2`; parsers read both, writers write 2. Version 2 is purely additive — every
+  version-1 document is a valid version-2 document — but software that only knows version 1
+  rejects version-2 documents (the objects are strict). Consumers of the schema need engine
+  1.0.0. The builder's file import accepts both versions.
+- New members of exported unions: the op kind `group`, the stitch codes `BOBBLE`, `PUFF`,
+  `POPCORN`, `PICOT`, the modifiers `FP`, `BP` and the finding codes `EMPTY_GROUP`,
+  `INVALID_MODIFIER`, `UNKNOWN_COLOR`. Exhaustive `switch`es and `Record<StitchCode, …>` maps
+  in consuming code have to cover them.
+
+### Added
+
+- **Colours.** A palette in `overview.colors` (`{ id, name, hex? }`), colour changes per row
+  (`Row.color`) and per op (`StitchOp.color`) that hold until the next change.
+  `colorsOfStitches` resolves the working colour of every stitch, `nodeColorIndices` the
+  palette index of every graph node, and `toMesh(…, { nodeColors })` carries it per vertex
+  (`MeshData.colorIndex`) in every mesh style.
+- **Stitch groups** (`{ kind: "group", ops }`): all stitches into one stitch — "3 sc in one",
+  shells, V-stitches. A group consumes one stitch and produces the sum of its stitches; in the
+  stitch graph its stitches share one anchor slot and fan out like an increase's.
+- **Special stitches:** `BOBBLE`, `PUFF`, `POPCORN` (one stitch, as tall as a DC, drawn
+  standing proud of the fabric) and `PICOT` (a decorative loop that does not shape the
+  piece). **Relief stitches:** the modifiers `FP` / `BP` on SC, HDC, DC, TR and DTR.
+- **Finish and stuffing per part:** `PartContent.finish` (`open`, `gather`, `flat`) and
+  `PartContent.stuffing` (`none`, `light`, `firm`). The relaxation closes a flat finish into a
+  straight seam (the two halves of the last round joined stitch by stitch); the surface mesh
+  closes it with a strip instead of a pole. `buildModel` applies the part's own finish and
+  stuffing and reports the finish it used (`Model.finish`).
+- **Assembly:** `BuilderPart.id` and `BuilderExport.assembly` (placements `attach`, `eyes`,
+  `embroidery` on a row and angle of a target part). `placementAnchor(graph, rowId, angle)`
+  gives the point and outward normal of a placement on a relaxed part.
+- Validation: `INVALID_MODIFIER` (FP/BP on a stitch without a post), `UNKNOWN_COLOR` (with a
+  palette), `EMPTY_GROUP`; `validateExport` checks a whole export — part findings, duplicate
+  ids and dangling assembly references.
+
+## [0.2.0] — not released separately
 
 ### Added
 

@@ -39,9 +39,11 @@ pattern (rows / rounds / ops)  →  stitch graph  →  relaxation  →  mesh + m
 ```
 
 1. **Parse / edit.** Every row is a list of operations: a stitch code (`SC`, `DC`, `INC`,
-   `DEC`, `MR`, …) with a count, optional modifiers (`BLO`, `FLO`, `TOG`) and nested repeat
-   groups like `6× (1 SC, INC)`. Stitch counts and consumption are checked here. The format
-   is documented in [`docs/FORMAT.md`](docs/FORMAT.md).
+   `DEC`, `MR`, `BOBBLE`, `PICOT`, …) with a count, optional modifiers (`BLO`, `FLO`, `TOG`,
+   `FP`, `BP`), nested repeat groups like `6× (1 SC, INC)` and groups of stitches worked into
+   one stitch ("3 sc in one", shells). Rows and stitches can change the yarn colour; a part
+   says how it is finished and stuffed. Stitch counts and consumption are checked here. The
+   format is documented in [`docs/FORMAT.md`](docs/FORMAT.md).
 2. **Build the graph.** Each worked stitch becomes a node. It is linked to the previous
    stitch in its row and to the stitch(es) of the previous row it is worked into. Increases
    fan out, decreases fan in. The topology of the finished piece is decided here.
@@ -117,13 +119,13 @@ const rows: Row[] = lines.map((text) => {
   if (!parsed.ok) throw new Error(`${parsed.code} at ${parsed.position}`);
   return { id: crypto.randomUUID(), type: "round", ops: parsed.ops, stitchCountTarget: parsed.stitchCountTarget ?? 0 };
 });
-const content: PartContent = { schemaVersion: 1, rows };
+const content: PartContent = { schemaVersion: 2, rows };
 
 validate(content);                                              // [] — no findings
 const model = buildModel(content, { yarnWeight: "dk", hookMm: 4 });
 model.size;                                                     // { width, height, depth } in mm
 model.maxDiameter;                                              // ≈ 28 mm
-const mesh = toMesh(model.graph, "tube");                       // positions, normals, indices
+const mesh = toMesh(model.graph, "tube", { finish: model.finish }); // positions, normals, indices
 ```
 
 The pattern format is specified in [`docs/FORMAT.md`](docs/FORMAT.md); the full public API is
@@ -142,6 +144,8 @@ expansion, validation, graph, relaxation, measurements, mesh, notation, export s
 Working today:
 
 - Pattern engine: schema, validation, stitch graph, relaxation, measurements, mesh
+- Format version 2 in the engine: colours, stitch groups, bobble/puff/popcorn/picot, relief
+  stitches, finish and stuffing per part, placements for assembly (editor support follows)
 - Editor: structured and free-text row input, German and English stitch notation
 - Live 3D preview in real size
 - Export to TellmeCrochet, PDF and JSON; share links and embeddable viewer
@@ -154,7 +158,7 @@ Next:
 Later:
 
 - Pieces made of several parts (head, body, arms…) assembled in 3D
-- Colour changes
+- Colour changes and the other format-2 features in the editor and the 3D view
 - English user interface
 
 ## Contributing
