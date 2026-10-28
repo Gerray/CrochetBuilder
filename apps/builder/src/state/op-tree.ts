@@ -2,11 +2,12 @@
  * Pure helpers to edit a row's recursive op tree by path.
  *
  * A path is a list of indices: `[2]` is the third op of the row, `[2, 0]` the first op
- * inside the repeat group at `[2]`. Every helper returns a new array and leaves its input
+ * inside the repeat group (or stitch group) at `[2]`. Stitch groups never nest: an edit that
+ * would put a group inside a group returns the input unchanged. Every helper returns a new array and leaves its input
  * untouched; an invalid path returns the input unchanged.
  */
 
-import type { Op, RepeatGroup } from "@crochetbuilder/engine";
+import type { GroupOp, Op, RepeatGroup, StitchGroup } from "@crochetbuilder/engine";
 
 export type OpPath = readonly number[];
 
@@ -18,7 +19,7 @@ export function getOp(ops: readonly Op[], path: OpPath): Op | undefined {
     op = list[path[depth]!];
     if (!op) return undefined;
     if (depth < path.length - 1) {
-      if (op.kind !== "repeat") return undefined;
+      if (op.kind === "stitch") return undefined;
       list = op.ops;
     }
   }
@@ -33,11 +34,12 @@ export function mapList(ops: Op[], listPath: OpPath, fn: (list: Op[]) => Op[]): 
   if (listPath.length === 0) return fn(ops);
   const [head, ...rest] = listPath;
   const target = ops[head!];
-  if (!target || target.kind !== "repeat") return ops;
+  if (!target || target.kind === "stitch") return ops;
   const inner = mapList(target.ops, rest, fn);
   if (inner === target.ops) return ops;
+  // Nothing puts a group into a group (see `insideGroup`), so the list stays a group's list.
   const next = [...ops];
-  next[head!] = { ...target, ops: inner };
+  next[head!] = target.kind === "group" ? { ...target, ops: inner as GroupOp[] } : { ...target, ops: inner };
   return next;
 }
 
@@ -63,6 +65,7 @@ export function updateOp(ops: Op[], path: OpPath, fn: (op: Op) => Op): Op[] {
 export function insertOp(ops: Op[], path: OpPath, op: Op): Op[] {
   const at = split(path);
   if (!at) return ops;
+  if (containsGroup([op]) && insideGroup(ops, at.listPath)) return ops;
   return mapList(ops, at.listPath, (list) => {
     if (at.index < 0 || at.index > list.length) return list;
     const next = [...list];
@@ -72,8 +75,8 @@ export function insertOp(ops: Op[], path: OpPath, op: Op): Op[] {
 }
 
 /**
- * Remove the op at `path`. A repeat group left empty is removed as well, so the tree never
- * contains `N× ()`.
+ * Remove the op at `path`. A repeat or stitch group left empty is removed as well, so the
+ * tree never contains `N× ()` or an empty group.
  */
 export function removeOp(ops: Op[], path: OpPath): Op[] {
   const at = split(path);
@@ -81,7 +84,7 @@ export function removeOp(ops: Op[], path: OpPath): Op[] {
   const next = mapList(ops, at.listPath, (list) => list.filter((_, i) => i !== at.index));
   if (at.listPath.length > 0) {
     const parent = getOp(next, at.listPath);
-    if (parent?.kind === "repeat" && parent.ops.length === 0) return removeOp(next, at.listPath);
+    if (parent && parent.kind !== "stitch" && parent.ops.length === 0) return removeOp(next, at.listPath);
   }
   return next;
 }
@@ -114,14 +117,53 @@ export function wrapInRepeat(ops: Op[], path: OpPath, times: number, length = 1)
   });
 }
 
-/** Replace the repeat group at `path` by its ops (worked once). */
+/**
+ * Replace the repeat group (worked once) or the stitch group (each stitch into its own
+ * stitch) at `path` by its ops.
+ */
 export function unwrapRepeat(ops: Op[], path: OpPath): Op[] {
   const at = split(path);
   const group = getOp(ops, path);
-  if (!at || group?.kind !== "repeat") return ops;
+  if (!at || !group || group.kind === "stitch") return ops;
   return mapList(ops, at.listPath, (list) => {
     const next = [...list];
     next.splice(at.index, 1, ...group.ops);
+    return next;
+  });
+}
+
+/** Whether an op list contains a stitch group (at any depth). */
+export function containsGroup(ops: readonly Op[]): boolean {
+  return ops.some((op) => op.kind === "group" || (op.kind === "repeat" && containsGroup(op.ops)));
+}
+
+/** Whether the list at `listPath` lies inside a stitch group (the group's own list included). */
+export function insideGroup(ops: readonly Op[], listPath: OpPath): boolean {
+  let list: readonly Op[] = ops;
+  for (const i of listPath) {
+    const op = list[i];
+    if (!op || op.kind === "stitch") return false;
+    if (op.kind === "group") return true;
+    list = op.ops;
+  }
+  return false;
+}
+
+/**
+ * Wrap `length` ops starting at `path` into a stitch group: all their stitches into one
+ * stitch. Refused (input returned) when the ops already contain a group or the list lies in a
+ * group — groups do not nest.
+ */
+export function wrapInGroup(ops: Op[], path: OpPath, length = 1): Op[] {
+  const at = split(path);
+  if (!at || length < 1 || insideGroup(ops, at.listPath)) return ops;
+  return mapList(ops, at.listPath, (list) => {
+    if (at.index < 0 || at.index + length > list.length) return list;
+    const wrapped = list.slice(at.index, at.index + length);
+    if (containsGroup(wrapped)) return list;
+    const group: StitchGroup = { kind: "group", ops: wrapped as GroupOp[] };
+    const next = [...list];
+    next.splice(at.index, length, group);
     return next;
   });
 }

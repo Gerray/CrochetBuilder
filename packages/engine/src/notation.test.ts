@@ -252,7 +252,7 @@ function generateOps(rand: () => number, depth: number): Op[] {
       const count = 1 + Math.floor(rand() * 30);
       const allowed = ModSchema.options.filter((m) => modifierAllowed(code, m));
       const wanted = allowed.filter(() => rand() < 0.3);
-      const modifiers = normalizeModifiers(code, wanted) ?? wanted.filter((m) => m !== "FLO");
+      const modifiers = normalizeModifiers(code, wanted) ?? wanted.filter((m) => m !== "FLO" && m !== "BP");
       ops.push(st(code, count, modifiers.length > 0 ? modifiers : undefined));
     }
   }

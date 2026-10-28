@@ -5,14 +5,22 @@ validates, expands and renders, what the builder saves, and what other software 
 Stitches are stored as **codes**, never as display text; rendering to German, US or UK
 terminology is a separate concern.
 
-Schema source: `packages/engine/src/schema.ts` (Zod). Version: `schemaVersion: 1`.
+Schema source: `packages/engine/src/schema.ts` (Zod). Version: `schemaVersion: 2` (engine 1.0.0).
+Parsers read versions 1 and 2, writers write 2. Version 2 only adds fields and codes (see
+[Format version 2](#format-version-2)), so every version-1 document is a valid version-2 document
+and needs no migration.
 
 ## Part content
 
 A pattern consists of one or more **parts** (head, body, arm…). Each part is a list of rows.
 
 ```ts
-type PartContent = { schemaVersion: 1; rows: Row[] };
+type PartContent = {
+  schemaVersion: 1 | 2;       // writers write 2
+  rows: Row[];
+  finish?: "open" | "gather" | "flat";      // v2, see "Finish and stuffing"
+  stuffing?: "none" | "light" | "firm";     // v2
+};
 
 type Row = {
   id: string;                 // stable UUID — never regenerated on edit or reorder
@@ -21,19 +29,24 @@ type Row = {
   ops: Op[];
   stitchCountTarget: number;  // stitches on the fabric after this row, as the author declares
   note?: string;              // free text shown with the row
+  color?: string;             // v2: palette id, working colour from the start of this row
 };
 
-type Op = StitchOp | RepeatGroup;
+type Op = StitchOp | RepeatGroup | StitchGroup;
 
 type StitchOp = {
   kind: "stitch";
   code: StitchCode;
   count: number;              // ≥ 1
-  modifiers?: ("BLO" | "FLO" | "TOG")[];
+  modifiers?: ("BLO" | "FLO" | "TOG" | "FP" | "BP")[];
   into?: string;              // display-only note, e.g. "into the chain space"
+  color?: string;             // v2: palette id, working colour from this op on
 };
 
 type RepeatGroup = { kind: "repeat"; times: number; ops: Op[] };   // nests freely
+
+// v2: all stitches into the same stitch. Contains stitches and repeats, never another group.
+type StitchGroup = { kind: "group"; ops: (StitchOp | RepeatGroup)[] };
 ```
 
 A row with no ops but with a `note` or `label` is a **free instruction** ("insert safety
@@ -55,13 +68,25 @@ eyes between rounds 8 and 9"). It is a step for the person crocheting, not a sti
 | `DEC` | decrease: two stitches worked together | 1 | 2 |
 | `INVDEC` | invisible decrease | 1 | 2 |
 | `ST` | generic stitch | 1 | 1 |
+| `BOBBLE` | bobble (v2) | 1 | 1 |
+| `PUFF` | puff stitch (v2) | 1 | 1 |
+| `POPCORN` | popcorn (v2) | 1 | 1 |
+| `PICOT` | picot: a decorative loop (v2) | 0 | 0 |
 
 **produces** is how many stitches one worked instance adds to the fabric count — the basis
 of the stitch-count check (`Σ produces == stitchCountTarget`).
 **consumes** is how many stitches of the previous row it is worked into — the basis of the
 graph and of the consumes check (`Σ consumes(row n) == Σ produces(row n−1)`).
 
-Modifiers never change counts. `BLO`/`FLO` only affect how a stitch is drawn.
+Modifiers never change the fabric count. `BLO`/`FLO` only affect how a stitch is drawn;
+`TOG` turns a stitch that consumes 1 into one that consumes 2 (`SC` + `TOG` = sc2tog).
+`FP`/`BP` (v2, front post / back post) work the stitch around the post of the stitch below;
+they are valid only on `SC`, `HDC`, `DC`, `TR` and `DTR`, and never both on one stitch
+(validation finding `INVALID_MODIFIER`).
+
+Bobble, puff and popcorn stand as tall as a double crochet and are drawn standing proud of
+the fabric. A picot sits on the yarn path between its neighbours; nothing is worked into it
+and it does not shape the piece.
 
 ## Gauge
 
@@ -114,18 +139,167 @@ strict).
 
 ```ts
 type BuilderExport = {
-  schemaVersion: 1;
+  schemaVersion: 1 | 2;       // writers write 2
   title: string;
-  overview: { materials?: Material[]; gauge?: Gauge; notes?: string };
-  parts: { name: string; quantity: number; content: PartContent }[];
+  overview: {
+    materials?: Material[];
+    gauge?: Gauge;
+    notes?: string;
+    colors?: PaletteColor[];  // v2
+  };
+  parts: { id?: string; name: string; quantity: number; content: PartContent }[];   // id: v2
   rendered?: { locale: "de" | "en_us" | "en_uk"; rows: string[] };   // a view, not the source
+  assembly?: Placement[];     // v2
 };
 
 type Material = { kind: "yarn" | "hook" | "accessory"; label: string; colors?: string[]; amount?: string };
+
+type PaletteColor = { id: string; name: string; hex?: string };   // hex: "#rrggbb"
+
+type Placement = {
+  id: string;
+  kind: "attach" | "eyes" | "embroidery";
+  part?: string;              // the part that is attached (kind "attach"): a part id
+  target: string;             // the part it is placed on: a part id
+  row: string;                // a row id of the target part
+  angle: number;              // degrees around the target, see "Assembly"
+  spacing?: number;           // distance in stitches, e.g. between two eyes
+  size?: number;              // size in mm, e.g. of a safety eye
+  note?: string;
+};
 ```
 
 `rendered` is redundant with `parts` and exists so that consumers which only display text
 can do so without understanding the op tree.
+
+The schema checks the shape of an export only. Whether ids are unique and references resolve
+(colour ids used by rows and stitches, part and row ids used by placements) is reported by
+`validateExport`, so that a document with a dangling reference can still be loaded and
+repaired.
+
+## Format version 2
+
+Version 2 adds colours, stitch groups, four stitch codes, two modifiers, a part's finish and
+stuffing, part ids and an assembly. Nothing was removed or renamed. Software that only knows
+version 1 rejects version-2 documents (the objects are strict); it needs engine 1.0.0.
+
+Writers write `schemaVersion: 2` on the export and on every part. A document that says
+`schemaVersion: 1` but uses anything of version 2 is **rejected by the schema**, so a
+version-1 label always means the document can be read by version-1 software:
+
+- a part with `finish`, `stuffing`, a row or stitch `color`, a stitch group, one of the codes
+  `BOBBLE`, `PUFF`, `POPCORN`, `PICOT` or one of the modifiers `FP`, `BP`;
+- an export with `overview.colors`, `assembly`, a part `id`, or a part that says version 2.
+
+A version-2 export may contain parts that say version 1.
+
+### Colours
+
+The palette lists the yarn colours of the whole pattern in `overview.colors`. Rows and
+stitches refer to a colour by its `id`:
+
+- `Row.color` changes the working colour at the start of the row,
+- `StitchOp.color` changes it at that op.
+
+A change holds until the next one, also across rows — as "change to white" does in a written
+pattern. Before the first change the work is in the palette's first colour. A colour id that
+is not in the palette is a validation error (`UNKNOWN_COLOR`); the engine ignores it when it
+resolves colours (`colorsOfStitches`, `nodeColorIndices`).
+
+```json
+{
+  "overview": { "colors": [{ "id": "c1", "name": "White", "hex": "#f4f1ea" }, { "id": "c2", "name": "Pink", "hex": "#e8a0b4" }] },
+  "parts": [{ "id": "head", "name": "Head", "quantity": 1, "content": { "schemaVersion": 2, "rows": [
+    { "id": "r1", "type": "round", "ops": [{ "kind": "stitch", "code": "MR", "count": 1 }, { "kind": "stitch", "code": "SC", "count": 6 }], "stitchCountTarget": 6 },
+    { "id": "r2", "type": "round", "color": "c2", "ops": [{ "kind": "stitch", "code": "INC", "count": 6 }], "stitchCountTarget": 12 },
+    { "id": "r3", "type": "round", "ops": [{ "kind": "repeat", "times": 6, "ops": [
+      { "kind": "stitch", "code": "SC", "count": 1, "color": "c1" },
+      { "kind": "stitch", "code": "INC", "count": 1, "color": "c2" }
+    ] }], "stitchCountTarget": 18 }
+  ] } }]
+}
+```
+
+Round 1 is white (the first colour), round 2 pink, round 3 alternates white and pink.
+
+In the rendered text (`rendered`, PDF, viewer) a colour change is written in front of the
+stitch it starts at, with the palette name: `[Farbe: Weiß] 6 fM` (US `[Color: White]`, UK
+`[Colour: White]`). The row notation reads these marks back.
+
+### Stitch groups
+
+A group works all its stitches into **one** stitch of the previous row: "3 sc in the next
+stitch", a half-double increase, a shell, a V-stitch, a corner. It consumes one stitch and
+produces the sum of its stitches. It may contain stitches and repeats, not another group.
+
+- Chains and picots inside a group are not worked into the stitch; a group that contains
+  nothing else (or nothing at all) consumes no stitch and is reported as `EMPTY_GROUP`
+  (warning). A row that consists only of such a group of chains is a foundation chain.
+- An `INC` inside a group adds its two stitches to the group's stitch: `(INC, SC)` in one
+  stitch produces 3 and consumes 1.
+- A magic ring, `DEC`, `INVDEC` or a stitch with `TOG` cannot be worked into a single
+  stitch; inside a group they are a validation error (`INVALID_GROUP`).
+- In the row notation a group is written `(3 fM) in dieselbe M` / `(3 sc) in same st`.
+
+```json
+{ "kind": "repeat", "times": 6, "ops": [{ "kind": "group", "ops": [{ "kind": "stitch", "code": "SC", "count": 3 }] }] }
+```
+
+Worked into a round of 6, this round consumes 6 and produces 18. A V-stitch is
+`{ "kind": "group", "ops": [DC, CH, DC] }`: it consumes 1 and produces 2 (the chain counts
+for nothing, as everywhere). In the 3D model the stitches of a group fan out of their shared
+stitch like the two stitches of an increase.
+
+### Finish and stuffing
+
+`PartContent.finish` says how the last round is closed:
+
+| `finish` | Meaning |
+|---|---|
+| `"open"` | left open (an arm sewn on open, a hat) |
+| `"gather"` | pulled shut through the front loops (the end of a ball) |
+| `"flat"` | flattened and crocheted shut through both layers (an ear, a flat arm) |
+
+`PartContent.stuffing` is `"none"`, `"light"` or `"firm"`. Without these fields the engine
+guesses: a piece that starts with a magic ring, consists of rounds and ends with fewer than
+half the stitches of its widest round is gathered and stuffed firmly; anything else is open
+and not stuffed. A flat-finished part is not stuffed unless it says so.
+
+### Assembly
+
+`assembly` places parts, safety eyes and embroidery on other parts. Parts are referenced by
+`BuilderPart.id`, which has to be unique and stay the same when parts are renamed or moved.
+
+- `row`: the placement sits between this row of the target and the next one.
+- `angle`: degrees around the target's rounds. `0` is the **front**, opposite the start of the
+  round (where the jogs of a spiral line up at the back); positive angles turn to the right
+  **as seen from the front**, so `90` is on the right of the picture and `-90` on the left.
+- `spacing` is in stitches, `size` in millimetres.
+
+The angle refers to the target part in its **own pose**, the pose the engine relaxes every
+part into:
+
+- Rounds: **up is the direction the rounds grow**, the magic ring (the first round) is at the
+  bottom. "Seen from the front" means looking at the front (angle 0) with the rounds growing
+  upwards. This holds for every part, also for one worked from the top down (a hat, a head
+  started at the crown): its angles are still counted with its first round at the bottom. Turned
+  the right way up, such a part has right and left swapped — that is up to the assembly in 3D,
+  which places the parts; the placement itself never depends on how a part is put on.
+- Flat pieces (rows): the piece lies with its rows running left to right and growing upwards,
+  the front (the side the surface normal points to) facing the viewer. The angle runs along
+  the row: `-180` is the left end, `0` the middle, `180` the right end; the normal is the
+  front's.
+
+```json
+"assembly": [
+  { "id": "eyes", "kind": "eyes", "target": "head", "row": "r9", "angle": 0, "spacing": 6, "size": 8 },
+  { "id": "ear-l", "kind": "attach", "part": "ear", "target": "head", "row": "r4", "angle": -40, "note": "sew on flat" },
+  { "id": "nose", "kind": "embroidery", "target": "head", "row": "r11", "angle": 0, "size": 4 }
+]
+```
+
+`placementAnchor(graph, rowId, angle)` returns the point and the outward normal of a
+placement on a relaxed part.
 
 ## Share links
 
@@ -169,7 +343,7 @@ Encoders must not produce payloads beyond these limits.
    **canonical payload**; links passed on to other pages carry it in this form.
 3. Check the length limit and the `v1.` prefix, decode base64url, inflate within the limit.
 4. Decode UTF-8 strictly, parse JSON, check the nesting depth, then validate against
-   `BuilderExport` (`schemaVersion: 1`). Anything that fails is rejected — never partially
+   `BuilderExport` (`schemaVersion` 1 or 2). Anything that fails is rejected — never partially
    shown.
 
 The reference decoder reports failures as `ShareDecodeError` with a `code`: `malformed`
@@ -194,7 +368,9 @@ replaces a document that is not empty.
 
 ```json
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
+  "finish": "gather",
+  "stuffing": "firm",
   "rows": [
     { "id": "r1", "type": "round", "ops": [{ "kind": "stitch", "code": "MR", "count": 1 }, { "kind": "stitch", "code": "SC", "count": 6 }], "stitchCountTarget": 6 },
     { "id": "r2", "type": "round", "ops": [{ "kind": "stitch", "code": "INC", "count": 6 }], "stitchCountTarget": 12 },

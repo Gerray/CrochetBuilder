@@ -13,6 +13,7 @@ import {
   isInstructionRow,
   stitchYarnRadius,
   toMesh,
+  type Finish,
   type Gauge,
   type MeshStyle,
   type Model,
@@ -69,8 +70,8 @@ export interface PreviewModel {
  * The fabric surface behind the stitch lattice, moved back by about a yarn radius along its
  * normals so the yarn always lies in front of it.
  */
-export function backingOf(graph: StitchGraph): MeshBacking {
-  const surface = toMesh(graph, "surface", { smooth: "auto" });
+export function backingOf(graph: StitchGraph, finish?: Finish): MeshBacking {
+  const surface = toMesh(graph, "surface", { smooth: "auto", finish });
   const inset = 0.75 * stitchYarnRadius(graph.gauge);
   const positions = surface.positions;
   for (let i = 0; i < positions.length; i++) positions[i] = positions[i]! - inset * surface.normals[i]!;
@@ -107,12 +108,13 @@ export function nodeRows(model: Pick<Model, "graph">): { nodeRow: Uint32Array; r
 
 /**
  * Cache key of a relaxed model: only what shapes the stitch graph (row ids, types, ops and
- * whether a row is a free instruction) plus gauge and budget. Labels, note texts and
- * stitch-count targets do not change the model, so editing them does not relax again.
+ * whether a row is a free instruction), the part's finish and stuffing, gauge and budget.
+ * Labels, note texts and stitch-count targets do not change the model, so editing them does
+ * not relax again.
  */
 export function geometryKey(content: PartContent, gauge: Gauge | undefined, maxStitches: number): string {
   const rows = content.rows.map((r) => [r.id, r.type, r.ops, isInstructionRow(r)]);
-  return JSON.stringify([rows, gauge ?? null, maxStitches]);
+  return JSON.stringify([rows, content.finish ?? null, content.stuffing ?? null, gauge ?? null, maxStitches]);
 }
 
 /**
@@ -139,7 +141,8 @@ export class PreviewComputer {
       const { graph } = model;
       if (graph.overBudget) return { id, kind: "overBudget", stitchCount: graph.stitchCount, maxStitches };
       if (graph.nodes.length === 0) return { id, kind: "empty" };
-      const mesh = toMesh(graph, req.style, { smooth: "auto" });
+      // Close the mesh as the relaxation closed the piece (the part's finish, else the guess).
+      const mesh = toMesh(graph, req.style, { smooth: "auto", finish: model.finish });
       return {
         id,
         kind: "model",
@@ -157,7 +160,7 @@ export class PreviewComputer {
           stitchCount: graph.stitchCount,
           stitchWidthMm: graph.gauge.stitchWidthMm,
           yarnDiameterMm: graph.gauge.yarnDiameterMm,
-          ...(req.style === "stitches" ? { backing: backingOf(graph) } : {}),
+          ...(req.style === "stitches" ? { backing: backingOf(graph, model.finish) } : {}),
         },
       };
     } catch (err) {

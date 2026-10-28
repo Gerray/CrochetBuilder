@@ -11,6 +11,19 @@
  *     has 1 parent, `DEC`/`INVDEC`/`… TOG` 2, `CH`/`MR` none. An `INC` is one node that
  *     offers two anchor slots to the next row (it is two fabric stitches on one parent).
  *
+ * Format v2 constructs:
+ *   - a stitch group ("3 SC in one stitch", a shell) is a generalised `INC`: one node per
+ *     stitch, and the group as a whole takes ONE anchor slot — every stitch of it that is
+ *     worked into something has that slot as its only parent (chains and picots inside the
+ *     group have none). Their legs fan out from the slot like an INC's (`StitchNode.lean`,
+ *     scaled by `LEG_LEAN`); each stitch offers its own slots to the next row, so 6 groups of
+ *     3 SC on a round of 6 give a round of 18;
+ *   - `BOBBLE` / `PUFF` / `POPCORN` are ordinary one-stitch nodes, as tall as a DC
+ *     (`STITCH_HEIGHT_FACTOR`), with a `bulge` rendering hint;
+ *   - `PICOT` is a decorative node of zero width and height: it sits on the yarn path between
+ *     its neighbours, has no parent, offers no slot and is not part of the fabric
+ *     (`isFabricNode`), so it never shapes the piece.
+ *
  * Anchors (what a row offers the next one) follow `anchorsOffered` in validate.ts: one slot
  * per produced fabric stitch, except a foundation chain (a row of only `CH`), which offers
  * one slot per chain. A row that contains `MR` is a ring row: its MR node sits at the origin
@@ -31,7 +44,7 @@
  */
 
 import { expandRow, isInstructionRow } from "./expand.js";
-import { resolveGauge, STITCH_HEIGHT_FACTOR, type Gauge, type ResolvedGauge } from "./gauge.js";
+import { resolveGauge, STITCH_BULGE, STITCH_HEIGHT_FACTOR, type Gauge, type ResolvedGauge } from "./gauge.js";
 import { STITCH_PROPERTIES, type Mod, type PartContent, type StitchCode } from "./schema.js";
 import { consumesOfAtom, countPartAtoms, DEFAULT_MAX_STITCHES } from "./validate.js";
 
@@ -71,6 +84,28 @@ export interface StitchNode {
    * the yarn to the next stitch's height instead of adding width.
    */
   lift: boolean;
+  /**
+   * Format v2 stitch group: the first node of the group this stitch belongs to. All stitches
+   * of a group are worked into the same anchor slot (like the two stitches of an `INC`).
+   */
+  group?: NodeId;
+  /**
+   * Group stitches only: how far the stitch's foot leans from the shared slot along the row,
+   * in stitch widths before `LEG_LEAN` (the offset of the stitch's centre from the centre of
+   * the group's width; the outer stitches of "3 SC in one" lean −1 and +1, the middle one 0).
+   */
+  lean?: number;
+  /** Bobble family: how far the stitch stands proud of the fabric (`STITCH_BULGE`). */
+  bulge?: number;
+}
+
+/**
+ * Whether a node is part of the fabric of its row: not a turning/standing chain (`lift`),
+ * not the magic ring and not a picot (decorative, zero width). The relaxation's rings and
+ * bending, the measurements and the mesh frames work on these.
+ */
+export function isFabricNode(node: StitchNode): boolean {
+  return !node.lift && node.code !== "MR" && node.code !== "PICOT";
 }
 
 /** One anchor slot consumed by a stitch (see `StitchNode.parentSlots`). */
@@ -161,7 +196,7 @@ interface Slot {
 export const LEG_LEAN = 0.7;
 
 function spanOf(code: StitchCode): number {
-  if (code === "MR") return 0;
+  if (code === "MR" || code === "PICOT") return 0;
   if (code === "CH") return 1;
   return Math.max(1, STITCH_PROPERTIES[code].producesStitches);
 }
@@ -192,7 +227,8 @@ export function buildGraph(content: PartContent, gauge?: Gauge, opts: BuildGraph
   const nodes: StitchNode[] = [];
   const rows: GraphRow[] = [];
   const parentDx: number[][] = []; // per node: horizontal offset to each parent (mm)
-  const consumes: number[] = [];
+  const consumes: number[] = []; // per node: anchors its own code consumes (0 in a chain row)
+  const groupPos: number[] = []; // per node: position within its stitch group, −1 outside
 
   let globalIndex = 0;
   let lastNode: NodeId | null = null;
@@ -233,9 +269,12 @@ export function buildGraph(content: PartContent, gauge?: Gauge, opts: BuildGraph
         lift,
       };
       if (atom.modifiers) node.modifiers = [...atom.modifiers];
+      const bulge = STITCH_BULGE[code];
+      if (bulge !== undefined) node.bulge = bulge;
       nodes.push(node);
       parentDx.push([]);
       consumes.push(kind === "chain" ? 0 : c);
+      groupPos.push(atom.group ?? -1);
       lastNode = node.id;
     });
     globalIndex += atomCount;
@@ -247,6 +286,25 @@ export function buildGraph(content: PartContent, gauge?: Gauge, opts: BuildGraph
         const n = nodes[id]!;
         if (n.code !== "CH" || consumes[id]! > 0) break;
         n.lift = true;
+      }
+    }
+
+    // Stitch groups: mark the members and how far each one's foot leans from the shared slot.
+    for (let id = firstNode; id < firstNode + nodeCount; id++) {
+      if (groupPos[id] !== 0) continue;
+      let end = id + 1;
+      while (end < firstNode + nodeCount && groupPos[end]! > 0) end++;
+      const fabric: number[] = [];
+      for (let k = id; k < end; k++) {
+        nodes[k]!.group = id;
+        if (isFabricNode(nodes[k]!)) fabric.push(k);
+      }
+      const width = fabric.reduce((s, k) => s + nodes[k]!.span, 0);
+      let cum = 0;
+      for (const k of fabric) {
+        const span = nodes[k]!.span;
+        nodes[k]!.lean = cum + span / 2 - width / 2;
+        cum += span;
       }
     }
 
@@ -267,11 +325,41 @@ export function buildGraph(content: PartContent, gauge?: Gauge, opts: BuildGraph
       const slots = reversed
         ? prevSlots.map((s) => ({ node: s.node, index: s.index, offset: -s.offset })).reverse()
         : prevSlots;
+      // A stitch group takes one slot, at its first stitch that is worked into something; a group
+      // of only chains and picots takes none (as `consumesOfGroup` in validation).
       let total = 0;
-      for (let id = firstNode; id < firstNode + nodeCount; id++) total += consumes[id]!;
+      let counted = false;
+      for (let id = firstNode; id < firstNode + nodeCount; id++) {
+        if (groupPos[id]! < 0) {
+          total += consumes[id]!;
+          continue;
+        }
+        if (groupPos[id] === 0) counted = false;
+        if (consumes[id]! > 0 && !counted) {
+          total++;
+          counted = true;
+        }
+      }
       // Working into a foundation chain with fewer stitches than chains: skip from the hook.
       let cursor = prevRow!.kind === "chain" && total < slots.length ? slots.length - total : 0;
+      let groupSlot: Slot | null = null;
       for (let id = firstNode; id < firstNode + nodeCount; id++) {
+        if (groupPos[id]! >= 0) {
+          if (groupPos[id] === 0) groupSlot = null;
+          // Stitches of the group that are worked into something (not its chains or picots)
+          // all go into the group's slot, their legs fanning out like an INC's.
+          if (consumes[id]! > 0) {
+            if (!groupSlot) {
+              groupSlot = slots[Math.min(cursor, slots.length - 1)]!;
+              cursor++;
+            }
+            const node = nodes[id]!;
+            node.parents.push(groupSlot.node);
+            node.parentSlots = [{ node: groupSlot.node, slot: groupSlot.index }];
+            parentDx[id]!.push(groupSlot.offset + LEG_LEAN * (node.lean ?? 0) * w);
+          }
+          continue;
+        }
         const c = consumes[id]!;
         if (c === 0) continue;
         const sums = new Map<NodeId, { dx: number; n: number }>();

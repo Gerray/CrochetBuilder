@@ -23,11 +23,16 @@
  * Every vertex carries the node it belongs to (`nodeIndex`), so the app can highlight a row
  * or the stitch under the guided cursor (`graph.nodes[nodeIndex[v]].rowId`). The closing pole
  * belongs to the last stitch of the last round, a vertex added by subdivision to the nearer
- * end of the edge it splits.
+ * end of the edge it splits. With `nodeColors` (format v2 colours, `nodeColorIndices`) every
+ * vertex also carries its palette index (`colorIndex`).
+ *
+ * A flat finish (`finish: "flat"`) closes the surface across the flattened last round with a
+ * strip instead of a pole.
  */
 
-import type { StitchGraph } from "./graph.js";
-import { isClosedPiece, newellNormal, signedVolume } from "./relax.js";
+import { isFabricNode, type StitchGraph } from "./graph.js";
+import { newellNormal, resolveFinish, seamStrip, signedVolume } from "./relax.js";
+import type { Finish } from "./schema.js";
 import { stitchMesh } from "./stitch-mesh.js";
 
 export type MeshStyle = "stitches" | "tube" | "points" | "surface";
@@ -57,6 +62,17 @@ export interface MeshOptions {
    * runs on to the pole). Default: `isClosedPiece`. Pass the same value as to `relax`.
    */
   closed?: boolean;
+  /**
+   * How the last round is finished, as for `relax` (wins over `closed`). `"gather"` is a
+   * closed piece; `"flat"` closes the surface with a strip across the seam instead of a
+   * pole (the stitches and tube styles leave the seam as it lies).
+   */
+  finish?: Finish;
+  /**
+   * Palette index per graph node (`nodeColorIndices`). When given, `MeshData.colorIndex`
+   * carries it per vertex, so a renderer can colour the piece.
+   */
+  nodeColors?: ArrayLike<number>;
 }
 
 /** `smooth: "auto"` subdivides pieces below this many nodes (a step quadruples the triangles). */
@@ -74,13 +90,26 @@ export interface MeshData {
   indices: Uint32Array;
   /** Graph node of every vertex. */
   nodeIndex: Uint32Array;
+  /** Palette index of every vertex (`nodeColors[nodeIndex[v]]`); only with `nodeColors`. */
+  colorIndex?: Uint16Array;
 }
 
 /** Build mesh data for a graph in the given style. */
 export function toMesh(graph: StitchGraph, style: MeshStyle, opts: MeshOptions = {}): MeshData {
-  const closed = typeof opts.closed === "boolean" ? opts.closed : isClosedPiece(graph);
+  const mesh = buildMesh(graph, style, opts);
+  if (opts.nodeColors) {
+    const colors = opts.nodeColors;
+    const colorIndex = new Uint16Array(mesh.nodeIndex.length);
+    for (let v = 0; v < colorIndex.length; v++) colorIndex[v] = colors[mesh.nodeIndex[v]!] ?? 0;
+    mesh.colorIndex = colorIndex;
+  }
+  return mesh;
+}
+
+function buildMesh(graph: StitchGraph, style: MeshStyle, opts: MeshOptions): MeshData {
+  const finish = resolveFinish(graph, opts);
   const n = graph.nodes.length;
-  const surface = fabricSurface(graph, closed);
+  const surface = fabricSurface(graph, finish);
   if (style === "tube") return tubeMesh(graph, opts, surface);
   // Per-node normals (the pole, if any, comes after the nodes).
   const nodeNormals = surface.normals.slice(0, 3 * n);
@@ -145,17 +174,25 @@ interface Surface {
 }
 
 /**
- * The fabric surface: the graph's triangles wound outwards and, for a closed piece, the
- * last round fanned to its closing pole.
+ * The fabric surface: the graph's triangles wound outwards and, for a gathered piece, the
+ * last round fanned to its closing pole; for a flat finish, the last round closed by a strip
+ * across its seam (no pole).
  */
-function fabricSurface(graph: StitchGraph, closed: boolean): Surface {
+function fabricSurface(graph: StitchGraph, finish: Finish): Surface {
   const n = graph.nodes.length;
   const tris = outwardTriangles(graph);
   const identity = new Uint32Array(n);
   for (let i = 0; i < n; i++) identity[i] = i;
   const open = vertexNormals(graph.positions, n, tris, n);
-  const ring = closed ? closingRing(graph) : null;
-  if (!ring) return { pos: graph.positions, tris, normals: open, nodeIndex: identity, pole: -1, ring: [] };
+  const ring = finish !== "open" ? closingRing(graph) : null;
+  if (ring && finish === "flat" && ring.length >= 4) {
+    const strip = seamTriangles(tris, ring, n);
+    const closed = new Uint32Array(tris.length + strip.length);
+    closed.set(tris);
+    closed.set(strip, tris.length);
+    return { pos: graph.positions, tris: closed, normals: vertexNormals(graph.positions, n, closed, n), nodeIndex: identity, pole: -1, ring: [] };
+  }
+  if (!ring || finish !== "gather") return { pos: graph.positions, tris, normals: open, nodeIndex: identity, pole: -1, ring: [] };
 
   const pole = n;
   const pos = new Float64Array(3 * (n + 1));
@@ -179,8 +216,7 @@ function closingRing(graph: StitchGraph): number[] | null {
   if (!last || !last.closed) return null;
   const ids: number[] = [];
   for (let id = last.firstNode; id < last.firstNode + last.nodeCount; id++) {
-    const node = graph.nodes[id]!;
-    if (!node.lift && node.code !== "MR") ids.push(id);
+    if (isFabricNode(graph.nodes[id]!)) ids.push(id);
   }
   return ids.length >= 3 ? ids : null;
 }
@@ -242,21 +278,41 @@ function polePosition(pos: Float64Array, n: number, ring: number[], normals: Flo
   return [cx + h * ax, cy + h * ay, cz + h * az];
 }
 
-/** The cap: a fan from the pole over every edge of the ring, wound like the fabric next to it. */
-function capTriangles(tris: Uint32Array, ring: number[], pole: number): Uint32Array {
-  const N = pole + 1;
+/**
+ * Whether a cap over `ring` (wound in the ring's working order) must be flipped to match the
+ * surface `tris`: a consistently wound surface runs each rim edge one way, the cap must run it
+ * the other. `N`: an upper bound of the vertex indices.
+ */
+function capFlipped(tris: Uint32Array, ring: number[], N: number): boolean {
   const directed = new Set<number>();
   for (let t = 0; t < tris.length; t += 3) {
     for (let j = 0; j < 3; j++) directed.add(tris[t + j]! * N + tris[t + ((j + 1) % 3)]!);
   }
-  // A consistently wound surface runs each rim edge one way; the cap must run it the other.
   let along = 0, against = 0;
   for (let k = 0; k < ring.length; k++) {
     const a = ring[k]!, b = ring[(k + 1) % ring.length]!;
     if (directed.has(a * N + b)) along++;
     if (directed.has(b * N + a)) against++;
   }
-  const flip = along > against;
+  return along > against;
+}
+
+/** The flat seam's cap: a strip across the flattened last round (`seamStrip`), wound like the fabric. */
+function seamTriangles(tris: Uint32Array, ring: number[], n: number): Uint32Array {
+  const flip = capFlipped(tris, ring, n);
+  const strip = seamStrip(ring.length);
+  const out = new Uint32Array(3 * strip.length);
+  strip.forEach(([a, b, c], k) => {
+    out[3 * k] = ring[a]!;
+    out[3 * k + 1] = ring[flip ? c : b]!;
+    out[3 * k + 2] = ring[flip ? b : c]!;
+  });
+  return out;
+}
+
+/** The cap: a fan from the pole over every edge of the ring, wound like the fabric next to it. */
+function capTriangles(tris: Uint32Array, ring: number[], pole: number): Uint32Array {
+  const flip = capFlipped(tris, ring, pole + 1);
   const out = new Uint32Array(3 * ring.length);
   for (let k = 0; k < ring.length; k++) {
     const a = ring[k]!, b = ring[(k + 1) % ring.length]!;

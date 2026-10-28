@@ -13,6 +13,7 @@
 
 import {
   BuilderExportSchema,
+  withCurrentVersion,
   MAX_STITCH_COUNT_TARGET,
   opsWithinLimits,
 } from "@crochetbuilder/engine";
@@ -172,7 +173,9 @@ export async function loadState(): Promise<LoadResult> {
  * neither store took the write.
  */
 export async function saveState(state: { doc: BuilderDoc; pinned: readonly string[] }): Promise<void> {
-  const record: StoredState = { doc: state.doc, pinned: [...state.pinned], savedAt: Date.now() };
+  // Stamped with the current format version, so a document opened as version 1 and then given
+  // a version-2 feature still loads.
+  const record: StoredState = { doc: withCurrentVersion(state.doc), pinned: [...state.pinned], savedAt: Date.now() };
   const lsOk = lsPut(LS_KEY, record);
   const idbOk = await idbPut(KEY, record);
   if (!lsOk && !idbOk) throw new Error("Speichern fehlgeschlagen");

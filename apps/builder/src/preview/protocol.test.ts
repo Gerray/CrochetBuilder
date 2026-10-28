@@ -99,6 +99,43 @@ describe("PreviewComputer", () => {
     expect(geometryKey(DISC, undefined, 10)).not.toBe(geometryKey(turned, undefined, 10));
   });
 
+  it("closes the mesh with the part's finish: an open sphere gets no pole", () => {
+    const sphere: PartContent = {
+      schemaVersion: 2,
+      rows: [
+        row("r1", [{ kind: "stitch", code: "MR", count: 1 }, { kind: "stitch", code: "SC", count: 6 }], 6),
+        row("r2", [{ kind: "stitch", code: "INC", count: 6 }], 12),
+        row("r3", [{ kind: "repeat", times: 6, ops: [{ kind: "stitch", code: "SC", count: 1 }, { kind: "stitch", code: "INC", count: 1 }] }], 18),
+        row("r4", [{ kind: "stitch", code: "SC", count: 18 }], 18),
+        row("r5", [{ kind: "repeat", times: 6, ops: [{ kind: "stitch", code: "SC", count: 1 }, { kind: "stitch", code: "DEC", count: 1 }] }], 12),
+        row("r6", [{ kind: "stitch", code: "DEC", count: 6 }], 6),
+      ],
+    };
+    /** Triangles of the surface mesh and of the stitch view's backing. */
+    const triangles = (content: PartContent) => {
+      const s = new PreviewComputer().compute({ id: 1, content, gauge: undefined, style: "surface" });
+      const l = new PreviewComputer().compute({ id: 2, content, gauge: undefined, style: "stitches" });
+      if (s.kind !== "model" || l.kind !== "model") throw new Error("no model");
+      return [s.model.indices.length / 3, l.model.backing!.indices.length / 3];
+    };
+    // Gathered (the guess for this sphere) the last round is fanned to a pole: 6 cap triangles,
+    // ×4 after one smoothing step. Open, the cap is missing in the surface and in the backing.
+    const [gatheredSurface, gatheredBacking] = triangles(sphere) as [number, number];
+    expect(triangles({ ...sphere, finish: "open" })).toEqual([gatheredSurface - 24, gatheredBacking - 24]);
+    expect(triangles({ ...sphere, finish: "gather" })).toEqual([gatheredSurface, gatheredBacking]);
+  });
+
+  it("relaxes again when only the finish or the stuffing changes", () => {
+    const build = vi.fn(buildModel);
+    const c = new PreviewComputer(build);
+    c.compute(req(1, { ...DISC, schemaVersion: 2 }));
+    c.compute(req(2, { ...DISC, schemaVersion: 2, stuffing: "light" }));
+    expect(build).toHaveBeenCalledTimes(2);
+    c.compute(req(3, { ...DISC, schemaVersion: 2, stuffing: "light", finish: "flat" }));
+    expect(build).toHaveBeenCalledTimes(3);
+    expect(geometryKey({ ...DISC, stuffing: "firm" }, undefined, 10)).not.toBe(geometryKey({ ...DISC, stuffing: "none" }, undefined, 10));
+  });
+
   it("lists every buffer of a model result for transfer, none otherwise", () => {
     const result = new PreviewComputer().compute(req(1));
     const buffers = transferablesOf(result);

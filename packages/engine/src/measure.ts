@@ -7,7 +7,7 @@
  * rows, `height` across them and `depth` is the thickness.
  */
 
-import type { StitchGraph } from "./graph.js";
+import { isFabricNode, type StitchGraph } from "./graph.js";
 
 export interface Size {
   /** Extent along X (mm). */
@@ -67,8 +67,7 @@ export function measureRounds(graph: StitchGraph): RoundMeasure[] {
     if (!row.closed) continue;
     const ids: number[] = [];
     for (let id = row.firstNode; id < row.firstNode + row.nodeCount; id++) {
-      const node = graph.nodes[id]!;
-      if (!node.lift && node.code !== "MR") ids.push(id);
+      if (isFabricNode(graph.nodes[id]!)) ids.push(id);
     }
     if (ids.length === 0) continue;
     let cx = 0, cy = 0, cz = 0;

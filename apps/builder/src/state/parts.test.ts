@@ -42,7 +42,7 @@ describe("parts", () => {
     expect(s.doc.parts[2]).toEqual({
       name: "Teil 3",
       quantity: 1,
-      content: { schemaVersion: 1, rows: [{ id: "r3", type: "round", ops: [], stitchCountTarget: 0 }] },
+      content: { schemaVersion: 2, rows: [{ id: "r3", type: "round", ops: [], stitchCountTarget: 0 }] },
     });
     expect(BuilderExportSchema.safeParse(s.doc).success).toBe(true);
     // A new name never repeats one in use.

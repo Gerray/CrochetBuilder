@@ -20,6 +20,8 @@
  *   - wraps: one (HDC, DC), two (TR) or three (DTR) slanted bars across a tall post;
  *   - a chain (foundation, turning or mid-row) is an elongated link lying in the fabric;
  *   - the magic ring is a small ring around its anchor;
+ *   - bobble, puff and popcorn are posts with two wraps whose top stands proud of the fabric
+ *     by `StitchNode.bulge`; a picot is a small upright loop on top of the row;
  *   - a closed piece's last round, pulled shut: the tail runs from the front loop of every
  *     stitch of that round to a small cinched ring at the closing pole (see `StitchClosing`),
  *     mirroring the magic ring with its legs at the start.
@@ -35,7 +37,7 @@
  * bounded: about 100 vertices per SC at full detail.
  */
 
-import type { StitchGraph } from "./graph.js";
+import { isFabricNode, type StitchGraph } from "./graph.js";
 
 export interface StitchMeshOptions {
   /** Yarn (tube) radius in mm. Default: `stitchYarnRadius(gauge)`. */
@@ -71,7 +73,7 @@ export function stitchYarnRadius(gauge: { yarnDiameterMm: number; stitchWidthMm:
 }
 
 /** Wraps across the post per stitch code (yarn-overs that stay visible on the post). */
-const WRAPS: Partial<Record<string, number>> = { HDC: 1, DC: 1, TR: 2, DTR: 3 };
+const WRAPS: Partial<Record<string, number>> = { HDC: 1, DC: 1, TR: 2, DTR: 3, BOBBLE: 2, PUFF: 2, POPCORN: 2 };
 
 /** Default detail for a piece of `nodes` stitches. */
 export function stitchDetail(nodes: number): { radialSegments: number; arcSamples: number } {
@@ -336,7 +338,7 @@ function frames(graph: StitchGraph, normals: Float32Array): Frame[] {
   const P = (i: number): V3 => [pos[3 * i]!, pos[3 * i + 1]!, pos[3 * i + 2]!];
   const rowOf = new Int32Array(n);
   rows.forEach((r, k) => rowOf.fill(k, r.firstNode, r.firstNode + r.nodeCount));
-  const inRow = (i: number) => !nodes[i]!.lift && nodes[i]!.code !== "MR";
+  const inRow = (i: number) => isFabricNode(nodes[i]!);
 
   const children: number[][] = Array.from({ length: n }, () => []);
   for (const node of nodes) for (const p of node.parents) children[p]!.push(node.id);
@@ -555,6 +557,12 @@ export function stitchYarn(
       emit({ kind: "ring", node: i, centre: t, e1: mul(f.d, rr), e2: mul(cross(f.n, f.d), rr) });
       continue;
     }
+    if (node.code === "PICOT") {
+      // A small upright loop on top of the row.
+      const rr = 0.25 * f.w + 0.5 * Y;
+      emit({ kind: "ring", node: i, centre: at(t, f.d, 0, f.u, rr, f.n, 0), e1: mul(f.d, rr), e2: mul(f.u, rr) });
+      continue;
+    }
     if (node.code === "CH") {
       if (node.lift && node.prev !== null) {
         const q = P(node.prev);
@@ -573,10 +581,12 @@ export function stitchYarn(
     }
     const wraps = WRAPS[node.code] ?? 0;
     const parts = Math.max(1, node.span);
+    // The bobble family stands proud of the fabric.
+    const bulge = (node.bulge ?? 0) * f.w;
     // A node that stands for two stitches (an INC offering two anchors) is drawn as two
     // stitches side by side on the same parent(s).
     for (let k = 0; k < parts; k++) {
-      const top = at(t, f.d, (k - (parts - 1) / 2) * f.w, f.u, 0, f.n, 0);
+      const top = at(t, f.d, (k - (parts - 1) / 2) * f.w, f.u, 0, f.n, bulge);
       stitch(top, f, bottoms, wraps, i);
     }
   }

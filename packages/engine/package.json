@@ -1,6 +1,6 @@
 {
   "name": "@crochetbuilder/engine",
-  "version": "0.2.0",
+  "version": "1.0.0",
   "description": "Crochet pattern engine: schema, validation, stitch graph, relaxation, mesh. No UI.",
   "license": "AGPL-3.0-only",
   "type": "module",
