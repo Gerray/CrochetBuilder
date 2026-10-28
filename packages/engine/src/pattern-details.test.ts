@@ -1,9 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
+  MAX_DETAIL_SENTENCE,
   colorChangeOf,
+  colorKey,
   eyeSizeOf,
   findPartByWord,
   finishOf,
+  finishStatementOf,
+  stuffingsOf,
   hexFromMaterials,
   hexOfColor,
   placementOf,
@@ -12,6 +16,22 @@ import {
   slugOf,
   stuffingOf,
 } from "./pattern-details.js";
+
+describe("long text", () => {
+  it("reads no sentence longer than the limit, and stays fast on long repetitive text", () => {
+    const long = `Stuff the head firmly and close the hole between rounds 3 and 4 in white. ${"x".repeat(MAX_DETAIL_SENTENCE)}`;
+    expect([colorChangeOf(long), stuffingOf(long), finishOf(long), placementOf(long)]).toEqual([null, null, null, null]);
+    for (const word of ["fill ", "fold ", "sew to ", "stuff "]) {
+      const text = word.repeat(20_000);
+      const started = performance.now();
+      colorChangeOf(text);
+      stuffingsOf(text);
+      finishOf(text);
+      placementOf(text);
+      expect(performance.now() - started, word).toBeLessThan(100);
+    }
+  });
+});
 
 describe("sentencesOf", () => {
   it("splits after sentence marks, but not before a lower-case word", () => {
@@ -64,6 +84,38 @@ describe("colours", () => {
     for (const [sentence, name] of cases) expect(colorChangeOf(sentence), sentence).toEqual({ name });
   });
 
+  it("takes no colour from choices, stripes, 'same colour' lines or things that are not yarn", () => {
+    for (const s of [
+      "Same color",
+      "Your colour",
+      "Any color",
+      "Next color",
+      "Other colour:",
+      "In the same colour, sc around.",
+      "Use a colour of your choice.",
+      "In red or pink.",
+      "In white or cream, make 2.",
+      "In black or brown.",
+      "In white and pink stripes.",
+      "In pink felt, cut two circles for the cheeks.",
+      "With black yarn, make two French knots for the eyes.",
+      "Use white safety eyes or a colour of your choice for the trim.",
+      "In white buttons.",
+      "In lilac you can make the flower.",
+    ]) {
+      expect(colorChangeOf(s), s).toBeNull();
+    }
+    expect(colorChangeOf("Body color")).toEqual({ name: "Body color" });
+  });
+
+  it("gives the main and contrast colour one key in every spelling", () => {
+    expect(colorChangeOf("With the main colour.")).toEqual({ name: "Main color" });
+    expect(colorChangeOf("With MC, ch 7.")).toEqual({ name: "Main color" });
+    expect(new Set(["Main color", "main colour", "MC", "Hauptfarbe", "Grundfarbe"].map(colorKey))).toEqual(new Set(["main"]));
+    expect(new Set(["Contrast color", "CC", "Kontrastfarbe"].map(colorKey))).toEqual(new Set(["contrast"]));
+    expect(colorKey("Weiß")).toBe("weiß");
+  });
+
   it("knows a colour change without a name, and ignores thread colours and other words", () => {
     expect(colorChangeOf("Change colour.")).toEqual({});
     expect(colorChangeOf("Farbwechsel.")).toEqual({});
@@ -93,19 +145,41 @@ describe("colours", () => {
 
 describe("stuffing", () => {
   it("reads how firmly to stuff", () => {
-    expect(stuffingOf("Stuff the head firmly.")).toEqual({ value: "firm", specific: true, objectWords: ["head"] });
-    expect(stuffingOf("Stuff lightly.")).toMatchObject({ value: "light", specific: true });
-    expect(stuffingOf("We fill only the legs, not much.")).toMatchObject({ value: "light", objectWords: ["legs"] });
-    expect(stuffingOf("Do not stuff the fins.")).toEqual({ value: "none", specific: true, objectWords: ["fins"] });
-    expect(stuffingOf("Stuff as you go.")).toMatchObject({ value: "firm", specific: false });
+    expect(stuffingOf("Stuff the head firmly.")).toEqual({ value: "firm", specific: true, object: "head" });
+    expect(stuffingOf("Stuff lightly.")).toEqual({ value: "light", specific: true });
+    expect(stuffingOf("We fill only the legs, not much.")).toMatchObject({ value: "light", object: "legs" });
+    expect(stuffingOf("Do not stuff the fins.")).toEqual({ value: "none", specific: true, object: "fins" });
+    expect(stuffingOf("Stuff as you go.")).toEqual({ value: "firm", specific: false });
+    expect(stuffingOf("Stuff it well.")).toEqual({ value: "firm", specific: true });
     expect(stuffingOf("Finish stuffing.")).toMatchObject({ value: "firm", specific: false });
-    expect(stuffingOf("Kopf fest füllen.")).toMatchObject({ value: "firm", specific: true, objectWords: ["Kopf", "fest", "füllen"] });
+    expect(stuffingOf("Stuff only the bottom of the legs.")).toMatchObject({ object: "legs" });
+    expect(stuffingOf("The ears are not stuffed.")).toMatchObject({ value: "none", object: "ears" });
+    expect(stuffingOf("Kopf fest füllen.")).toEqual({ value: "firm", specific: true, words: ["Kopf", "fest", "füllen"] });
     expect(stuffingOf("Ohren nicht füllen.")).toMatchObject({ value: "none" });
     expect(stuffingOf("Leicht füllen.")).toMatchObject({ value: "light" });
   });
 
-  it("does not take filling with stitches for stuffing", () => {
+  it("reads clause by clause: a negation only counts in its own clause", () => {
+    expect(stuffingsOf("Stuff the body firmly but do not stuff the arms.")).toEqual([
+      { value: "firm", specific: true, object: "body" },
+      { value: "none", specific: true, object: "arms" },
+    ]);
+    expect(stuffingsOf("Stuff, but not too firmly.")).toEqual([{ value: "light", specific: true }]);
+    expect(stuffingsOf("Stuff not too firmly.")).toEqual([{ value: "light", specific: true }]);
+    expect(stuffingsOf("Stuff well, leave the neck unstuffed.")).toEqual([
+      { value: "firm", specific: true },
+      { value: "none", specific: true, object: "neck" },
+    ]);
+    expect(stuffingsOf("Stuff lightly, the legs should stay floppy.")).toEqual([{ value: "light", specific: true }]);
+    expect(stuffingsOf("Den Kopf füllen, aber nicht zu fest.")).toMatchObject([{ value: "light" }]);
+  });
+
+  it("does not take filling in, filling with stitches or 'before stuffing' for stuffing", () => {
     expect(stuffingOf("Fill the teeth with stitches.")).toBeNull();
+    expect(stuffingOf("Fill in the eyes with black yarn.")).toBeNull();
+    expect(stuffingOf("Fill in the gaps with a few stitches.")).toBeNull();
+    expect(stuffingOf("Insert the eyes before stuffing.")).toBeNull();
+    expect(stuffingOf("Leave a gap for stuffing.")).toBeNull();
     expect(stuffingOf("Sew the ears to the head.")).toBeNull();
   });
 });
@@ -132,6 +206,46 @@ describe("finish", () => {
     expect(finishOf("Sc the opening closed and leave a long tail for sewing.")).toBe("flat");
     expect(finishOf("Pull the strands through and pull tight.")).toBeNull();
     expect(finishOf("Join with a sl st.")).toBeNull();
+  });
+
+  it("reads a negated close first", () => {
+    expect(finishOf("Do not close.")).toBe("open");
+    expect(finishOf("Do not close the hole.")).toBe("open");
+    expect(finishOf("Nicht schließen.")).toBe("open");
+    expect(finishOf("Don't close the hole yet, stuff first.")).toBeNull();
+    expect(finishOf("Note: do not close the rounds with a sl st.")).toBeNull();
+    expect(finishOf("Work in a spiral, do not close the rounds.")).toBeNull();
+  });
+
+  it("does not take closing the magic ring or a round for a finish", () => {
+    for (const s of [
+      "Close the magic ring.",
+      "Pull the tail to close the magic ring.",
+      "Make a magic ring, pull to close.",
+      "Close the hole in the magic ring.",
+      "Pull tight to close the round.",
+      "Rnd 1: 6 sc in MR, pull tight to close (6)",
+      "Fadenring zusammenziehen.",
+    ]) {
+      expect(finishOf(s), s).toBeNull();
+    }
+  });
+
+  it("reads a part sewn on as open, a brim folded up as no finish", () => {
+    expect(finishOf("Close the opening later when you sew it to the head.")).toBe("open");
+    expect(finishOf("Close the opening by sewing it to the body.")).toBe("open");
+    expect(finishOf("Flatten and sew to the head.")).toBe("open");
+    expect(finishOf("Fold flat and sew together to the head.")).toBe("open");
+    expect(finishOf("Sew the arms to the body.")).toBeNull(); // about other parts
+    expect(finishOf("Fold in half, crochet together, sew to the head.")).toBe("flat"); // shut first, then sewn on
+    expect(finishOf("Fold the brim up and sew together.")).toBeNull();
+    expect(finishOf("Fold the cuff and crochet through both layers.")).toBeNull();
+  });
+
+  it("marks 'leave a tail for sewing' as a weak open", () => {
+    expect(finishStatementOf("F/O and leave a long tail for sewing.")).toEqual({ finish: "open", weak: true });
+    expect(finishStatementOf("Leave open.")).toEqual({ finish: "open", weak: false });
+    expect(finishStatementOf("Close the hole.")).toEqual({ finish: "gather", weak: false });
   });
 });
 
@@ -187,6 +301,13 @@ describe("placements", () => {
       objectWords: ["Ohren", "zwischen", "Runde", "und"],
     });
     expect(placementOf("Embroider the nose between rounds 10 and 11.")).toMatchObject({ kind: "embroidery", round: 10 });
+    // "Sew on the tail": the tail is sewn on, it is not where it goes.
+    expect(placementOf("Sew on the tail between rows 8 and 9.")).toEqual({
+      kind: "attach",
+      round: 8,
+      objectWords: ["the", "tail", "between", "rows", "and"],
+      targetWords: [],
+    });
     expect(placementOf("Crochet 6 sc between rounds 3 and 4.")).toBeNull();
   });
 

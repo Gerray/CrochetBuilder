@@ -220,6 +220,17 @@ describe("groups and special stitches as patterns write them", () => {
     expect(read("3hdc inc, 3 sc (9)", "en_us")).not.toHaveProperty("warnings");
   });
 
+  it("lets the written count choose between the two readings of '3 hdc inc'", () => {
+    const hdcInc = grp([st("HDC", 2)]);
+    // Only "3 hdc, inc" makes 8.
+    expect(read("3 hdc inc, 3 sc (8)", "en_us")).toEqual({ ok: true, ops: [st("HDC", 3), st("INC"), st("SC", 3)], stitchCountTarget: 8 });
+    // Only three increases make 9.
+    expect(read("3 hdc inc, 3 sc (9)", "en_us")).toEqual({ ok: true, ops: [rep(3, [hdcInc]), st("SC", 3)], stitchCountTarget: 9 });
+    // "2 hdc inc" makes 4 either way; 20 fits neither: flagged, read as increases.
+    expect(read("2 hdc inc, 4 sc (8)", "en_us")).toMatchObject({ ops: [rep(2, [hdcInc]), st("SC", 4)], warnings: ["increase-ambiguous"] });
+    expect(read("3 hdc inc, 3 sc (20)", "en_us")).toMatchObject({ warnings: ["increase-ambiguous"] });
+  });
+
   it("reads bobbles, puffs, popcorns and picots with their loop count in the name", () => {
     const cases: Array<[string, NotationLocale, Op[]]> = [
       ["2 sc, 5-dc bobble, 2 sc", "en_us", [st("SC", 2), st("BOBBLE"), st("SC", 2)]],

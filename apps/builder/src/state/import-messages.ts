@@ -25,6 +25,10 @@ export function importIssueMessage(issue: Pick<ImportIssue, "code" | "message">)
       return "Farbwechsel ohne Farbangabe – bitte die Farbe an der Runde selbst setzen.";
     case "ASSEMBLY_ANGLE_GUESSED":
       return "Annähstelle übernommen; die Richtung steht nicht im Text – vorne (0°) gesetzt, bitte prüfen.";
+    case "DETAIL_UNASSIGNED":
+      return "Kein Teil der Anleitung genannt – Füllung, Abschluss oder Montage nicht übernommen, der Text bleibt als Hinweis stehen.";
+    case "PLACEMENT_ROUND_UNKNOWN":
+      return "Diese Runde gibt es im Teil nicht (oder sie wurde nicht gelesen) – Montage nicht übernommen, der Text bleibt als Hinweis stehen.";
     case "UNSUPPORTED_ROUND_JOIN":
       return "Runde mit Kettmasche geschlossen – als Spiralrunde übernommen.";
     case "NEEDS_PREVIOUS_COUNT":

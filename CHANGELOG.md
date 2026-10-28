@@ -23,8 +23,8 @@ All notable changes to this project are documented here. The format follows
 - `modifierAllowed` allows `FP` / `BP` only on SC, HDC, DC, TR and DTR; `normalizeModifiers`
   refuses FP together with BP (the same rules as validation).
 - Whole-pattern import: `ImportIssueCode` loses `UNSUPPORTED_GROUP` and `UNSUPPORTED_COLOR`
-  (both are read now) and gains `COLOR_UNNAMED`, `ASSEMBLY_ANGLE_GUESSED` and
-  `AMBIGUOUS_INCREASE`; `UNSUPPORTED_SPECIAL_STITCH` only covers stitches without a code
+  (both are read now) and gains `COLOR_UNNAMED`, `ASSEMBLY_ANGLE_GUESSED`,
+  `AMBIGUOUS_INCREASE`, `DETAIL_UNASSIGNED` and `PLACEMENT_ROUND_UNKNOWN`; `UNSUPPORTED_SPECIAL_STITCH` only covers stitches without a code
   (clusters, bullions, shells …). `ImportedPart.id` and `PatternImport.colors` / `.assembly`
   are new required fields; `ParseRowWarning` gains `increase-ambiguous`.
 
@@ -78,7 +78,13 @@ All notable changes to this project are documented here. The format follows
   materials) and `Row.color` on the row after a colour change, `finish` and `stuffing` per
   part, and `assembly` placements for safety eyes and sewn-on parts; the sentences stay
   instruction rows. In German text a capitalised noun no longer starts a row ("…, 4 M
-  Abstand" stays text).
+  Abstand" stays text). When in doubt the import reports instead of guessing: sentences in an
+  assembly section apply only to a part they name, stuffing is read clause by clause and per
+  named part, a finish is the last finishing sentence after the last stitch row (closing the
+  magic ring or a round, a negated close, a brim folded up and "sew it to …" are told apart),
+  placements are matched by round label only, colour choices and stripes, felt, knots and
+  "same colour" are no colour changes, and the written count decides "3 hdc inc". Sentences
+  over 300 characters are not read for details, so long lines stay fast.
 
 ## [0.2.0] — not released separately
 

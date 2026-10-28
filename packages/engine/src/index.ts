@@ -170,6 +170,7 @@ export { detectNotationLocale } from "./detect-locale.js";
 export type { LocaleDetection } from "./detect-locale.js";
 
 export { parsePatternText } from "./pattern-import.js";
+export { colorKey } from "./pattern-details.js";
 export type {
   PatternImport,
   ImportedPart,

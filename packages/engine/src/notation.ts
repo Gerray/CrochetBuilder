@@ -1069,7 +1069,7 @@ const FILL_PHRASES: RegExp[] = [
  * Rewrite a real-world row instruction into the compact notation the strict parser reads.
  * Returns the trailing stitch count and a row-level loop modifier separately.
  */
-function rewriteLenient(input: string, locale: NotationLocale): LenientText {
+function rewriteLenient(input: string, locale: NotationLocale, separateIncrease = false): LenientText {
   const sc = STITCH_ABBREVIATIONS.SC[locale];
   const inc = STITCH_ABBREVIATIONS.INC[locale];
   let s = input
@@ -1185,7 +1185,8 @@ function rewriteLenient(input: string, locale: NotationLocale): LenientText {
 
   // Increases made of taller stitches (format v2 groups): "hdc inc" = two HDC into one
   // stitch; "3 hdc-inc" / "3hdc inc" = three of them (the counts of real patterns agree).
-  // Written with a space and a count, "3 hdc inc" might also mean "3 hdc, inc": flagged.
+  // Written with a space and a count, "3 hdc inc" might also mean "3 hdc, inc": flagged, and
+  // `separateIncrease` reads it that way (for the written count to decide).
   let increaseAmbiguous = false;
   s = s.replace(
     new RegExp(`(?<![\\p{L}\\d])(?:(\\d+)\\s*)?(${GROUP_INC_TERMS})(\\s*-\\s*|\\s+)(?:inc|increases?|Zun|Zunahmen?)(?![\\p{L}])`, "giu"),
@@ -1193,7 +1194,10 @@ function rewriteLenient(input: string, locale: NotationLocale): LenientText {
       // UK "dc inc" is a plain increase (UK dc = single crochet).
       const group = resolveStitchTerm(term, locale) === "SC" ? inc : `(2 ${term}) in same st`;
       if (n === undefined || Number(n) === 1) return group;
-      if (!sep.includes("-")) increaseAmbiguous = true;
+      if (!sep.includes("-")) {
+        increaseAmbiguous = true;
+        if (separateIncrease) return `${n} ${term}, ${inc}`;
+      }
       return `${n} x (${group})`;
     },
   );
@@ -1414,9 +1418,30 @@ export function parseRowText(
     if (target !== undefined && target > MAX_STITCH_COUNT_TARGET) {
       return { ok: false, code: "too-large", position: 0, limit: MAX_STITCH_COUNT_TARGET };
     }
-    const warnings: ParseRowWarning[] = [];
-    const ops = settleAmbiguities(lenient.ops, target, info, rewritten.repFrom, warnings);
-    if (rewritten.increaseAmbiguous && target === undefined) warnings.push("increase-ambiguous");
+    let warnings: ParseRowWarning[] = [];
+    let ops = settleAmbiguities(lenient.ops, target, info, rewritten.repFrom, warnings);
+    if (rewritten.increaseAmbiguous) {
+      // "3 hdc inc": three HDC increases, or "3 hdc, inc"? The written count decides; without
+      // one, or when both or neither reading fits it, the row is flagged.
+      let fits: Op[] | undefined;
+      if (target !== undefined) {
+        const alt = rewriteLenient(text, locale, true);
+        const altInfo: ParseInfo = {};
+        const parsed = runParser(alt.text, locale, true, context, alt.rowModifier, altInfo);
+        const altWarnings: ParseRowWarning[] = [];
+        const altOps = parsed.ok ? settleAmbiguities(parsed.ops, target, altInfo, alt.repFrom, altWarnings) : undefined;
+        const mainFits = producedByOps(ops) === target;
+        const altFits = altOps !== undefined && producedByOps(altOps) === target;
+        if (altFits && !mainFits) {
+          ops = altOps;
+          warnings = altWarnings;
+          fits = altOps;
+        } else if (mainFits && !altFits) {
+          fits = ops;
+        }
+      }
+      if (!fits) warnings.push("increase-ambiguous");
+    }
     if (countWorkedStitches(ops) > MAX_ROW_STITCHES) {
       return { ok: false, code: "too-large", position: 0, limit: MAX_ROW_STITCHES };
     }

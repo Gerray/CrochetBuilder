@@ -193,17 +193,47 @@ export function hexFromMaterials(name: string, lines: readonly string[]): string
   return undefined;
 }
 
-/** "main" → "Main color", "mc" → "Main color", "cc" → "Contrast color", "grey" → "Grey". */
+/** "main" / "MC" / "main colour" → "Main color", "cc" → "Contrast color", "grey" → "Grey". */
 function colorName(raw: string): string {
   const s = raw.trim().replace(/\s+/gu, " ").replace(/^the\s+/iu, "");
   const lower = s.toLowerCase();
-  if (lower === "main" || lower === "mc") return "Main color";
+  if (lower === "main" || lower === "mc" || /^main\s+colou?r$/u.test(lower)) return "Main color";
   if (lower === "cc" || /^contrast(?:ing)?\s+colou?r$/u.test(lower)) return "Contrast color";
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
-/** Sentences about embroidery or sewing name a thread colour, not the working colour. */
-const NOT_WORKING_YARN = /\b(?:embroider\w*|sew\w*|needle|thread|stitch\s+on)\b|sticken|nähen|Nadel/iu;
+/**
+ * What makes two colour names the same palette entry: case is ignored, and the main and the
+ * contrast colour have one key in every spelling ("Main color", "main colour", "MC",
+ * "Hauptfarbe", "Grundfarbe" → "main").
+ */
+export function colorKey(name: string): string {
+  const lower = name.trim().toLowerCase().replace(/\s+/gu, " ");
+  if (/^(?:main(?: colou?r)?|mc|hauptfarbe|grundfarbe)$/u.test(lower)) return "main";
+  if (/^(?:cc|contrast(?:ing)?(?: colou?r)?|kontrastfarbe)$/u.test(lower)) return "contrast";
+  return lower;
+}
+
+/** Longest sentence the readers look at; longer text is not one instruction sentence. */
+export const MAX_DETAIL_SENTENCE = 300;
+
+/**
+ * Sentences about embroidery, sewing, felt, knots, buttons or eyes name the colour of
+ * something else, not the working colour.
+ */
+const NOT_WORKING_YARN =
+  /\b(?:embroider\w*|sew\w*|needle|thread|stitch\s+on|felt|knots?|cut|eyes?|buttons?|beads?|ribbons?)\b|sticken|nähen|Nadel|Filz|Knoten|Augen|Knöpfe|Knopf|schneiden/iu;
+/** Words of "same colour", "your colour", "next colour", "a colour of your choice": no colour named. */
+const DENY_WORDS =
+  "same|any|your|next|other|contrasting|previous|different|matching|chosen|choice|gleiche[nrs]?|andere[nrs]?|nächste[nrs]?|beliebige[nrs]?|eigene[nrs]?|deine[nrs]?";
+const COLOR_DENY = new RegExp(`(?<![\\p{L}])(?:${DENY_WORDS})(?![\\p{L}])`, "iu");
+/** "the same colour", "a colour of your choice", "die andere Farbe" in a sentence. */
+const COLOR_DENY_PHRASE = new RegExp(
+  `(?<![\\p{L}])(?:${DENY_WORDS})\\s+(?:\\p{L}+\\s+)?(?:colou?rs?|yarn|Farbe|Garn)(?![\\p{L}])|(?<![\\p{L}])colou?rs?\\s+of\\s+(?:your|the)\\s+choice`,
+  "iu",
+);
+/** "white or pink", "white and pink stripes": a choice or stripes, not one colour. */
+const AFTER_COLOR_DENY = /^\s*(?:or|and|oder|und|&|\/|stripes?|striped|Streifen|gestreift)(?![\p{L}])/iu;
 
 const COLOR_CHANGES: RegExp[] = [
   new RegExp(`\\b(?:change|switch)\\s+(?:the\\s+)?(?:colou?r|yarn)\\s+(?:to|for)\\s+(?:the\\s+)?${NAME}${END}`, "iu"),
@@ -216,7 +246,10 @@ const COLOR_CHANGES: RegExp[] = [
   new RegExp(`\\bFarbwechsel\\s*(?:zu|auf|nach|in)?\\s*:?\\s*(?:Farbe\\s+)?${NAME}${END}`, "iu"),
   new RegExp(`\\b(?:wechsle|wechseln|wechselt)\\s+(?:\\p{L}+\\s+){0,2}?(?:zu|auf|in)\\s+(?:(?:die|der)\\s+)?(?:Farbe\\s+)?${NAME}${END}`, "iu"),
   new RegExp(`\\b(?:Farbe|Garn)\\s+(?:wechseln|ändern)\\s*(?:zu|auf|in)?\\s*:?\\s*${NAME}${END}`, "iu"),
-  new RegExp(`^(?:\\d+[.)]\\s*)?(?:in|mit)\\s+(?:(?:der|dem)\\s+)?(?:Farbe\\s+)?(${PLAIN})${END}`, "iu"),
+  new RegExp(
+    `^(?:\\d+[.)]\\s*)?(?:in|mit)\\s+(?:(?:der|dem)\\s+)?(?:Farbe\\s+)?(${PLAIN})(?=\\s*(?:[.:,]|$)|\\s+(?:weiter\\p{L}*|häkeln|häkle|arbeiten|arbeite)(?![\\p{L}]))`,
+    "iu",
+  ),
 ];
 /** A whole line that names the colour of what follows: "Face color", "The color of the paws", "Color A:". */
 const COLOR_ROLE_LINE = /^(?:the\s+)?((?:\p{L}+\s+){0,2}?colou?r(?:\s+of\s+the\s+\p{L}+)?|(?:colou?r|Farbe)\s+[A-E])\s*:?\s*$/iu;
@@ -232,16 +265,23 @@ export interface ColorChange {
  * The colour a sentence switches to: "In grey.", "cc to white", "Change color to main",
  * "With Color A:", "Attach the khaki green yarn", "Farbwechsel zu Rot", "In Weiß weiterhäkeln",
  * or a line like "Face color". `{}` for a colour change without a name ("change colour"),
- * null for anything else — including thread colours for embroidery or sewing.
+ * null for anything else: thread, felt, knots, buttons or eyes in a colour; "the same / your /
+ * next colour"; a choice or stripes ("in red or pink", "in white and pink stripes"); and
+ * sentences longer than `MAX_DETAIL_SENTENCE`.
  */
 export function colorChangeOf(sentence: string): ColorChange | null {
   const s = sentence.trim();
+  if (s.length > MAX_DETAIL_SENTENCE) return null;
   const role = COLOR_ROLE_LINE.exec(s);
-  if (role) return { name: colorName(role[1]!) };
-  if (NOT_WORKING_YARN.test(s)) return null;
+  if (role) return COLOR_DENY.test(role[1]!) ? null : { name: colorName(role[1]!) };
+  if (NOT_WORKING_YARN.test(s) || COLOR_DENY_PHRASE.test(s)) return null;
   for (const re of COLOR_CHANGES) {
     const m = re.exec(s);
-    if (m) return { name: colorName(m[1]!) };
+    if (!m) continue;
+    const name = m[1]!;
+    const end = m.index + m[0].lastIndexOf(name) + name.length;
+    if (AFTER_COLOR_DENY.test(s.slice(end))) return null;
+    return { name: colorName(name) };
   }
   return COLOR_UNNAMED.test(s) ? {} : null;
 }
@@ -250,42 +290,107 @@ export function colorChangeOf(sentence: string): ColorChange | null {
 // Stuffing and finish
 // ---------------------------------------------------------------------------
 
-const STUFF = /\bstuff(?:ing|ed)?\b|\bfill(?:ing|ed)?\b|füllen\b|\bausstopfen\b|\bFüllung\b|\bFüllwatte\b/iu;
-const NOT_STUFFING = /\bfill\b[^.]*\bwith\s+(?:\p{L}+\s+)?stitches\b|\bfill\s+(?:in\s+)?(?:the\s+)?(?:teeth|gaps?|holes?|spaces?)\b/iu;
+const STUFF = /\b(?:stuff(?:ing|ed)?|fill(?:ing|ed)?|unstuffed)\b|füllen\b|\bausstopfen\b|\bFüllung\b|\bFüllwatte\b|\bungefüllt\b/iu;
+const GERMAN_STUFF = /füllen\b|\bausstopfen\b|\bFüllung\b|\bFüllwatte\b|\bungefüllt\b/iu;
+/** "fill in the eyes" (embroidery), "fill the gaps with sc", "before stuffing": not stuffing. */
+const NOT_STUFFING =
+  /\bfill\b[^.;]{0,80}\bwith\s+(?:\p{L}+\s+)?(?:stitches|sc|yarn|thread)\b|\bfill\s+(?:in|out)\b|\bfill\s+(?:the\s+)?(?:teeth|gaps?|holes?|spaces?|form)\b|\b(?:before|for|after|until|while)\s+(?:you\s+)?(?:stuff|fill)(?:ing)?\b/iu;
+/** "not too firmly", "not overly full": still stuffed, just lightly. */
+const NOT_TOO = /\bnot\s+(?:too|very|overly|so)\s+(?:firm(?:ly)?|tight(?:ly)?|full|much|hard)\b|\bnicht\s+(?:zu|so)\s+(?:fest|prall|viel)\b/iu;
 const NONE =
   /\b(?:do\s+not|don['’]t|does\s+not|doesn['’]t|no\s+need\s+to|never|not|without)\s+(?:\p{L}+\s+)?(?:stuff|fill)|\bunstuffed\b|\bno\s+stuffing\b|\bnicht\s+(?:aus)?(?:füllen|stopfen|gefüllt)|\bohne\s+Füllung|\bungefüllt|\bkeine\s+Füllung/iu;
 const LIGHT =
   /\b(?:light(?:ly)?|a\s+(?:little|bit)|slightly|not\s+(?:very\s+|too\s+)?much|loosely|softly|gently|sparingly)\b|\b(?:leicht|wenig|locker|etwas|sparsam)\b/iu;
 const FIRM = /\b(?:firm(?:ly)?|tight(?:ly)?|well|fully|generously|very\s+much)\b|\b(?:fest|gut|prall|kräftig)\b/iu;
-/** The word after the verb: "stuff the head", "do not stuff the fins", "fill only the legs". */
-const STUFF_OBJECT = /\b(?:stuff|fill)\s+(?:only\s+)?(?:the\s+)?(\p{L}+)/iu;
+/**
+ * The part a clause names as stuffed: "stuff the head", "do not stuff the fins", "fill only the
+ * legs", "the bottom of the legs", "the ears are not stuffed", "leave the neck unstuffed".
+ */
+const STUFF_OBJECT = [
+  /\b(?:stuff|fill)\s+(?:only\s+)?(?:the|both|your)\s+(\p{L}+)(?:\s+of\s+the\s+(\p{L}+))?/iu,
+  /\bleave\s+(?:the|both|your)\s+(\p{L}+)\s+unstuffed\b/iu,
+  /\b(?:the\s+)?(\p{L}+)\s+(?:are|is|should\s+(?:be|stay|remain)|stays?|remains?)\s+(?:not\s+)?(?:stuffed|filled|unstuffed)\b/iu,
+];
+/** Clause boundaries: commas, semicolons, "but", "aber". */
+const CLAUSE = /\s*[,;]\s*|\s+(?:but|aber|jedoch|doch)\s+/iu;
 
 export interface StuffingStatement {
   value: Stuffing;
   /** False for a plain "stuff", "stuff as you go", "finish stuffing" (firm unless said otherwise). */
   specific: boolean;
-  /** Words that may name the stuffed part ("head" of "stuff the head"), to try in order. */
-  objectWords: string[];
+  /**
+   * The part the clause names ("head" of "stuff the head") — it must be a part of the
+   * pattern, else the statement belongs to no part. Absent: the part being described.
+   */
+  object?: string;
+  /** German clauses: words that may name the part ("Kopf" of "Kopf füllen"); none fits → the part being described. */
+  words?: string[];
 }
 
 /**
- * How firmly a sentence says to stuff: "stuff firmly / well / tightly" (firm), "stuff lightly
- * / a little / not much" (light), "do not stuff" (none), a plain "stuff" or "stuff as you go"
- * (firm, not specific). German: "fest / leicht / nicht füllen", "Kopf füllen".
+ * How firmly a sentence says to stuff, clause by clause ("stuff the body firmly, but do not
+ * stuff the arms" gives two statements): "stuff firmly / well / tightly" (firm), "stuff
+ * lightly / a little / not too firmly" (light), "do not stuff" (none), a plain "stuff" or "stuff
+ * as you go" (firm, not specific). German: "fest / leicht / nicht füllen", "Kopf füllen". A
+ * negation counts only in its own clause. "Fill in", "fill the gaps with sc" and "before
+ * stuffing" are not stuffing. Empty for anything else.
  */
-export function stuffingOf(sentence: string): StuffingStatement | null {
+export function stuffingsOf(sentence: string): StuffingStatement[] {
   const s = sentence.trim();
-  if (!STUFF.test(s) || NOT_STUFFING.test(s)) return null;
-  const object = STUFF_OBJECT.exec(s)?.[1];
-  const objectWords = object ? [object] : (s.match(/\p{L}+/gu) ?? []);
-  if (NONE.test(s)) return { value: "none", specific: true, objectWords };
-  if (LIGHT.test(s)) return { value: "light", specific: true, objectWords };
-  if (FIRM.test(s)) return { value: "firm", specific: true, objectWords };
-  return { value: "firm", specific: false, objectWords };
+  if (s.length > MAX_DETAIL_SENTENCE || !STUFF.test(s)) return [];
+  const out: StuffingStatement[] = [];
+  for (const clause of s.split(CLAUSE)) {
+    if (!STUFF.test(clause)) {
+      // "Stuff, but not too firmly", "fill the legs, not much": a clause of its own that only
+      // says how firmly (a negation here is no "do not stuff").
+      const last = out[out.length - 1];
+      if (last && (NOT_TOO.test(clause) || LIGHT.test(clause))) Object.assign(last, { value: "light", specific: true });
+      else if (last && FIRM.test(clause) && !/\bnot\b|\bnicht\b/iu.test(clause)) Object.assign(last, { value: "firm", specific: true });
+      continue;
+    }
+    if (NOT_STUFFING.test(clause)) continue;
+    const statement: StuffingStatement = NOT_TOO.test(clause)
+      ? { value: "light", specific: true }
+      : NONE.test(clause)
+        ? { value: "none", specific: true }
+        : LIGHT.test(clause)
+          ? { value: "light", specific: true }
+          : FIRM.test(clause)
+            ? { value: "firm", specific: true }
+            : { value: "firm", specific: false };
+    for (const re of STUFF_OBJECT) {
+      const m = re.exec(clause);
+      if (m) {
+        statement.object = m[2] ?? m[1]!;
+        break;
+      }
+    }
+    if (statement.object === undefined && GERMAN_STUFF.test(clause)) statement.words = clause.match(/\p{L}+/gu) ?? [];
+    out.push(statement);
+  }
+  return out;
 }
 
+/** The first stuffing statement of a sentence (see `stuffingsOf`), or null. */
+export function stuffingOf(sentence: string): StuffingStatement | null {
+  return stuffingsOf(sentence)[0] ?? null;
+}
+
+/** Closing a magic ring or a round is no finish of the part. */
+const RING_OR_ROUND =
+  /\b(?:magic\s+(?:ring|circle|loop)|mr|ring|rounds?|rnds?|rows?|sl\s*st|slip\s+stitch|spiral)\b|Fadenring|\bRunden?\b|\bKm\b|\bKettmasche/iu;
+const NEGATED_CLOSE =
+  /\b(?:do\s+not|don['’]t|does\s+not|never|without)\s+(?:\p{L}+\s+)?(?:close|closing|join|sew\s+(?:it\s+)?(?:up|closed|shut))\b|\bnicht\s+(?:\p{L}+\s+)?(?:schließen|zuziehen|zunähen)\b/iu;
+/** "don't close it yet", "until", "later", "first": closed afterwards. */
+const NOT_YET = /\b(?:yet|until|before|later|first|after)\b|\bnoch\s+nicht\b|\berst\b|\bspäter\b/iu;
+/** The opening is closed by sewing the part on: "close it when you sew it to the head", "sew to the body". */
+const SEW_TO =
+  /\bsew(?:s|ing|n)?\s+(?:(?:it|them|on|together)\s+)?(?:on)?to\s+(?:the\s+)?\p{L}|\bwhen\s+(?:you\s+)?sew|\bby\s+sewing\b|^(?:an|am|ans)\s+(?:den|dem|die|das)?\s*\p{L}+\s+(?:an)?nähen\b/iu;
+/** Folding a brim, cuff or collar up is shaping, not a flat finish. */
+const FLAT_DENY = /\b(?:brim|cuff|collar|hem|up)\b|Krempe|Umschlag|Kragen/iu;
+
 const FLAT = [
-  /\b(?:fold|flatten)\b[^.;]*\b(?:both\s+layers|together|crochet|sc|single\s+crochet|knit|closed)\b/iu,
+  /\b(?:fold|flatten)\b[^.;]{0,80}\b(?:both\s+layers|crochet|sc|single\s+crochet|knit)\b/iu,
   /\b(?:sc|crochet|single\s+crochet)\s+(?:the\s+)?(?:opening|hole|edges?|top)\s+(?:closed|shut|together)\b/iu,
   /\bthrough\s+both\s+layers\b/iu,
   /\bflach\s+(?:zusammen)?(?:legen|drücken|falten)\b|\bdurch\s+beide\s+(?:Lagen|Seiten)\b|(?<![\p{L}])(?:Öffnung|Kante)\s+(?:mit\s+\p{L}+\s+)?zuhäkeln\b/iu,
@@ -309,12 +414,33 @@ const OPEN = [
  * How a sentence finishes a part: crocheted flat shut ("fold flat and sc through both layers",
  * "sc the opening closed", "fold in half and crochet together"), gathered ("close the hole",
  * "pull to close", "Öffnung schließen") or left open ("leave open", "leave a long tail for
- * sewing"). A sentence naming two takes the more specific: flat, then gather, then open.
+ * sewing", "do not close", "close it when you sew it to the head"). In this order: a negated
+ * close ("do not close" → open; "don't close the hole yet", "do not close the rounds" →
+ * nothing), flat (crocheted shut; not for a brim or cuff folded up), sewing the part on (open),
+ * gathered (not for a magic ring or a round), open. Null for anything else.
  */
 export function finishOf(sentence: string): Finish | null {
-  if (FLAT.some((re) => re.test(sentence))) return "flat";
-  if (GATHER.some((re) => re.test(sentence))) return "gather";
-  if (OPEN.some((re) => re.test(sentence))) return "open";
+  return finishStatementOf(sentence)?.finish ?? null;
+}
+
+/** "Leave a long tail for sewing": open, unless the part is closed some other way. */
+const TAIL_FOR_SEWING = /\bleave\s+(?:a\s+)?(?:long\s+)?(?:tail|end|yarn\s+end|yarn\s+tail)\b|\bFaden\s+(?:zum|für\s+das)\s+Annähen\b/iu;
+
+/**
+ * `finishOf` with how much the sentence says: `weak` for "leave a long tail for sewing", which
+ * only means open when no other sentence closes the part ("sc the opening closed, leave a tail
+ * for sewing" is flat).
+ */
+export function finishStatementOf(sentence: string): { finish: Finish; weak: boolean } | null {
+  const s = sentence.trim();
+  if (s.length > MAX_DETAIL_SENTENCE) return null;
+  const strong = (finish: Finish) => ({ finish, weak: false });
+  if (NEGATED_CLOSE.test(s)) return RING_OR_ROUND.test(s) || NOT_YET.test(s) ? null : strong("open");
+  // Crocheted shut, then sewn on: flat. Only sewn on ("flatten and sew to the head"): open.
+  if (!FLAT_DENY.test(s) && FLAT.some((re) => re.test(s))) return strong("flat");
+  if (SEW_TO.test(s)) return strong("open");
+  if (!RING_OR_ROUND.test(s) && GATHER.some((re) => re.test(s))) return strong("gather");
+  if (OPEN.some((re) => re.test(s))) return { finish: "open", weak: TAIL_FOR_SEWING.test(s) && !/\bopen\b|offen/iu.test(s) };
   return null;
 }
 
@@ -376,6 +502,7 @@ export function roundOf(sentence: string): number | undefined {
  */
 export function placementOf(sentence: string): PlacementDraft | null {
   const s = sentence.trim();
+  if (s.length > MAX_DETAIL_SENTENCE) return null;
   const round = roundOf(s);
   if (round === undefined) return null;
   const size = SIZE.exec(s);
@@ -395,15 +522,25 @@ export function placementOf(sentence: string): PlacementDraft | null {
   if (EMBROIDER.test(s)) return sized({ kind: "embroidery", round, objectWords: [], targetWords: targetWordsOf(s) });
   const verb = ATTACH_VERB.exec(s);
   if (!verb) return null;
-  const target = TARGET_EN.exec(s) ?? TARGET_DE.exec(s);
+  // "Sew on the tail": "on" belongs to the verb, the tail is the part sewn on.
+  const particle = /^\s+on(?=\s)/iu.exec(s.slice(verb.index + verb[0].length));
+  const verbEnd = verb.index + verb[0].length + (particle ? particle[0].length : 0);
+  const rest = s.slice(verbEnd);
+  const targetAfter = TARGET_EN.exec(rest) ?? TARGET_DE.exec(rest);
+  const targetBefore = targetAfter ? null : TARGET_DE.exec(s.slice(0, verb.index));
+  const target = targetAfter
+    ? { index: verbEnd + targetAfter.index, word: targetAfter[1]! }
+    : targetBefore
+      ? { index: targetBefore.index, word: targetBefore[1]! }
+      : null;
   const end = target ? target.index : s.length;
-  const afterVerb = verb.index < end ? s.slice(verb.index + verb[0].length, end) : "";
+  const afterVerb = verbEnd < end ? s.slice(verbEnd, end) : "";
   const words = (t: string) => t.match(/\p{L}+/gu) ?? [];
   return sized({
     kind: "attach",
     round,
     objectWords: [...words(afterVerb), ...words(s.slice(0, Math.min(end, verb.index)))],
-    targetWords: target ? [target[1]!] : [],
+    targetWords: target ? [target.word] : [],
   });
 }
 

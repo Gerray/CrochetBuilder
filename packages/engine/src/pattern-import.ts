@@ -61,16 +61,18 @@ import { LOCALE_CONFIDENCE_THRESHOLD, detectNotationLocale } from "./detect-loca
 import { rowOrdinals } from "./expand.js";
 import { parseRowText, resolveStitchTerm, type NotationLocale, type ParseRowResult } from "./notation.js";
 import {
+  MAX_DETAIL_SENTENCE,
   colorChangeOf,
+  colorKey,
   eyeSizeOf,
   findPartByWord,
-  finishOf,
+  finishStatementOf,
   hexFromMaterials,
   hexOfColor,
   placementOf,
   sentencesOf,
   slugOf,
-  stuffingOf,
+  stuffingsOf,
   type PlacementDraft,
   type StuffingStatement,
 } from "./pattern-details.js";
@@ -101,6 +103,14 @@ export type ImportIssueCode =
   | "COLOR_UNNAMED"
   /** An attached part was placed at the front (angle 0): the text gives no angle (informational). */
   | "ASSEMBLY_ANGLE_GUESSED"
+  /**
+   * A stuffing, finish or placement sentence that names no part it can be given to (an
+   * assembly section without a named part, "stuff the tip", "sew on the tail" without where);
+   * it stays text only (informational).
+   */
+  | "DETAIL_UNASSIGNED"
+  /** A placement at a round its part does not have (with stitches); it stays text only (informational). */
+  | "PLACEMENT_ROUND_UNKNOWN"
   /** A round closed with a slip stitch; imported as a spiral round (informational). */
   | "UNSUPPORTED_ROUND_JOIN"
   /** "sc around" / "(…)*" without a known previous stitch count. */
@@ -199,6 +209,8 @@ const SEVERITY: Record<ImportIssueCode, ImportIssueSeverity> = {
   UNSUPPORTED_FOUNDATION_OVAL: "warning",
   COLOR_UNNAMED: "info",
   ASSEMBLY_ANGLE_GUESSED: "info",
+  DETAIL_UNASSIGNED: "info",
+  PLACEMENT_ROUND_UNKNOWN: "info",
   UNSUPPORTED_ROUND_JOIN: "info",
   NEEDS_PREVIOUS_COUNT: "warning",
   FILL_MISMATCH: "warning",
@@ -315,6 +327,10 @@ const CHAIN_SPACE = /\b(?:ch-?sp(?:ace)?s?|chain[- ]spaces?|ch\s+spaces?|ch-loop
 /** A slip-stitch join that closes a round — dropped from the row, reported as info. */
 const ROUND_JOIN =
   /[,;]?\s*(?:join|close)\s+(?:the\s+round\s+)?with\s+(?:a\s+)?(?:sl\s*st|ss|slip\s+stitch)(?:\s+(?:in|into|to)\s+(?:the\s+)?(?:first|1st|beg(?:inning)?|top)\s+[\p{L}]+)?|[,;]?\s*(?:sl\s*st|ss|slip\s+stitch)\s+(?:in|into|to)\s+(?:the\s+)?(?:first|1st|beg(?:inning)?|top)\s+(?:st|stitch|sc|ch|of\s+[\p{L}]+)(?:\s+to\s+join)?|[,;]?\s*(?:sl\s*st|ss)\s+to\s+join|[,;]?\s*mit\s+(?:einer\s+)?(?:Km|Kettm(?:asche)?)\s+(?:in\s+die\s+erste\s+M(?:asche)?\s+)?schließen/giu;
+const RING_WORD = /\b(?:MR|magic\s+(?:ring|circle|loop)|adjustable\s+ring)\b|Fadenring|magische[nmr]?\s+Ring/iu;
+/** ", pull tight to close", ", Ring zusammenziehen" after a magic ring start. */
+const RING_CLOSE =
+  /[,;]\s*(?:and\s+|then\s+)?pull\s+(?:the\s+(?:ring|tail)\s+|it\s+)?(?:tight(?:ly)?|closed)(?:\s+to\s+close)?(?:\s+the\s+(?:ring|MR))?|[,;]\s*(?:den\s+)?(?:Fadenring|Ring)\s+zusammenziehen/giu;
 const COUNT_NOTE = /\(\s*(?:does\s+not|doesn't|not)\s+count[^)]*\)|\(\s*zählt\s+nicht[^)]*\)/giu;
 
 /** Count terminators: "(18)", "[18]", "(18 sts)", "= 18", "= [18]", "– 18". */
@@ -368,14 +384,15 @@ const REJECT_BEFORE = new Set(
 );
 
 function rejectedByContext(line: string, index: number, end: number, kind: LabelKind): boolean {
-  const before = line.slice(0, index).trimEnd();
+  // Only the text just around the candidate matters (and long lines stay linear).
+  const before = line.slice(Math.max(0, index - 60), index).trimEnd();
   const lastChar = before.slice(-1);
   if (lastChar && "=×*([/".includes(lastChar)) return true;
   const word = /([\p{L}]+)\.?$/u.exec(before)?.[1]?.toLowerCase();
   if (word && REJECT_BEFORE.has(word)) return true;
   if (kind === "bare" || kind === "suffix") {
     // "3.25 mm", "2. 5 cm": a measurement, not a label.
-    if (/^\s*(?:\d+(?:[.,]\d+)?\s*)?(?:(?:mm|cm|g|m|inch|in)(?![\p{L}])|%|"|')/iu.test(line.slice(end))) return true;
+    if (/^\s*(?:\d+(?:[.,]\d+)?\s*)?(?:(?:mm|cm|g|m|inch|in)(?![\p{L}])|%|"|')/iu.test(line.slice(end, end + 40))) return true;
   }
   return false;
 }
@@ -615,13 +632,31 @@ interface WorkPart extends Omit<ImportedPart, "id" | "finish" | "stuffing"> {
 /** A stuffing or finish sentence, resolved to a part when the import is finished. */
 interface PartStatement {
   section: WorkPart;
-  stuffing?: StuffingStatement;
-  finish?: Finish;
+  /** Read in an assembly/finishing section: it applies only to a part it names. */
+  assembly: boolean;
+  stuffings: StuffingStatement[];
+  finish?: { finish: Finish; weak: boolean };
+  note: string;
+  line: number;
+  /** Index of the instruction row in `section` when it was read. */
+  rowIndex: number;
+}
+
+/** What resolving statements and placements needs of the finished import. */
+interface Resolve {
+  parts: ImportedPart[];
+  /** The work part of every final part (same index). */
+  kept: WorkPart[];
+  finalOf: (work: WorkPart) => { part: ImportedPart; index: number; offset: number } | undefined;
+  here: (work: WorkPart, assembly: boolean) => ImportedPart | undefined;
+  named: (words: readonly string[], except?: ImportedPart) => ImportedPart | undefined;
+  issueAt: (code: ImportIssueCode, work: WorkPart, rowIndex: number, line: number, text: string, message: string) => void;
 }
 
 /** A placement sentence, resolved to parts and a row when the import is finished. */
 interface PlacementNote {
   section: WorkPart;
+  assembly: boolean;
   draft: PlacementDraft;
   note: string;
   line: number;
@@ -703,6 +738,11 @@ class Importer {
     };
     if (source) part.source = source;
     if (this.inAssembly) part.assembly = true;
+    // "Change to pink." right before a new part's header: the new part starts in pink.
+    if (cur?.pendingColor) {
+      part.pendingColor = cur.pendingColor;
+      cur.pendingColor = undefined;
+    }
     this.parts.push(part);
     this.current = part;
   }
@@ -774,9 +814,6 @@ class Importer {
       const index = to === undefined ? undefined : newIndex.get(to.index);
       return index === undefined ? undefined : { part: parts[index]!, index, offset: to!.offset };
     };
-    // The part a section is about: an assembly section "Ears:" is about the part "Ears".
-    const sectionPart = (work: WorkPart): ImportedPart | undefined =>
-      (mergedSections.has(work) ? findPartByWord(work.name, parts) : undefined) ?? finalOf(work)?.part;
     const named = (words: readonly string[], except?: ImportedPart): ImportedPart | undefined => {
       for (const word of words) {
         const hit = findPartByWord(word, parts);
@@ -785,8 +822,28 @@ class Importer {
       return undefined;
     };
 
-    this.resolveStatements(sectionPart, named);
-    const assembly = this.resolvePlacements(parts, kept, finalOf, sectionPart, named);
+    // Issues about a sentence, at the row it ended up in.
+    const flagged = new Set<string>();
+    const issueAt = (code: ImportIssueCode, work: WorkPart, rowIndex: number, line: number, text: string, message: string) => {
+      const key = `${code}:${line}:${text}`;
+      if (flagged.has(key)) return;
+      flagged.add(key);
+      const issue: ImportIssue = { line, text, code, severity: SEVERITY[code], message };
+      const at = finalOf(work);
+      if (at) {
+        issue.partIndex = at.index;
+        issue.rowIndex = rowIndex + at.offset;
+      }
+      this.issues.push(issue);
+    };
+    // The part a sentence is about when it names none: the part of its section. In an
+    // assembly/finishing section only a sub-section that names a part ("Ears:") — never the
+    // part that happened to come last.
+    const here = (work: WorkPart, assembly: boolean): ImportedPart | undefined =>
+      assembly ? (mergedSections.has(work) ? findPartByWord(work.name, parts) : undefined) : finalOf(work)?.part;
+    const ctx: Resolve = { parts, kept, finalOf, here, named, issueAt };
+    this.resolveStatements(ctx);
+    const assembly = this.resolvePlacements(ctx);
     // "Color A" gets the display colour the materials give it ("Color A: Gray").
     const materials = this.preamble.map((p) => p.text);
     for (const color of this.colors) {
@@ -798,49 +855,72 @@ class Importer {
     return { parts, issues, assembly };
   }
 
-  /** Stuffing and finish per part from the sentences that said so (see `PartStatement`). */
-  private resolveStatements(
-    sectionPart: (w: WorkPart) => ImportedPart | undefined,
-    named: (words: readonly string[]) => ImportedPart | undefined,
-  ): void {
-    const FINISH_RANK: Record<Finish, number> = { flat: 3, gather: 2, open: 1 };
+  /**
+   * Stuffing and finish per part from the sentences that said so (see `PartStatement`).
+   * Finish: the last finishing sentence after the part's last stitch row counts (a "close" in
+   * the middle of the part is about something else); "leave a tail for sewing" only when no
+   * other sentence there closes the part. Stuffing: a clause that names a part
+   * applies to that part, one that names something else ("stuff the tip") to none; a specific
+   * statement ("do not stuff", "stuff lightly") beats a plain "stuff", the first specific one
+   * counts. A sentence that cannot be given a part gets a `DETAIL_UNASSIGNED` issue.
+   */
+  private resolveStatements(ctx: Resolve): void {
+    const lastStitch = (part: ImportedPart) => part.rows.reduce((last, r, i) => (r.ops.length > 0 ? i : last), -1);
     const generic = new Set<ImportedPart>();
+    /** Parts whose finish so far only comes from "leave a tail for sewing". */
+    const weak = new Set<ImportedPart>();
+    const unassigned = (st: PartStatement, what: string) =>
+      ctx.issueAt("DETAIL_UNASSIGNED", st.section, st.rowIndex, st.line, st.note, `${what} names no part of the pattern; kept as text only.`);
     for (const st of this.statements) {
+      const own = ctx.here(st.section, st.assembly);
       if (st.finish) {
-        const part = sectionPart(st.section);
-        if (part && (!part.finish || FINISH_RANK[st.finish] > FINISH_RANK[part.finish])) part.finish = st.finish;
+        if (!own) {
+          unassigned(st, "The finishing sentence");
+        } else {
+          const at = ctx.finalOf(st.section);
+          const position = st.assembly || !at ? Number.POSITIVE_INFINITY : st.rowIndex + at.offset;
+          // The last finishing sentence after the last stitch row wins; a weak one only
+          // when nothing else has closed the part.
+          if (position > lastStitch(own) && (!st.finish.weak || own.finish === undefined || weak.has(own))) {
+            own.finish = st.finish.finish;
+            if (st.finish.weak) weak.add(own);
+            else weak.delete(own);
+          }
+        }
       }
-      if (st.stuffing) {
-        const part = named(st.stuffing.objectWords) ?? sectionPart(st.section);
-        if (!part) continue;
-        // A specific statement ("do not stuff", "stuff lightly") beats a plain "stuff"; the
-        // first specific one counts.
-        if (st.stuffing.specific) {
+      for (const stuffing of st.stuffings) {
+        let part: ImportedPart | undefined;
+        if (stuffing.object !== undefined) part = findPartByWord(stuffing.object, ctx.parts);
+        else part = (stuffing.words ? ctx.named(stuffing.words) : undefined) ?? own;
+        if (!part) {
+          unassigned(st, "The stuffing sentence");
+          continue;
+        }
+        if (stuffing.specific) {
           if (part.stuffing === undefined || generic.has(part)) {
-            part.stuffing = st.stuffing.value;
+            part.stuffing = stuffing.value;
             generic.delete(part);
           }
         } else if (part.stuffing === undefined) {
-          part.stuffing = st.stuffing.value;
+          part.stuffing = stuffing.value;
           generic.add(part);
         }
       }
     }
   }
 
-  /** Placements whose parts and round can be found; the others stay instruction text only. */
-  private resolvePlacements(
-    parts: ImportedPart[],
-    kept: WorkPart[],
-    finalOf: (w: WorkPart) => { part: ImportedPart; index: number; offset: number } | undefined,
-    sectionPart: (w: WorkPart) => ImportedPart | undefined,
-    named: (words: readonly string[], except?: ImportedPart) => ImportedPart | undefined,
-  ): Placement[] {
+  /**
+   * Placements whose parts and round can be found; the others stay instruction text only and
+   * get an issue (`DETAIL_UNASSIGNED`: no part; `PLACEMENT_ROUND_UNKNOWN`: no such round). A
+   * part with round labels is matched by its labels only ("between rounds 2 and 3" in a part
+   * numbered 13–18 is no round of it), a part without labels by the position of its rows.
+   */
+  private resolvePlacements(ctx: Resolve): Placement[] {
+    const { parts, kept, here, named, issueAt } = ctx;
     const eyeSize = eyeSizeOf(this.preamble.map((p) => p.text));
     const rowOf = (part: ImportedPart, round: number): string | undefined => {
       const work = kept[parts.indexOf(part)];
-      const labelled = work?.roundIds.get(round);
-      if (labelled) return labelled;
+      if (work && work.roundIds.size > 0) return work.roundIds.get(round);
       const ordinals = rowOrdinals(part.rows);
       const i = part.rows.findIndex((r, k) => r.ops.length > 0 && ordinals[k] === round);
       return i >= 0 ? part.rows[i]!.id : undefined;
@@ -849,19 +929,31 @@ class Importer {
     const eyesOn = new Set<string>();
     for (const p of this.placements) {
       const { draft } = p;
-      const here = sectionPart(p.section);
+      const own = here(p.section, p.assembly);
       let part: ImportedPart | undefined;
       let target: ImportedPart | undefined;
       if (draft.kind === "attach") {
         target = named(draft.targetWords);
-        part = target ? (named(draft.objectWords, target) ?? here) : undefined;
-        if (!part || part === target) continue;
+        part = target ? (named(draft.objectWords, target) ?? own) : undefined;
       } else {
-        target = named(draft.targetWords) ?? here;
+        target = named(draft.targetWords) ?? own;
       }
-      if (!target) continue;
+      if (!target || (draft.kind === "attach" && (!part || part === target))) {
+        issueAt("DETAIL_UNASSIGNED", p.section, p.rowIndex, p.line, p.note, "The placement does not name the parts it joins; kept as text only.");
+        continue;
+      }
       const row = rowOf(target, draft.round);
-      if (!row) continue;
+      if (!row) {
+        issueAt(
+          "PLACEMENT_ROUND_UNKNOWN",
+          p.section,
+          p.rowIndex,
+          p.line,
+          p.note,
+          `${target.name} has no round ${draft.round} with stitches; the placement is kept as text only.`,
+        );
+        continue;
+      }
       if (draft.kind === "eyes") {
         if (eyesOn.has(target.id)) continue; // one pair of eyes per part; later mentions repeat it
         eyesOn.add(target.id);
@@ -874,27 +966,23 @@ class Importer {
       placement.note = p.note;
       out.push(placement);
       if (draft.kind === "attach") {
-        const at = finalOf(p.section);
-        const issue: ImportIssue = {
-          line: p.line,
-          text: p.note,
-          code: "ASSEMBLY_ANGLE_GUESSED",
-          severity: SEVERITY.ASSEMBLY_ANGLE_GUESSED,
-          message: `${part!.name} placed on ${target.name} at the front (angle 0); the text gives no angle.`,
-        };
-        if (at) {
-          issue.partIndex = at.index;
-          issue.rowIndex = p.rowIndex + at.offset;
-        }
-        this.issues.push(issue);
+        issueAt(
+          "ASSEMBLY_ANGLE_GUESSED",
+          p.section,
+          p.rowIndex,
+          p.line,
+          p.note,
+          `${part!.name} placed on ${target.name} at the front (angle 0); the text gives no angle.`,
+        );
       }
     }
     return out;
   }
 
-  /** A palette id for a colour name (the same name, ignoring case, is the same colour). */
+  /** A palette id for a colour name (`colorKey`: case and spellings of the main colour aside). */
   private colorId(name: string): string {
-    const known = this.colors.find((c) => c.name.toLowerCase() === name.toLowerCase());
+    const key = colorKey(name);
+    const known = this.colors.find((c) => colorKey(c.name) === key);
     if (known) return known.id;
     const color: ImportedColor = { id: uniqueId(slugOf(name), new Set(this.colors.map((c) => c.id))), name };
     const hex = hexOfColor(name);
@@ -905,25 +993,27 @@ class Importer {
 
   /**
    * Read the details of an instruction (format v2): colour changes (for the next stitch row),
-   * stuffing, finish and placements. The text itself stays an instruction row.
+   * stuffing, finish and placements. The text itself stays an instruction row. Sentences
+   * longer than `MAX_DETAIL_SENTENCE` are not read.
    */
   private harvest(note: string, line: number, rowIndex: number): void {
     const part = this.part();
+    const assembly = this.inAssembly;
     let unnamed = false;
     for (const sentence of sentencesOf(note)) {
+      if (sentence.length > MAX_DETAIL_SENTENCE) continue;
       const color = colorChangeOf(sentence);
       if (color?.name) part.pendingColor = this.colorId(color.name);
       else if (color) unnamed = true;
-      const stuffing = stuffingOf(sentence);
-      const finish = finishOf(sentence);
-      if (stuffing || finish) {
-        const statement: PartStatement = { section: part };
-        if (stuffing) statement.stuffing = stuffing;
+      const stuffings = stuffingsOf(sentence);
+      const finish = finishStatementOf(sentence);
+      if (stuffings.length > 0 || finish) {
+        const statement: PartStatement = { section: part, assembly, stuffings, note: sentence, line, rowIndex };
         if (finish) statement.finish = finish;
         this.statements.push(statement);
       }
       const draft = placementOf(sentence);
-      if (draft) this.placements.push({ section: part, draft, note: sentence, line, rowIndex });
+      if (draft) this.placements.push({ section: part, assembly, draft, note: sentence, line, rowIndex });
     }
     if (unnamed) this.issue("COLOR_UNNAMED", line, note, "A colour change without a colour name.", rowIndex);
   }
@@ -1110,7 +1200,7 @@ class Importer {
     const part = this.current;
     const expected = part?.expected ?? 1;
     const fresh = !part || !part.hasLabels;
-    const atLineStart = line.slice(0, hit.index).trim() === "";
+    const atLineStart = hit.index <= Math.max(0, line.search(/\S/u));
     switch (hit.kind) {
       case "word":
       case "suffix":
@@ -1180,6 +1270,8 @@ class Importer {
       this.issue("IGNORED", line, m[0], "Note on what counts as a stitch removed; check the stitch count.");
     }
     raw = raw.replace(COUNT_NOTE, "");
+    // "6 sc in MR, pull tight to close": closing the ring is part of the magic ring.
+    if (RING_WORD.test(raw)) raw = raw.replace(RING_CLOSE, "");
     const joined = raw.replace(ROUND_JOIN, "");
     const roundJoin = joined !== raw;
     raw = joined.trim();
@@ -1247,7 +1339,9 @@ class Importer {
       const terminator = new RegExp(COUNT_TERMINATOR.source, "iu").exec(raw);
       const headEnd = terminator ? terminator.index + terminator[0].length : raw.length;
       const head = raw.slice(0, headEnd);
-      const unreadable = !INSTRUCTION_WORDS.test(head) && (looksLikeStitches(head, this.locale) || /\d/.test(head));
+      // A labelled round that reads like stitches is unread, even with an instruction word in it
+      // ("6 sc in MR, pull through"): it must not pass as a plain note.
+      const unreadable = looksLikeStitches(head, this.locale) || (!INSTRUCTION_WORDS.test(head) && /\d/.test(head));
       if (split.fill) {
         codes.push(split.fill);
       } else if (unreadable && headEnd < raw.length) {
@@ -1435,7 +1529,7 @@ export function parsePatternText(text: string, options: ParsePatternOptions = {}
 
     for (const hit of findLabels(line, lineNo)) {
       if (hit.index < pos) continue;
-      if (!importer.accept(hit, line, line.slice(pos, hit.index))) continue;
+      if (!importer.accept(hit, line, line.slice(pos, Math.min(hit.index, pos + 200)))) continue;
       const before = line.slice(pos, hit.index);
       const current = importer.parts[importer.parts.length - 1];
       const restart = hit.start === 1 && current !== undefined && current.hasLabels && hit.kind !== "weak";
