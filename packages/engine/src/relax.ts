@@ -32,8 +32,11 @@
  *   2. radial start-up stabiliser — the particles of every closed round are nudged towards
  *      the radius their circumference implies (C / 2π), around the round's own centroid. It
  *      fades out linearly over the first half of the iterations, so the final shape is
- *      decided by the springs, the stuffing and the repulsion alone;
- *   3. stuffing — closed pieces (opened with a magic ring, ending in a small round) are
+ *      decided by the springs, the stuffing and the repulsion alone. Oval rounds (worked
+ *      around a foundation chain, and the closed rounds after it) are left out: the chain
+ *      inside keeps them long, a circle would be the wrong target;
+ *   3. stuffing — closed pieces (opened with a magic ring or an oval start around a
+ *      foundation chain, ending in a small round) are
  *      inflated like a stuffed amigurumi: a uniform pressure moves every particle along the
  *      volume gradient (the area-weighted surface normal). The pressure is integral-
  *      controlled on the fabric's mean stretch — it rises until the stitches are stretched
@@ -47,6 +50,7 @@
  *
  * Output pose: rounds grow along +Y (the axis through the rounds' centres), flat pieces lie
  * in the XY plane with the working direction of the rows along X and rows growing along +Y.
+ * A piece with an oval start (rounds worked around a foundation chain) has its chain along X.
  * The piece is centred on the Y axis and rests on y = 0. Units are millimetres.
  *
  * What the shape depends on: the gauge's stitch height relative to its width. The classic
@@ -140,17 +144,33 @@ export function relaxOptionsForPart(content: Pick<PartContent, "finish" | "stuff
 }
 
 /**
- * A piece is closed when it starts with a magic ring, consists only of rounds and is
+ * A piece is closed when it starts closed — with a magic ring, or with a foundation chain and
+ * a round worked around it (an oval start) —, consists only of rounds after that and is
  * decreased at the end: its last round has less than half the stitches of its widest one
  * (the last hole is pulled shut when finishing). A straight tube — an arm, say — is open.
  */
 export function isClosedPiece(graph: StitchGraph): boolean {
-  const rows = graph.rows;
-  if (rows.length < 3) return false;
-  if (rows[0]!.kind !== "ring") return false;
+  const all = graph.rows;
+  if (all.length < 3) return false;
+  const oval = all[0]!.kind === "chain" && all[1]!.around === true;
+  if (all[0]!.kind !== "ring" && !oval) return false;
+  const rows = oval ? all.slice(1) : all;
   if (!rows.every((r) => r.closed)) return false;
   const max = Math.max(...rows.map((r) => r.widthStitches));
   return rows[rows.length - 1]!.widthStitches < 0.5 * max;
+}
+
+/**
+ * Per graph row: whether it is an oval round — a round worked around a foundation chain, or a
+ * closed round in an unbroken run of closed rounds after one. Their circumference is no circle
+ * (the chain keeps them long), so the radial stabiliser leaves them alone.
+ */
+function ovalRounds(graph: StitchGraph): boolean[] {
+  const out: boolean[] = [];
+  graph.rows.forEach((r, i) => {
+    out.push(r.around === true || (i > 0 && out[i - 1]! && r.closed && r.kind !== "ring"));
+  });
+  return out;
 }
 
 /**
@@ -584,11 +604,11 @@ function buildParticles(graph: StitchGraph, finish: Finish, bendingK: number): P
       const f = fabric[ri]!;
       const S = f.length;
       const ring = r.closed && S >= 4;
-      // Closed rounds bend to their own circle, flat rows stay straight; a round that is
-      // not closed (worked around a foundation chain) turns where it must, so it is left out,
-      // as is a round flattened into a seam (it folds sharply at both ends).
+      // Closed rounds bend to their own circle, flat rows stay straight; a round worked along
+      // or around a foundation chain turns sharply at the chain's ends, so it is left out, as
+      // is a round flattened into a seam (it folds sharply at both ends).
       if (!ring && (r.type !== "row" || r.kind === "ring")) return;
-      if (ri === seamRow) return;
+      if (ri === seamRow || r.around) return;
       const rest = ring ? 2 * w * Math.cos(Math.PI / S) : 2 * w;
       const last = ring ? S : S - 2;
       for (let k = 0; k < last; k++) spring(f[k]!, f[(k + 2) % S]!, rest, bendingK, false);
@@ -632,10 +652,12 @@ function buildParticles(graph: StitchGraph, finish: Finish, bendingK: number): P
     }
   }
 
-  // Closed rounds for the radial stabiliser (not a round that is flattened into a seam).
+  // Closed rounds for the radial stabiliser (not a round that is flattened into a seam, nor
+  // an oval round: its target would be a circle).
+  const oval = ovalRounds(graph);
   const rings = graph.rows
     .map((r, ri) => ({ r, ri, ids: fabric[ri]! }))
-    .filter(({ r, ri, ids }) => r.closed && ids.length >= 3 && ri !== seamRow)
+    .filter(({ r, ri, ids }) => r.closed && ids.length >= 3 && ri !== seamRow && !oval[ri])
     .map(({ r, ids }) => ({ ids: Uint32Array.from(ids), radius: (r.widthStitches * w) / (2 * Math.PI) }));
 
   // Surface: zip every row's stitches to the stitches they are worked into (as the graph's
@@ -845,8 +867,8 @@ class SpatialHash {
 
 /**
  * Rotate and translate positions in place: round axis (sum of the closed rounds' oriented
- * normals) → +Y; for flat pieces the fabric normal → +Z and row growth → +Y. Then centre on
- * the Y axis and put the lowest point on y = 0.
+ * normals) → +Y, and for an oval start its foundation chain → +X; for flat pieces the fabric
+ * normal → +Z and row growth → +Y. Then centre on the Y axis and put the lowest point on y = 0.
  */
 export function canonicalPose(graph: StitchGraph): void {
   const pos = graph.positions;
@@ -868,6 +890,25 @@ export function canonicalPose(graph: StitchGraph): void {
       az += nrm[2];
     }
     rotateInto(pos, [ax, ay, az], [0, 1, 0]);
+    // An oval start: turn about Y so that its foundation chain runs along +X (the oval's
+    // length is then the width).
+    const around = graph.rows.findIndex((r) => r.around);
+    if (around > 0) {
+      const chain = graph.rows[around - 1]!;
+      const a = chain.firstNode;
+      const b = chain.firstNode + chain.nodeCount - 1;
+      const ux = pos[3 * b]! - pos[3 * a]!;
+      const uz = pos[3 * b + 2]! - pos[3 * a + 2]!;
+      const l = Math.hypot(ux, uz);
+      if (l > 1e-9) {
+        const cs = ux / l, sn = uz / l;
+        for (let i = 0; i < n; i++) {
+          const x = pos[3 * i]!, z = pos[3 * i + 2]!;
+          pos[3 * i] = cs * x + sn * z;
+          pos[3 * i + 2] = -sn * x + cs * z;
+        }
+      }
+    }
   } else {
     // Flat piece: fabric normal → +Z, then the rows' working direction → +X. Rows then grow
     // along ±Y (+Y for consistently wound fabric), whatever the outline of the piece.

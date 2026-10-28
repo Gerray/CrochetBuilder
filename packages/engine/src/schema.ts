@@ -139,6 +139,13 @@ export const OpSchema: z.ZodType<Op> = z.lazy(() =>
  * progress/checkpoints. `stitchCountTarget` is the author-declared stitch count the
  * stitch-count check validates against. `color` (format v2) switches the working colour at
  * the start of the row; it stays until the next switch.
+ *
+ * `around` (format v2, oval start): the round is worked around both sides of the foundation
+ * chain right before it — first along one side from the hook end (as a row into the chain),
+ * around the far end, then back along the other side ("ch 7; sc in 2nd ch from hook, 4 sc,
+ * 3 sc in last ch, working on the other side: 4 sc, 2 sc in last ch"). It may work into up to
+ * twice as many stitches as the chain has. The previous stitch row must be a chain (else a
+ * validation finding, `AROUND_WITHOUT_CHAIN`); only `true` is stored, never `false`.
  */
 export const RowSchema = z
   .object({
@@ -149,6 +156,7 @@ export const RowSchema = z
     stitchCountTarget: z.number().int().nonnegative(),
     note: z.string().optional(),
     color: ColorIdSchema.optional(),
+    around: z.literal(true).optional(),
   })
   .strict();
 
@@ -173,16 +181,17 @@ function opsUseV2(ops: readonly Op[]): boolean {
 
 /**
  * Whether a part uses anything of format version 2: `finish`, `stuffing`, a row or stitch
- * colour, a stitch group, the codes BOBBLE/PUFF/POPCORN/PICOT or the modifiers FP/BP. Such
- * a part must say `schemaVersion: 2` (a version-1 reader would reject it).
+ * colour, a round worked around a chain (`around`), a stitch group, the codes
+ * BOBBLE/PUFF/POPCORN/PICOT or the modifiers FP/BP. Such a part must say `schemaVersion: 2`
+ * (a version-1 reader would reject it).
  */
 export function usesFormatV2(content: {
   finish?: unknown;
   stuffing?: unknown;
-  rows: readonly { color?: string; ops: readonly Op[] }[];
+  rows: readonly { color?: string; around?: true; ops: readonly Op[] }[];
 }): boolean {
   if (content.finish !== undefined || content.stuffing !== undefined) return true;
-  return content.rows.some((row) => row.color !== undefined || opsUseV2(row.ops));
+  return content.rows.some((row) => row.color !== undefined || row.around !== undefined || opsUseV2(row.ops));
 }
 
 /**
@@ -204,7 +213,8 @@ export const PartContentSchema = z
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ["schemaVersion"],
-        message: "Uses format version 2 features (colours, groups, new stitches, finish or stuffing) but says schemaVersion 1",
+        message:
+          "Uses format version 2 features (colours, groups, new stitches, rounds around a chain, finish or stuffing) but says schemaVersion 1",
       });
     }
   });
