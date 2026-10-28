@@ -60,7 +60,7 @@ export function useFragmentImport({ ready, doc, onImport, onError, confirm, deco
           (exp) => {
             if (!current()) return;
             const { doc: present, onImport: apply, onError: fail, confirm: ask } = latest.current;
-            const result = documentFromExport(exp, newId, "link");
+            const result = documentFromExport(exp, newId);
             if (!result.ok) {
               fail(result.message);
               return;

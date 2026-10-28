@@ -1,7 +1,8 @@
 /**
  * "Als PDF speichern": the export as an A4 pattern sheet. jsPDF is loaded on demand (it is
  * only needed here); the model image is a snapshot of the 3D view at a fixed size, rendered
- * off screen, and simply left out when there is no model or no WebGL.
+ * off screen, and simply left out when there is no model or no WebGL. With several parts the
+ * image and the finished size show the first part.
  */
 
 import { renderedRows, type BuilderExport, type MeshStyle } from "@crochetbuilder/engine";
@@ -9,7 +10,8 @@ import type { jsPDF as JsPdf } from "jspdf";
 import { createPreviewClient } from "../preview/client.js";
 import type { PreviewModel, PreviewResult } from "../preview/protocol.js";
 import type { BuilderDoc } from "../state/document.js";
-import { estimateNote, gaugeLine, materialLine, sizeLine } from "./labels.js";
+import { partName, partStitches, partsTotal, totalText } from "../state/parts.js";
+import { estimateNote, gaugeLine, materialLine, partHeading, sizeLine } from "./labels.js";
 import { layoutPdf, type PdfImage, type PdfInput, type PdfLayout, type TextMeasure } from "./pdfLayout.js";
 import { exportFileName, downloadBlob, prepareExport } from "./prepare.js";
 
@@ -111,22 +113,40 @@ async function cropToModel(dataUrl: string, size: { width: number; height: numbe
 /** What the PDF needs to know about the model (first part). */
 export type PdfModel = Pick<PreviewModel, "size" | "maxDiameter">;
 
-/** The PDF content for an export: labels, rows per part, size from the model. */
+/** "Ohr ×2: 13 Runden, 138 Maschen je Teil" — one line of the parts overview. */
+export function partOverviewLine(part: BuilderExport["parts"][number], index: number): string {
+  const stitchRows = part.content.rows.filter((r) => r.ops.length > 0);
+  const rounds = stitchRows.filter((r) => r.type === "round").length;
+  const rows = stitchRows.length - rounds;
+  const counts = [
+    rounds > 0 && `${rounds} ${rounds === 1 ? "Runde" : "Runden"}`,
+    rows > 0 && `${rows} ${rows === 1 ? "Reihe" : "Reihen"}`,
+    `${partStitches(part.content).toLocaleString("de-DE")} Maschen${part.quantity > 1 ? " je Teil" : ""}`,
+  ].filter(Boolean);
+  return `${partHeading(part.name, part.quantity, index)}: ${counts.join(", ")}`;
+}
+
+/** The PDF content for an export: labels, parts overview, rows per part, size from the model. */
 export function pdfInput(exp: BuilderExport, model: PdfModel | null, image: PdfImage | null): PdfInput {
   const several = exp.parts.length > 1;
   const gauge = exp.overview.gauge;
+  const size = model ? sizeLine({ ...model.size, maxDiameter: model.maxDiameter }) : null;
   const input: PdfInput = {
     title: exp.title,
     materials: (exp.overview.materials ?? []).map(materialLine).filter(Boolean),
     gauge: gaugeLine(gauge),
-    size: model ? sizeLine({ ...model.size, maxDiameter: model.maxDiameter }) : null,
+    // The model is the first part's; with several parts the line says so.
+    size: size && several ? `${size} – ${partName(exp.parts[0]!.name, 0)}` : size,
     estimate: model ? estimateNote(gauge) : null,
-    parts: exp.parts.map((part) => ({
-      heading: several || part.quantity > 1 ? `${part.name.trim() || "Teil"}${part.quantity > 1 ? ` (${part.quantity}×)` : ""}` : null,
+    parts: exp.parts.map((part, i) => ({
+      heading: several || part.quantity > 1 ? partHeading(part.name, part.quantity, i) : null,
       rows: renderedRows(part.content, "de"),
     })),
     image,
   };
+  if (several) {
+    input.overview = { lines: exp.parts.map(partOverviewLine), total: totalText(partsTotal(exp)) };
+  }
   if (exp.overview.notes?.trim()) input.notes = exp.overview.notes;
   return input;
 }

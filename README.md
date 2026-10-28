@@ -142,7 +142,8 @@ expansion, validation, graph, relaxation, measurements, mesh, notation, export s
 Working today:
 
 - Pattern engine: schema, validation, stitch graph, relaxation, measurements, mesh
-- Editor: structured and free-text row input, German and English stitch notation
+- Editor: structured and free-text row input, German and English stitch notation; patterns
+  with several parts (head, body, arms ×2 …), each with its own rows and quantity
 - Live 3D preview in real size
 - Export to TellmeCrochet, PDF and JSON; share links and embeddable viewer
 
@@ -153,7 +154,7 @@ Next:
 
 Later:
 
-- Pieces made of several parts (head, body, arms…) assembled in 3D
+- Assembling the parts of a piece in 3D
 - Colour changes
 - English user interface
 

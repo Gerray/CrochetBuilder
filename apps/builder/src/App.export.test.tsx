@@ -205,16 +205,17 @@ describe("JSON öffnen…", () => {
     await screen.findByLabelText("Maschen von Reihe 21 als Text");
   });
 
-  it("a file with several parts: opened with a notice that only the first part is edited", async () => {
+  it("a file with several parts: opens all of them as tabs", async () => {
     const { actions } = fakeActions();
     await renderApp(actions);
     const exported = prepareExport(demoDocument(ids("ball"), "ball"));
     exported.parts.push({ name: "Ohr", quantity: 2, content: { schemaVersion: 1, rows: [] } });
     const panel = await openExport();
     choose("teile.json", JSON.stringify(exported));
-    const status = await within(panel).findByText(/^„teile\.json“ geöffnet\. Diese Datei enthält 2 Teile;/);
+    const status = await within(panel).findByText("„teile.json“ geöffnet.");
     expect(status.getAttribute("role")).toBe("status");
     expect(title()).toBe("Amigurumi-Ball");
+    expect(screen.getAllByRole("tab").map((t) => t.textContent)).toEqual(["Ball192", "Ohr×20"]);
   });
 
   it("shows a German error for an invalid file and keeps the document", async () => {
@@ -266,16 +267,17 @@ describe("Opening a document from the builder URL (#data=)", () => {
     confirm.mockRestore();
   });
 
-  it("a link with several parts opens them all and says that only the first is edited", async () => {
+  it("a link with several parts opens them all, each one editable", async () => {
     const exp = prepareExport(demoDocument(ids("b"), "ball"));
     exp.parts.push({ name: "Ohr", quantity: 2, content: { schemaVersion: 1, rows: [] } });
     await linkTo(exp);
     const { actions, rec } = fakeActions();
     await renderApp(actions);
-    const notice = await screen.findByText(/^Dieser Link enthält 2 Teile; der Builder bearbeitet bisher nur das erste\./);
-    expect(notice.closest("[role=status]")).not.toBeNull();
-    expect(title()).toBe("Amigurumi-Ball");
-    // The hidden part is still exported.
+    await waitFor(() => expect(title()).toBe("Amigurumi-Ball"));
+    expect(screen.queryByText(/bearbeitet bisher nur das erste/)).toBeNull();
+    fireEvent.click(screen.getByRole("tab", { name: /^Ohr/ }));
+    expect(screen.getByRole("textbox", { name: "Name des Teils" })).toHaveProperty("value", "Ohr");
+    // Both parts are exported.
     const panel = await openExport();
     fireEvent.click(within(panel).getByRole("button", { name: "JSON herunterladen" }));
     expect(rec.json[0]!.parts.map((p) => p.name)).toEqual(["Ball", "Ohr"]);

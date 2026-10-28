@@ -9,11 +9,11 @@ import {
   type PartContent,
 } from "@crochetbuilder/engine";
 import { demoDocument, emptyDocument, type BuilderDoc } from "../state/document.js";
+import { MAX_PART_QUANTITY, MAX_PARTS } from "../state/editor.js";
 import {
   documentFromExport,
   importFile,
   MAX_IMPORT_FILE_BYTES,
-  multiPartNotice,
   parseImportText,
   shareErrorMessage,
 } from "./import.js";
@@ -53,13 +53,15 @@ describe("prepareExport", () => {
     expect(() => prepareExport(doc)).toThrow(ExportValidationError);
   });
 
-  it("renders several parts with a heading line each", () => {
+  it("renders several parts with a heading line each, worded like the PDF and the viewer", () => {
     const doc = ball();
     doc.parts.push({ name: "Ohr", quantity: 2, content: structuredClone(doc.parts[0]!.content) });
+    doc.parts.push({ name: " ", quantity: 1, content: { schemaVersion: 1, rows: [] } });
     const lines = renderedLines(doc);
     expect(lines[0]).toBe("Ball:");
-    expect(lines[12]).toBe("Ohr (2×):");
-    expect(lines).toHaveLength(24);
+    expect(lines[12]).toBe("Ohr ×2:");
+    expect(lines[24]).toBe("Teil 3:");
+    expect(lines).toHaveLength(25);
   });
 });
 
@@ -232,25 +234,46 @@ describe("import: several parts", () => {
     return doc;
   };
 
-  it("keeps every part and says that only the first one is edited", () => {
+  it("keeps every part, pins all their rows and needs no notice", () => {
     const result = parseImportText(JSON.stringify(prepareExport(twoParts())), "teile.json");
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.doc.parts).toHaveLength(2);
     expect(result.doc.parts[1]!.name).toBe("Ohr");
-    expect(result.notice).toBe(
-      "Diese Datei enthält 2 Teile; der Builder bearbeitet bisher nur das erste. Die übrigen bleiben erhalten und werden mit exportiert.",
-    );
-    // The hidden part is exported again.
+    expect(result.notice).toBeUndefined();
+    expect(result.pinned).toEqual(result.doc.parts.flatMap((p) => p.content.rows.map((r) => r.id)));
     expect(prepareExport(result.doc).parts).toEqual(prepareExport(twoParts()).parts);
   });
 
-  it("links get the same notice, worded for a link; one part has none", () => {
-    const fromLink = documentFromExport(prepareExport(twoParts()), ids("x"), "link");
-    expect(fromLink.ok && fromLink.notice).toBe(multiPartNotice(2, "link"));
-    expect(multiPartNotice(3, "link")).toMatch(/^Dieser Link enthält 3 Teile;/);
-    const single = documentFromExport(prepareExport(ball()), ids("y"), "link");
-    expect(single.ok && single.notice).toBeUndefined();
+  it("refuses more than MAX_PARTS parts or a quantity above MAX_PART_QUANTITY, with a German message", () => {
+    const many = prepareExport(ball());
+    const content = { schemaVersion: 1 as const, rows: [] };
+    many.parts = Array.from({ length: MAX_PARTS + 1 }, (_, i) => ({ name: `T${i}`, quantity: 1, content }));
+    expect(documentFromExport(many, ids("m"))).toEqual({
+      ok: false,
+      message: `Die Anleitung hat ${MAX_PARTS + 1} Teile – der Builder bearbeitet höchstens ${MAX_PARTS}.`,
+    });
+    many.parts = many.parts.slice(0, MAX_PARTS);
+    expect(documentFromExport(many, ids("m")).ok).toBe(true);
+
+    const often = prepareExport(ball());
+    often.parts.push({ name: "", quantity: MAX_PART_QUANTITY + 1, content });
+    const text = JSON.stringify(often);
+    expect(parseImportText(text, "viele.json")).toEqual({
+      ok: false,
+      message: `„Teil 2“ soll ${MAX_PART_QUANTITY + 1}-mal gehäkelt werden – der Builder erlaubt höchstens ${MAX_PART_QUANTITY}.`,
+    });
+  });
+
+  it("row ids repeated across parts get fresh ones (ids are unique in the whole document)", () => {
+    const doc = ball();
+    doc.parts.push({ name: "Kopie", quantity: 1, content: structuredClone(doc.parts[0]!.content) });
+    const result = documentFromExport(prepareExport(doc), ids("x"));
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const all = result.doc.parts.flatMap((p) => p.content.rows.map((r) => r.id));
+    expect(new Set(all).size).toBe(all.length);
+    expect(result.doc.parts[0]!.content.rows.map((r) => r.id)).toEqual(doc.parts[0]!.content.rows.map((r) => r.id));
   });
 });
 

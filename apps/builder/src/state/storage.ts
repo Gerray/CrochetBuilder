@@ -6,6 +6,9 @@
  * A stored value that is not a valid document (older/foreign format, over the limits) is
  * never discarded: it is copied to a backup key and reported as `invalid`, and the app
  * must not autosave over it until the person decided what to do.
+ *
+ * The part shown in the editor is UI state: it is kept under its own small localStorage key,
+ * so switching parts never rewrites the document.
  */
 
 import {
@@ -14,6 +17,7 @@ import {
   opsWithinLimits,
 } from "@crochetbuilder/engine";
 import type { BuilderDoc } from "./document.js";
+import { MAX_PART_QUANTITY, MAX_PARTS } from "./editor.js";
 
 export interface StoredState {
   doc: BuilderDoc;
@@ -34,22 +38,28 @@ const KEY = "current";
 const BACKUP_IDB_KEY = "backup";
 export const LS_KEY = "crochetbuilder:current";
 export const BACKUP_KEY = "crochetbuilder:backup";
+/** Index of the part shown in the editor. */
+export const PART_KEY = "crochetbuilder:part";
 
 function savedAtOf(value: unknown): number {
   const at = (value as { savedAt?: unknown } | null)?.savedAt;
   return typeof at === "number" && Number.isFinite(at) ? at : 0;
 }
 
-/** Check a stored value; anything that is not a valid one-part document within limits → null. */
+/**
+ * Check a stored value; anything that is not a valid document with 1 to `MAX_PARTS` parts
+ * (quantity at most `MAX_PART_QUANTITY`) within the row limits → null. Saves from the
+ * one-part builder load unchanged.
+ */
 export function parseStored(value: unknown): StoredState | null {
   if (!value || typeof value !== "object") return null;
   const record = value as { doc?: unknown; pinned?: unknown };
   const parsed = BuilderExportSchema.safeParse(record.doc);
-  if (!parsed.success || parsed.data.parts.length === 0) return null;
-  const withinLimits = parsed.data.parts.every((part) =>
-    part.content.rows.every(
-      (row) => opsWithinLimits(row.ops) && row.stitchCountTarget <= MAX_STITCH_COUNT_TARGET,
-    ),
+  if (!parsed.success || parsed.data.parts.length === 0 || parsed.data.parts.length > MAX_PARTS) return null;
+  const withinLimits = parsed.data.parts.every(
+    (part) =>
+      part.quantity <= MAX_PART_QUANTITY &&
+      part.content.rows.every((row) => opsWithinLimits(row.ops) && row.stitchCountTarget <= MAX_STITCH_COUNT_TARGET),
   );
   if (!withinLimits) return null;
   const pinned = Array.isArray(record.pinned) ? record.pinned.filter((x): x is string => typeof x === "string") : [];
@@ -166,6 +176,17 @@ export async function saveState(state: { doc: BuilderDoc; pinned: readonly strin
   const lsOk = lsPut(LS_KEY, record);
   const idbOk = await idbPut(KEY, record);
   if (!lsOk && !idbOk) throw new Error("Speichern fehlgeschlagen");
+}
+
+/** The part last shown (0 if none was stored); the editor clamps it to the document. */
+export function loadShownPart(): number {
+  const value = lsGet(PART_KEY);
+  return Number.isInteger(value) && (value as number) >= 0 ? (value as number) : 0;
+}
+
+/** Remember the part shown — a tiny synchronous write, independent of the document. */
+export function saveShownPart(index: number): void {
+  lsPut(PART_KEY, index);
 }
 
 /** Test hook: forget the cached database connection. */

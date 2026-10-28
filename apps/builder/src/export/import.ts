@@ -15,6 +15,7 @@ import {
   type PartContent,
 } from "@crochetbuilder/engine";
 import { newId, type BuilderDoc } from "../state/document.js";
+import { MAX_PART_QUANTITY, MAX_PARTS } from "../state/editor.js";
 
 /** Files above this size are not read at all (bytes). */
 export const MAX_IMPORT_FILE_BYTES = 5 * 1024 * 1024;
@@ -29,18 +30,6 @@ export type ImportResult =
       notice?: string;
     }
   | { ok: false; message: string };
-
-/** Where an imported document comes from (for the wording of notices). */
-export type ImportSource = "file" | "link";
-
-/**
- * The builder edits only the first part (MVP); the others are kept untouched and appear
- * again in every export, PDF and the viewer. Opening such a document says so.
- */
-export function multiPartNotice(parts: number, source: ImportSource): string {
-  const where = source === "file" ? "Diese Datei" : "Dieser Link";
-  return `${where} enthält ${parts} Teile; der Builder bearbeitet bisher nur das erste. Die übrigen bleiben erhalten und werden mit exportiert.`;
-}
 
 const TOO_DEEP_MESSAGE = "Die Anleitung in der Datei ist zu tief verschachtelt (zu viele Wiederholungen ineinander).";
 
@@ -86,12 +75,22 @@ function uniqueRowIds(doc: BuilderDoc, makeId: () => string): BuilderDoc {
  * A validated export as an editor document: `rendered` is dropped (it is regenerated on
  * every export), duplicate row ids are replaced, the editor limits are checked.
  */
-export function documentFromExport(
-  exp: BuilderExport,
-  makeId: () => string = newId,
-  source: ImportSource = "file",
-): ImportResult {
+export function documentFromExport(exp: BuilderExport, makeId: () => string = newId): ImportResult {
   if (exp.parts.length === 0) return { ok: false, message: "Die Anleitung enthält keine Teile." };
+  if (exp.parts.length > MAX_PARTS) {
+    return {
+      ok: false,
+      message: `Die Anleitung hat ${exp.parts.length} Teile – der Builder bearbeitet höchstens ${MAX_PARTS}.`,
+    };
+  }
+  const many = exp.parts.findIndex((p) => p.quantity > MAX_PART_QUANTITY);
+  if (many >= 0) {
+    const part = exp.parts[many]!;
+    return {
+      ok: false,
+      message: `„${part.name.trim() || `Teil ${many + 1}`}“ soll ${part.quantity}-mal gehäkelt werden – der Builder erlaubt höchstens ${MAX_PART_QUANTITY}.`,
+    };
+  }
   if (!exp.parts.every((p) => withinLimits(p.content))) {
     return {
       ok: false,
@@ -101,9 +100,7 @@ export function documentFromExport(
   const { rendered: _rendered, ...rest } = exp;
   const doc = uniqueRowIds(rest, makeId);
   const pinned = doc.parts.flatMap((p) => p.content.rows.map((r) => r.id));
-  return doc.parts.length > 1
-    ? { ok: true, doc, pinned, notice: multiPartNotice(doc.parts.length, source) }
-    : { ok: true, doc, pinned };
+  return { ok: true, doc, pinned };
 }
 
 /** A bare part content becomes a one-part document (title from the file name). */

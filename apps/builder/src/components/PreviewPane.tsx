@@ -44,7 +44,7 @@ export const loadModelCanvas: ViewLoader = () =>
  * thread), its real size, key figures and the findings list.
  */
 export interface PreviewPaneProps {
-  /** The part being edited (MVP: `parts[0].content`). */
+  /** The part shown in the editor (`doc.parts[n].content`). */
   content: PartContent;
   /** Gauge from the document overview (may be empty → engine defaults). */
   gauge: Gauge | undefined;

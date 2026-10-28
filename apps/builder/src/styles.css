@@ -337,7 +337,8 @@ input[aria-invalid="true"]:focus-visible {
 .segmented button:hover {
   color: var(--c-text);
 }
-.segmented button[aria-checked="true"] {
+.segmented button[aria-checked="true"],
+.segmented button[aria-selected="true"] {
   background: var(--c-surface);
   color: var(--c-accent-text);
   font-weight: var(--fw-semibold);
@@ -519,6 +520,151 @@ input[aria-invalid="true"]:focus-visible {
   grid-template-columns: 7em minmax(0, 2fr) minmax(0, 1.4fr) 7em auto;
   gap: var(--sp-2);
   align-items: center;
+}
+
+/* ---------------------------------------------------------------- parts */
+
+/* Parts bar above the rows: a strip of part tabs plus the tools of the shown part. It stays
+ * at the top of the scrolling row column so the part in view is always named. */
+.parts-bar {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: grid;
+  gap: var(--sp-2);
+  max-width: 980px;
+  padding: var(--sp-3) var(--sp-4) var(--sp-2);
+  background: var(--c-bg);
+  border-bottom: var(--bd-hairline);
+}
+.parts-strip {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+/* All parts stay visible: the tabs wrap onto a second line rather than scroll away. */
+.parts-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-1);
+  min-width: 0;
+  padding: 2px; /* room for the focus ring */
+}
+.part-tab {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: var(--h-control-sm);
+  padding: 0 var(--sp-3);
+  border: var(--bd-hairline);
+  border-radius: var(--r-pill);
+  background: var(--c-surface);
+  color: var(--c-text-2);
+  font-size: var(--fs-sm);
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    background-color var(--mo-fast),
+    border-color var(--mo-fast),
+    color var(--mo-fast);
+}
+.part-tab:hover {
+  border-color: var(--c-border);
+  color: var(--c-text);
+}
+.part-tab[aria-selected="true"] {
+  border-color: var(--c-accent-base);
+  background: var(--c-accent-subtle);
+  color: var(--c-text);
+  font-weight: var(--fw-semibold);
+}
+.part-tab:focus-visible {
+  outline: var(--bd-focus);
+  outline-offset: 1px;
+}
+.part-tab-name {
+  max-width: 14em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.part-tab-qty {
+  color: var(--c-accent-text);
+  font-weight: var(--fw-semibold);
+}
+.part-tab-count {
+  color: var(--c-text-mute);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-regular);
+  font-variant-numeric: tabular-nums;
+}
+/* Validation light: green = in order, red ring = notes, red = errors. */
+.part-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: var(--r-pill);
+  background: var(--c-ok);
+}
+.part-warning .part-dot {
+  background: transparent;
+  box-shadow: inset 0 0 0 2px var(--c-warn);
+}
+.part-error .part-dot {
+  background: var(--c-warn);
+}
+.parts-add {
+  flex: none;
+}
+.part-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2) var(--sp-3);
+}
+.part-name-input {
+  flex: 0 1 14em;
+  min-width: 8em;
+  min-height: var(--h-control-sm) !important;
+  font-weight: var(--fw-semibold);
+}
+.part-quantity {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+}
+.part-tools-label {
+  margin-right: var(--sp-1);
+  color: var(--c-text-mute);
+  font-size: var(--fs-xs);
+}
+.part-quantity-input {
+  width: 3.2em;
+  min-height: var(--h-control-sm) !important;
+  text-align: center;
+}
+.part-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+.parts-total {
+  margin-left: auto;
+  color: var(--c-text-mute);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.parts-notice {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-1) var(--sp-1) var(--sp-1) var(--sp-3);
+  border: var(--bd-hairline);
+  border-radius: var(--r-input);
+  background: var(--c-surface);
+  font-size: var(--fs-sm);
 }
 
 /* ---------------------------------------------------------------- rows */

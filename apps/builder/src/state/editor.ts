@@ -2,6 +2,11 @@
  * Editor state: the document plus undo/redo history. A pure reducer — ids for new rows
  * arrive inside the action (see `actions.ts`), so the reducer stays deterministic.
  *
+ * Several parts: `part` is the index of the part shown in the editor — UI state, not part of
+ * the document and no undo step of its own. Row edits find their part by row id (row ids are
+ * unique across the document); every history entry remembers which part to show after undoing
+ * or redoing it, so undo never silently changes a part that is out of sight.
+ *
  * Soll (stitchCountTarget) rule: a row's Soll follows its Ist while the two agree and the
  * Soll was never set explicitly. Typing a Soll, "Soll übernehmen" or a trailing "(18)" in
  * the free text pins it; from then on a differing Ist is reported, never silently copied.
@@ -27,10 +32,17 @@ import type { OpPath } from "./op-tree.js";
 
 export const HISTORY_LIMIT = 200;
 
+/** More parts are refused (keeps the parts bar and the export manageable). */
+export const MAX_PARTS = 50;
+/** Highest quantity of one part ("×99"). */
+export const MAX_PART_QUANTITY = 99;
+
 export interface EditorState {
   doc: BuilderDoc;
   /** Row ids whose Soll was set explicitly (see module doc). */
   pinned: readonly string[];
+  /** Index of the part shown in the editor (always a valid index into `doc.parts`). */
+  part: number;
   past: readonly Snapshot[];
   future: readonly Snapshot[];
   /** Key of the last coalescable edit (typing into one field = one undo step). */
@@ -40,7 +52,13 @@ export interface EditorState {
 interface Snapshot {
   doc: BuilderDoc;
   pinned: readonly string[];
+  /** Part to show after undoing this step (undefined: keep the current one). */
+  undoPart: number | undefined;
+  /** Part to show after redoing it. */
+  redoPart: number | undefined;
 }
+
+type Part = BuilderDoc["parts"][number];
 
 export type RowPatch = Partial<Pick<Row, "label" | "type" | "note">>;
 export type StitchPatch = Partial<Pick<StitchOp, "code" | "count" | "modifiers">>;
@@ -70,40 +88,97 @@ export type EditorAction =
   | { type: "moveOp"; rowId: string; path: OpPath; delta: number }
   | { type: "wrapInRepeat"; rowId: string; path: OpPath; times?: number; length?: number }
   | { type: "unwrapRepeat"; rowId: string; path: OpPath }
+  // parts
+  | { type: "selectPart"; index: number }
+  | { type: "addPart"; rowId: string }
+  | { type: "renamePart"; index: number; name: string }
+  | { type: "setPartQuantity"; index: number; quantity: number }
+  /** `rowIds`: one fresh id per row of the source part, in order (see `actions.ts`). */
+  | { type: "duplicatePart"; index: number; rowIds: readonly string[] }
+  | { type: "deletePart"; index: number }
+  | { type: "movePart"; index: number; delta: number }
   // document
   | { type: "replaceDocument"; doc: BuilderDoc; pinned?: readonly string[] }
-  | { type: "hydrate"; doc: BuilderDoc; pinned?: readonly string[] }
+  | { type: "hydrate"; doc: BuilderDoc; pinned?: readonly string[]; part?: number }
   | { type: "undo" }
   | { type: "redo" }
   /** Typing in a field ended (blur): the next edit starts a new undo step. */
   | { type: "endTyping" };
 
-export function initEditorState(doc: BuilderDoc, pinned: readonly string[] = []): EditorState {
-  return { doc, pinned, past: [], future: [], lastKey: undefined };
+export function initEditorState(doc: BuilderDoc, pinned: readonly string[] = [], part = 0): EditorState {
+  return { doc, pinned, part: clampPart(doc, part), past: [], future: [], lastKey: undefined };
 }
 
-/** The part being edited (MVP: always the first). */
-export function currentPart(doc: BuilderDoc): PartContent {
-  return doc.parts[0]!.content;
+/** A valid part index of `doc` (documents always hold at least one part). */
+export function clampPart(doc: BuilderDoc, index: number): number {
+  const last = Math.max(0, doc.parts.length - 1);
+  return Number.isInteger(index) ? Math.min(last, Math.max(0, index)) : 0;
+}
+
+/** Content of the part at `index` (default: the first), clamped to an existing part. */
+export function currentPart(doc: BuilderDoc, index = 0): PartContent {
+  return doc.parts[clampPart(doc, index)]!.content;
+}
+
+/** Content of the part shown in the editor. */
+export function selectedPart(state: EditorState): PartContent {
+  return currentPart(state.doc, state.part);
+}
+
+/** Index of the part that holds row `rowId`, or -1. */
+export function partOfRow(doc: BuilderDoc, rowId: string): number {
+  return doc.parts.findIndex((p) => p.content.rows.some((r) => r.id === rowId));
+}
+
+/**
+ * "Teil n" for a new part: n = number of parts after adding, skipping names in use — also
+ * the "Teil n" shown for an unnamed part.
+ */
+export function nextPartName(doc: BuilderDoc): string {
+  const used = new Set(doc.parts.map((p, i) => p.name.trim() || `Teil ${i + 1}`));
+  let n = doc.parts.length + 1;
+  while (used.has(`Teil ${n}`)) n++;
+  return `Teil ${n}`;
+}
+
+/** The part shown after deleting the part at `deleted` (`remaining` parts are left). */
+function indexAfterDelete(current: number, deleted: number, remaining: number): number {
+  if (current > deleted) return current - 1;
+  return Math.min(current, remaining - 1);
+}
+
+/** Where the part at `current` ends up when the part at `from` moves to `to`. */
+function indexAfterMove(current: number, from: number, to: number): number {
+  if (current === from) return to;
+  if (from < current && to >= current) return current - 1;
+  if (from > current && to <= current) return current + 1;
+  return current;
 }
 
 // ---------------------------------------------------------------------------
 // Document edits (no history concerns)
 // ---------------------------------------------------------------------------
 
-function withRows(doc: BuilderDoc, fn: (rows: Row[]) => Row[]): BuilderDoc {
-  const part = doc.parts[0];
+function withPart(doc: BuilderDoc, index: number, fn: (part: Part) => Part): BuilderDoc {
+  const part = doc.parts[index];
   if (!part) return doc;
-  const rows = fn(part.content.rows);
-  if (rows === part.content.rows) return doc;
-  return {
-    ...doc,
-    parts: [{ ...part, content: { ...part.content, rows } }, ...doc.parts.slice(1)],
-  };
+  const next = fn(part);
+  if (next === part) return doc;
+  const parts = [...doc.parts];
+  parts[index] = next;
+  return { ...doc, parts };
 }
 
+function withRows(doc: BuilderDoc, index: number, fn: (rows: Row[]) => Row[]): BuilderDoc {
+  return withPart(doc, index, (part) => {
+    const rows = fn(part.content.rows);
+    return rows === part.content.rows ? part : { ...part, content: { ...part.content, rows } };
+  });
+}
+
+/** Edit row `rowId`, in whichever part it lives. */
 function withRow(doc: BuilderDoc, rowId: string, fn: (row: Row) => Row): BuilderDoc {
-  return withRows(doc, (rows) => {
+  return withRows(doc, partOfRow(doc, rowId), (rows) => {
     const index = rows.findIndex((r) => r.id === rowId);
     if (index < 0) return rows;
     const row = rows[index]!;
@@ -160,16 +235,21 @@ function cleanGauge(gauge: Gauge): Gauge | undefined {
 interface DocResult {
   doc: BuilderDoc;
   pinned: readonly string[];
+  /** The part this edit concerns, shown after undoing it (undefined: a document-wide edit). */
+  scope?: number;
+  /** The part to show from now on (default: unchanged); also shown after redoing it. */
+  select?: number;
 }
 
 function applyEdit(state: EditorState, action: EditorAction): DocResult {
   const { doc, pinned } = state;
   const same = { doc, pinned };
   const pin = (rowId: string) => (pinned.includes(rowId) ? pinned : [...pinned, rowId]);
-  const opsEdit = (rowId: string, fn: (ops: Op[]) => Op[]): DocResult => ({
-    doc: withRow(doc, rowId, (row) => rowWithOps(row, fn(row.ops), pinned)),
-    pinned,
-  });
+  // A row edit concerns the part that holds the row.
+  const rowScope = "rowId" in action ? partOfRow(doc, action.rowId) : -1;
+  const scoped = (result: DocResult): DocResult => (rowScope >= 0 ? { ...result, scope: rowScope } : result);
+  const opsEdit = (rowId: string, fn: (ops: Op[]) => Op[]): DocResult =>
+    scoped({ doc: withRow(doc, rowId, (row) => rowWithOps(row, fn(row.ops), pinned)), pinned });
 
   switch (action.type) {
     case "setTitle":
@@ -206,9 +286,12 @@ function applyEdit(state: EditorState, action: EditorAction): DocResult {
       return { doc: { ...doc, overview: { ...doc.overview, materials } }, pinned };
     }
 
-    case "addRow":
+    case "addRow": {
+      // After a given row (in its part), else at the end of the part being edited.
+      const anchor = action.afterId ? partOfRow(doc, action.afterId) : -1;
+      const index = anchor >= 0 ? anchor : state.part;
       return {
-        doc: withRows(doc, (rows) => {
+        doc: withRows(doc, index, (rows) => {
           const anchor = action.afterId ? rows.findIndex((r) => r.id === action.afterId) : rows.length - 1;
           const at = anchor < 0 ? rows.length : anchor + 1;
           // A new line takes the type (row/round) of the line above it.
@@ -217,19 +300,20 @@ function applyEdit(state: EditorState, action: EditorAction): DocResult {
           return [...rows.slice(0, at), row, ...rows.slice(at)];
         }),
         pinned,
+        scope: index,
       };
+    }
 
     case "deleteRow":
-      return {
-        doc: withRows(doc, (rows) =>
-          rows.some((r) => r.id === action.rowId) ? rows.filter((r) => r.id !== action.rowId) : rows,
-        ),
+      if (rowScope < 0) return same;
+      return scoped({
+        doc: withRows(doc, rowScope, (rows) => rows.filter((r) => r.id !== action.rowId)),
         pinned: pinned.includes(action.rowId) ? pinned.filter((id) => id !== action.rowId) : pinned,
-      };
+      });
 
     case "moveRow":
-      return {
-        doc: withRows(doc, (rows) => {
+      return scoped({
+        doc: withRows(doc, rowScope, (rows) => {
           const from = rows.findIndex((r) => r.id === action.rowId);
           const to = Math.max(0, Math.min(rows.length - 1, from + action.delta));
           if (from < 0 || to === from) return rows;
@@ -239,23 +323,23 @@ function applyEdit(state: EditorState, action: EditorAction): DocResult {
           return copy;
         }),
         pinned,
-      };
+      });
 
     case "duplicateRow": {
-      const source = currentPart(doc).rows.find((r) => r.id === action.rowId);
-      if (!source) return same;
-      return {
-        doc: withRows(doc, (rows) => {
+      const source = doc.parts[rowScope]?.content.rows.find((r) => r.id === action.rowId);
+      if (!source || partOfRow(doc, action.newId) >= 0) return same;
+      return scoped({
+        doc: withRows(doc, rowScope, (rows) => {
           const at = rows.findIndex((r) => r.id === action.rowId) + 1;
           const copy: Row = { ...structuredClone(source), id: action.newId };
           return [...rows.slice(0, at), copy, ...rows.slice(at)];
         }),
         pinned: pinned.includes(source.id) ? [...pinned, action.newId] : pinned,
-      };
+      });
     }
 
     case "updateRow":
-      return {
+      return scoped({
         doc: withRow(doc, action.rowId, (row) => {
           let next = row;
           for (const key of ["label", "type", "note"] as const) {
@@ -270,16 +354,16 @@ function applyEdit(state: EditorState, action: EditorAction): DocResult {
           return next;
         }),
         pinned,
-      };
+      });
 
     case "setTarget": {
       const target = action.target;
       if (!Number.isInteger(target) || target < 0 || target > MAX_STITCH_COUNT_TARGET) return same;
-      const row = currentPart(doc).rows.find((r) => r.id === action.rowId);
+      const row = doc.parts[rowScope]?.content.rows.find((r) => r.id === action.rowId);
       // An unchanged value is a no-op: no pin, no history entry.
       if (!row || row.stitchCountTarget === target) return same;
       const next = withRow(doc, action.rowId, (r) => ({ ...r, stitchCountTarget: target }));
-      return { doc: next, pinned: pin(action.rowId) };
+      return scoped({ doc: next, pinned: pin(action.rowId) });
     }
 
     case "adoptTarget": {
@@ -287,14 +371,16 @@ function applyEdit(state: EditorState, action: EditorAction): DocResult {
         const actual = computeRowStitches(row);
         return row.stitchCountTarget === actual ? row : { ...row, stitchCountTarget: actual };
       });
-      return { doc: next, pinned: pin(action.rowId) };
+      if (rowScope < 0) return same;
+      return scoped({ doc: next, pinned: pin(action.rowId) });
     }
 
     case "setRowOps":
-      return {
+      if (rowScope < 0) return same;
+      return scoped({
         doc: withRow(doc, action.rowId, (row) => rowWithOps(row, action.ops, pinned, action.target)),
         pinned: action.target === undefined ? pinned : pin(action.rowId),
-      };
+      });
 
     case "updateStitch":
       return opsEdit(action.rowId, (ops) =>
@@ -339,10 +425,86 @@ function applyEdit(state: EditorState, action: EditorAction): DocResult {
     case "unwrapRepeat":
       return opsEdit(action.rowId, (ops) => tree.unwrapRepeat(ops, action.path));
 
+    case "addPart": {
+      if (doc.parts.length >= MAX_PARTS || partOfRow(doc, action.rowId) >= 0) return same;
+      const part: Part = {
+        name: nextPartName(doc),
+        quantity: 1,
+        content: { schemaVersion: 1, rows: [emptyRow(action.rowId)] },
+      };
+      return { doc: { ...doc, parts: [...doc.parts, part] }, pinned, scope: state.part, select: doc.parts.length };
+    }
+
+    case "renamePart":
+      return {
+        doc: withPart(doc, action.index, (p) => (p.name === action.name ? p : { ...p, name: action.name })),
+        pinned,
+        scope: action.index,
+      };
+
+    case "setPartQuantity": {
+      const quantity = action.quantity;
+      if (!Number.isInteger(quantity) || quantity < 1 || quantity > MAX_PART_QUANTITY) return same;
+      return {
+        doc: withPart(doc, action.index, (p) => (p.quantity === quantity ? p : { ...p, quantity })),
+        pinned,
+        scope: action.index,
+      };
+    }
+
+    case "duplicatePart": {
+      const source = doc.parts[action.index];
+      if (!source || doc.parts.length >= MAX_PARTS) return same;
+      const ids = action.rowIds;
+      const rows = source.content.rows;
+      // One fresh id per row, none in use yet: ids stay unique across the document.
+      if (ids.length !== rows.length || new Set(ids).size !== ids.length) return same;
+      if (ids.some((id) => partOfRow(doc, id) >= 0)) return same;
+      const copy: Part = structuredClone(source);
+      copy.name = `${source.name.trim() || `Teil ${action.index + 1}`} (Kopie)`;
+      copy.content.rows = copy.content.rows.map((r, i) => ({ ...r, id: ids[i]! }));
+      const at = action.index + 1;
+      const copiedPins = rows.flatMap((r, i) => (pinned.includes(r.id) ? [ids[i]!] : []));
+      return {
+        doc: { ...doc, parts: [...doc.parts.slice(0, at), copy, ...doc.parts.slice(at)] },
+        pinned: copiedPins.length > 0 ? [...pinned, ...copiedPins] : pinned,
+        scope: action.index,
+        select: at,
+      };
+    }
+
+    case "deletePart": {
+      // A document always keeps at least one part.
+      const part = doc.parts[action.index];
+      if (!part || doc.parts.length <= 1) return same;
+      const gone = new Set(part.content.rows.map((r) => r.id));
+      const parts = doc.parts.filter((_, i) => i !== action.index);
+      return {
+        doc: { ...doc, parts },
+        pinned: pinned.some((id) => gone.has(id)) ? pinned.filter((id) => !gone.has(id)) : pinned,
+        scope: action.index,
+        // The next part takes its place in view (the previous one after the last part).
+        select: indexAfterDelete(state.part, action.index, parts.length),
+      };
+    }
+
+    case "movePart": {
+      const from = action.index;
+      const to = Math.max(0, Math.min(doc.parts.length - 1, from + action.delta));
+      if (!doc.parts[from] || to === from) return same;
+      const parts = [...doc.parts];
+      const [moved] = parts.splice(from, 1);
+      parts.splice(to, 0, moved!);
+      return { doc: { ...doc, parts }, pinned, scope: from, select: indexAfterMove(state.part, from, to) };
+    }
+
     case "replaceDocument":
+      return { doc: action.doc, pinned: action.pinned ?? [], scope: state.part, select: 0 };
+
     case "hydrate":
       return { doc: action.doc, pinned: action.pinned ?? [] };
 
+    case "selectPart":
     case "undo":
     case "redo":
     case "endTyping":
@@ -361,6 +523,10 @@ function coalesceKey(action: EditorAction): string | undefined {
       return "gauge";
     case "updateMaterial":
       return `material:${action.index}`;
+    case "renamePart":
+      return `part:${action.index}:name`;
+    case "setPartQuantity":
+      return `part:${action.index}:quantity`;
     case "updateRow":
       return "label" in action.patch || "note" in action.patch ? `row:${action.rowId}:text` : undefined;
     case "setTarget":
@@ -381,8 +547,9 @@ export function editorReducer(state: EditorState, action: EditorAction): EditorS
     return {
       doc: previous.doc,
       pinned: previous.pinned,
+      part: clampPart(previous.doc, previous.undoPart ?? state.part),
       past: state.past.slice(0, -1),
-      future: [{ doc: state.doc, pinned: state.pinned }, ...state.future],
+      future: [{ ...previous, doc: state.doc, pinned: state.pinned }, ...state.future],
       lastKey: undefined,
     };
   }
@@ -392,16 +559,22 @@ export function editorReducer(state: EditorState, action: EditorAction): EditorS
     return {
       doc: next.doc,
       pinned: next.pinned,
-      past: [...state.past, { doc: state.doc, pinned: state.pinned }],
+      part: clampPart(next.doc, next.redoPart ?? state.part),
+      past: [...state.past, { ...next, doc: state.doc, pinned: state.pinned }],
       future: state.future.slice(1),
       lastKey: undefined,
     };
   }
   if (action.type === "hydrate") {
-    return initEditorState(action.doc, action.pinned ?? []);
+    return initEditorState(action.doc, action.pinned ?? [], action.part ?? 0);
   }
   if (action.type === "endTyping") {
     return state.lastKey === undefined ? state : { ...state, lastKey: undefined };
+  }
+  if (action.type === "selectPart") {
+    // Switching parts is no edit, but it ends a typing streak.
+    const part = clampPart(state.doc, action.index);
+    return part === state.part ? state : { ...state, part, lastKey: undefined };
   }
 
   const result = applyEdit(state, action);
@@ -409,10 +582,15 @@ export function editorReducer(state: EditorState, action: EditorAction): EditorS
 
   const key = coalesceKey(action);
   const coalesce = key !== undefined && key === state.lastKey;
-  const past = coalesce
-    ? state.past
-    : [...state.past, { doc: state.doc, pinned: state.pinned }].slice(-HISTORY_LIMIT);
-  return { doc: result.doc, pinned: result.pinned, past, future: [], lastKey: key };
+  const entry: Snapshot = {
+    doc: state.doc,
+    pinned: state.pinned,
+    undoPart: result.scope,
+    redoPart: result.select ?? result.scope,
+  };
+  const past = coalesce ? state.past : [...state.past, entry].slice(-HISTORY_LIMIT);
+  const part = clampPart(result.doc, result.select ?? state.part);
+  return { doc: result.doc, pinned: result.pinned, part, past, future: [], lastKey: key };
 }
 
 export const canUndo = (state: EditorState): boolean => state.past.length > 0;

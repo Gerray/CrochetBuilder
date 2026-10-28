@@ -2,9 +2,9 @@
  * PDF layout as a pure function: pattern data in, a list of drawing commands (per page, in
  * millimetres) out. `pdf.ts` replays the commands with jsPDF; tests inspect them directly.
  *
- * A4 portrait: title, model image, materials, size basis and finished size, notes, then every
- * row as text with page breaks; a footer "Erstellt mit CrochetBuilder" and "Seite n von N"
- * on every page.
+ * A4 portrait: title, model image, an overview of the parts (several parts only), materials,
+ * size basis and finished size, notes, then every row as text — one section per part — with
+ * page breaks; a footer "Erstellt mit CrochetBuilder" and "Seite n von N" on every page.
  */
 
 /** jsPDF's standard fonts encode text as WinAnsi (cp1252). */
@@ -95,6 +95,8 @@ export interface PdfInput {
   /** Why the size is an estimate, or null. */
   estimate: string | null;
   notes?: string;
+  /** "Teile" overview: one line per part and the total; left out for a single part. */
+  overview?: { lines: string[]; total: string };
   parts: Array<{ heading: string | null; rows: string[] }>;
   image: PdfImage | null;
 }
@@ -252,6 +254,12 @@ export function layoutPdf(input: PdfInput, measure: TextMeasure): PdfLayout {
       format: /^data:image\/png/i.test(input.image.dataUrl) ? "PNG" : "JPEG",
     });
     y += h + 4;
+  }
+
+  if (input.overview && input.overview.lines.length > 0) {
+    heading("Teile");
+    for (const line of input.overview.lines) paragraph(`• ${line}`, 10.5, { hang: 3 });
+    paragraph(input.overview.total, 10.5, { bold: true });
   }
 
   const materials = input.materials.filter((m) => m.trim() !== "");
