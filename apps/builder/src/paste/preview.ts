@@ -342,6 +342,13 @@ export function locateSources(text: string, parts: PreviewPart[]): void {
   }
 }
 
+/**
+ * Section headings and preamble starts that are never a title (the engine's preamble words
+ * plus the headings patterns use: "Material", "Anleitung", "Pattern", "Hinweise" …).
+ */
+const NOT_A_TITLE =
+  /^\s*(?:materials?|materialien|you\s+will\s+need|you'll\s+need|supplies|tools|abbreviations?|abkürzungen|abkürzung|glossary|legende|notes?|hinweise?|anmerkungen?|tips|anleitung|pattern|gauge|maschenprobe|größe|size|finished\s+size|skill(?:\s+level)?|difficulty|schwierigkeit(?:sgrad)?|yarn|garn|hook(?:\s+size)?|nadel(?:stärke)?|copyright|©|\(c\)|design(?:ed)?\s+by|www\.|https?:)(?![\p{L}])/iu;
+
 /** The first line of the text, when it is in the preamble and reads like a title. */
 export function titleCandidate(text: string, preamble: readonly string[]): string | undefined {
   const first = text
@@ -350,7 +357,7 @@ export function titleCandidate(text: string, preamble: readonly string[]): strin
     .map((l) => squash(l.replace(/ /g, " ")))
     .find((l) => l !== "");
   if (!first || squash(preamble[0] ?? "") !== first) return undefined;
-  if (first.length > 60 || /[:;©]|www\.|https?:|\.$/iu.test(first)) return undefined;
+  if (first.length > 60 || /[:;©]|www\.|https?:|\.$/iu.test(first) || NOT_A_TITLE.test(first)) return undefined;
   if (!/\p{L}{2}/u.test(first)) return undefined;
   return first;
 }

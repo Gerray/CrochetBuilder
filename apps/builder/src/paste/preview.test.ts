@@ -83,7 +83,11 @@ describe("buildPastePreview — notation", () => {
     const preview = buildPastePreview(us);
     expect(preview.locale).toBe("en_us");
     expect(preview.parts[0]!.name).toBe("Head");
-    expect(preview.parts[0]!.lines.map((l) => l.text)).toEqual(["1 MR, 6 fM (6)", "6 Zun (12)", "6× (1 fM, 1 Zun) (18)"]);
+    expect(preview.parts[0]!.lines.map((l) => l.text)).toEqual([
+      "1 MR, 6 fM (6)",
+      "6 Zun (12)",
+      "6× (1 fM, 1 Zun) (18)",
+    ]);
   });
 
   it("asks for confirmation when the detection is doubtful", () => {
@@ -133,7 +137,10 @@ describe("buildPastePreview — remarks without a row", () => {
 
 describe("source lines", () => {
   it("finds several rounds on one line (PDF text)", () => {
-    const preview = buildPastePreview("Kopf\n1. 6 sc in MR 2. inc x 6 (12) 3. (sc, inc) x 6 (18)\n4. 18 sc (18)", "en_us");
+    const preview = buildPastePreview(
+      "Kopf\n1. 6 sc in MR 2. inc x 6 (12) 3. (sc, inc) x 6 (18)\n4. 18 sc (18)",
+      "en_us",
+    );
     expect(preview.parts[0]!.lines.map((l) => l.source)).toEqual([2, 2, 2, 3]);
   });
 
@@ -156,13 +163,52 @@ describe("summaryText", () => {
 
 describe("titleCandidate", () => {
   it("takes a short first line that went to the preamble", () => {
-    expect(titleCandidate("\n  Kleiner Igel \nMaterial: Garn", ["Kleiner Igel", "Material: Garn"])).toBe("Kleiner Igel");
+    expect(titleCandidate("\n  Kleiner Igel \nMaterial: Garn", ["Kleiner Igel", "Material: Garn"])).toBe(
+      "Kleiner Igel",
+    );
   });
 
   it("refuses materials, long lines, sentences and lines that are pattern content", () => {
     expect(titleCandidate("Material: Garn", ["Material: Garn"])).toBeUndefined();
-    expect(titleCandidate("Dieses Muster ist für Anfänger gedacht.", ["Dieses Muster ist für Anfänger gedacht."])).toBeUndefined();
+    expect(
+      titleCandidate("Dieses Muster ist für Anfänger gedacht.", ["Dieses Muster ist für Anfänger gedacht."]),
+    ).toBeUndefined();
     expect(titleCandidate("x".repeat(61), ["x".repeat(61)])).toBeUndefined();
     expect(titleCandidate("Kopf\nRunde 1: 6 fM", [])).toBeUndefined();
+  });
+
+  it("never takes a section heading", () => {
+    const headings = [
+      "Material",
+      "Materialien",
+      "Materials",
+      "Abkürzungen",
+      "Abbreviations",
+      "Notes",
+      "Hinweise",
+      "Anleitung",
+      "Pattern",
+      "Gauge",
+      "Maschenprobe",
+      "Größe",
+      "Size",
+      "You will need",
+      "Supplies",
+      "Garn",
+      "Copyright 2026",
+      "Designed by Anna",
+      "MATERIAL",
+    ];
+    for (const heading of headings) {
+      expect(titleCandidate(`${heading}\nKopf\nRunde 1: 6 fM (6)`, [heading]), heading).toBeUndefined();
+    }
+    // A title that merely contains such a word is fine.
+    expect(titleCandidate("Igel mit Muster", ["Igel mit Muster"])).toBe("Igel mit Muster");
+  });
+
+  it("is not offered when the text starts with a heading", () => {
+    const preview = buildPastePreview(`Material\n50 g Garn\n\n${SAMPLE_PATTERN.split("\n").slice(4).join("\n")}`);
+    expect(preview.preamble[0]).toBe("Material");
+    expect(preview.title).toBeUndefined();
   });
 });

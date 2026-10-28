@@ -1,9 +1,24 @@
 import { describe, expect, it } from "vitest";
 import { demoDocument, emptyDocument, type BuilderDoc } from "../state/document.js";
-import { MAX_PARTS, MAX_PART_QUANTITY, canUndo, editorReducer, initEditorState, type EditorAction } from "../state/editor.js";
+import {
+  MAX_PARTS,
+  MAX_PART_QUANTITY,
+  canUndo,
+  editorReducer,
+  initEditorState,
+  type EditorAction,
+} from "../state/editor.js";
 import { UNREAD_ROW_LABEL } from "../state/import-messages.js";
 import { SAMPLE_PATTERN } from "../test/samplePattern.js";
-import { applyPaste, pasteBlocker, type PartEdit, type PasteOptions } from "./apply.js";
+import {
+  applyPaste,
+  effectiveMode,
+  notesWith,
+  partEdit,
+  pasteBlocker,
+  type PartEdit,
+  type PasteOptions,
+} from "./apply.js";
 import { buildPastePreview, type PastePreview } from "./preview.js";
 
 const ids = (prefix = "new") => {
@@ -53,12 +68,12 @@ describe("applyPaste — as a new pattern", () => {
     expect(doc.parts[2]!.content.rows[3]).toMatchObject({ label: UNREAD_ROW_LABEL, ops: [] });
   });
 
-  it("keeps the old title when the text has none and leaves the notes empty without preamble", () => {
+  it("gives a new pattern an empty title when the text has none, and empty notes without preamble", () => {
     const text = SAMPLE_PATTERN.split("\n").slice(4).join("\n");
-    const old = { ...emptyDocument("x"), title: "Mein Igel" };
+    const old = { ...demoDocument(ids("old"), "sphere"), title: "Mein Igel" };
     const action = actionOf(buildPastePreview(text), old, replace);
     if (action.type !== "replaceDocument") throw new Error("expected replaceDocument");
-    expect(action.doc.title).toBe("Mein Igel");
+    expect(action.doc.title).toBe("");
     expect(action.doc.overview.notes).toBeUndefined();
   });
 
@@ -70,7 +85,10 @@ describe("applyPaste — as a new pattern", () => {
   });
 
   it("applies edited names and quantities", () => {
-    const edits = new Map<number, PartEdit>([[2, { name: "  Ohr  ", quantity: 4 }], [0, { name: "", quantity: 1 }]]);
+    const edits = new Map<number, Partial<PartEdit>>([
+      [2, { name: "  Ohr  ", quantity: 4 }],
+      [0, { name: "" }],
+    ]);
     const action = actionOf(preview, emptyDocument("x"), { ...replace, edits });
     if (action.type !== "replaceDocument") throw new Error("expected replaceDocument");
     expect(action.doc.parts.map((p) => [p.name, p.quantity])).toEqual([
@@ -92,6 +110,32 @@ describe("applyPaste — as a new pattern", () => {
 });
 
 describe("applyPaste — adding parts", () => {
+  it("into an empty pattern replaces it, so no empty Teil 1 stays in front", () => {
+    const empty = emptyDocument("x");
+    expect(effectiveMode("append", empty)).toBe("replace");
+    const result = applyPaste(preview, empty, append, ids());
+    if (!result.ok || result.action.type !== "replaceDocument") throw new Error("expected replaceDocument");
+    expect(result.mode).toBe("replace");
+    expect(result.action.doc.parts.map((p) => p.name)).toEqual(["Kopf", "Körper", "Ohren"]);
+    expect(result.action.doc.title).toBe("Kleiner Igel");
+    // A pattern with content keeps "append".
+    expect(applyPaste(preview, demoDocument(ids("old"), "sphere"), append, ids())).toMatchObject({ mode: "append" });
+  });
+
+  it("does not repeat a preamble the notes already hold (the same text imported twice)", () => {
+    const old = demoDocument(ids("old"), "sphere");
+    const once = editorReducer(initEditorState(old), actionOf(preview, old, append));
+    const second = applyPaste(preview, once.doc, append, ids("second"));
+    if (!second.ok) throw new Error(second.message);
+    expect(second.action).not.toHaveProperty("notes");
+    const twice = editorReducer(once, second.action);
+    expect(twice.doc.parts).toHaveLength(7);
+    expect(twice.doc.overview.notes).toBe(once.doc.overview.notes);
+    expect(notesWith("A\n\nB\nC", ["B", "C"])).toBe("A\n\nB\nC");
+    expect(notesWith("A", ["B"])).toBe("A\n\nB");
+    expect(notesWith(undefined, [])).toBe("");
+  });
+
   it("appends the parts, adds the preamble (with the title line) to the notes and selects the first new part", () => {
     const old = demoDocument(ids("old"), "sphere");
     const start = initEditorState(old, [], 0);
@@ -124,13 +168,33 @@ describe("applyPaste — adding parts", () => {
     const old = demoDocument(ids("old"), "sphere");
     const start = initEditorState(old);
     const usedId = old.parts[0]!.content.rows[0]!.id;
-    const part = { name: "X", quantity: 1, content: { schemaVersion: 1 as const, rows: [{ id: usedId, type: "round" as const, ops: [], stitchCountTarget: 0, note: "x" }] } };
+    const part = {
+      name: "X",
+      quantity: 1,
+      content: {
+        schemaVersion: 1 as const,
+        rows: [{ id: usedId, type: "round" as const, ops: [], stitchCountTarget: 0, note: "x" }],
+      },
+    };
     expect(editorReducer(start, { type: "appendParts", parts: [part], pinned: [] })).toBe(start);
-    const fresh = (i: number) => ({ ...part, content: { ...part.content, rows: [{ ...part.content.rows[0]!, id: `f${i}` }] } });
+    const fresh = (i: number) => ({
+      ...part,
+      content: { ...part.content, rows: [{ ...part.content.rows[0]!, id: `f${i}` }] },
+    });
     const tooMany = Array.from({ length: MAX_PARTS }, (_, i) => fresh(i));
     expect(editorReducer(start, { type: "appendParts", parts: tooMany, pinned: [] })).toBe(start);
-    expect(editorReducer(start, { type: "appendParts", parts: [{ ...fresh(1), quantity: 0 }], pinned: [] })).toBe(start);
+    expect(editorReducer(start, { type: "appendParts", parts: [{ ...fresh(1), quantity: 0 }], pinned: [] })).toBe(
+      start,
+    );
     expect(editorReducer(start, { type: "appendParts", parts: [], pinned: [] })).toBe(start);
+  });
+});
+
+describe("partEdit", () => {
+  it("takes only the edited field, the other one as read from the text", () => {
+    expect(partEdit(preview, 2, new Map([[2, { name: "Ohr" }]]))).toEqual({ name: "Ohr", quantity: 2 });
+    expect(partEdit(preview, 2, new Map([[2, { quantity: 5 }]]))).toEqual({ name: "Ohren", quantity: 5 });
+    expect(partEdit(preview, 0)).toEqual({ name: "Kopf", quantity: 1 });
   });
 });
 
@@ -143,7 +207,9 @@ describe("pasteBlocker — limits and guidance", () => {
 
   it("needs a confirmed notation when the detection is doubtful", () => {
     const text = "Body\n1. 6 dc in a magic ring (6)\n2. 6 inc (12)\n3. 18 dc (18)";
-    expect(pasteBlocker(buildPastePreview(text), replace, doc)).toBe("Bitte zuerst die Schreibweise bestätigen: Deutsch, US oder UK.");
+    expect(pasteBlocker(buildPastePreview(text), replace, doc)).toBe(
+      "Bitte zuerst die Schreibweise bestätigen: Deutsch, US oder UK.",
+    );
     expect(pasteBlocker(buildPastePreview(text, "en_uk"), replace, doc)).toBeNull();
   });
 
@@ -162,7 +228,7 @@ describe("pasteBlocker — limits and guidance", () => {
   });
 
   it(`checks quantities (1 to ${MAX_PART_QUANTITY})`, () => {
-    const edits = new Map<number, PartEdit>([[1, { name: "Körper", quantity: MAX_PART_QUANTITY + 1 }]]);
+    const edits = new Map<number, Partial<PartEdit>>([[1, { quantity: MAX_PART_QUANTITY + 1 }]]);
     expect(pasteBlocker(preview, { ...replace, edits }, doc)).toBe(
       `„Körper“: Die Anzahl muss zwischen 1 und ${MAX_PART_QUANTITY} liegen.`,
     );

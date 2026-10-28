@@ -5,13 +5,14 @@
  */
 
 import { MAX_STITCH_COUNT_TARGET, opsWithinLimits, rowLabel, rowOrdinals, type Row } from "@crochetbuilder/engine";
+import { isDocumentEmpty } from "../export/prepare.js";
 import { emptyDocument, newId, type BuilderDoc } from "../state/document.js";
 import { MAX_PART_QUANTITY, MAX_PARTS, type EditorAction } from "../state/editor.js";
 import type { PastePreview } from "./preview.js";
 
 export type PasteMode = "replace" | "append";
 
-/** Name and quantity of a part as edited in the dialog. */
+/** Name and quantity of a part as it will be imported. */
 export interface PartEdit {
   name: string;
   quantity: number;
@@ -19,8 +20,11 @@ export interface PartEdit {
 
 export interface PasteOptions {
   mode: PasteMode;
-  /** Per part index: the edited name and quantity (default: as read from the text). */
-  edits?: ReadonlyMap<number, PartEdit>;
+  /**
+   * Per part index: what was edited in the dialog — only the edited field, so a name edit
+   * never freezes the quantity read from the text (and the other way round).
+   */
+  edits?: ReadonlyMap<number, Partial<PartEdit>>;
   /** Put the preamble (materials, abbreviations, intro) into the pattern notes. */
   includePreamble: boolean;
 }
@@ -29,6 +33,8 @@ export type PasteResult =
   | {
       ok: true;
       action: EditorAction;
+      /** What was done: adding parts to an empty pattern is a new pattern. */
+      mode: PasteMode;
       /** Number of parts imported. */
       parts: number;
       /** Rows that stayed unread text (marked with a label). */
@@ -38,10 +44,23 @@ export type PasteResult =
 
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 
-/** The name and quantity a part will get (edited, else as read). */
-export function partEdit(preview: PastePreview, index: number, edits?: ReadonlyMap<number, PartEdit>): PartEdit {
+/**
+ * The mode that is really applied: adding parts to an empty pattern replaces it, so the empty
+ * placeholder part "Teil 1" does not stay in front of the imported parts.
+ */
+export function effectiveMode(mode: PasteMode, doc: BuilderDoc): PasteMode {
+  return mode === "append" && isDocumentEmpty(doc) ? "replace" : mode;
+}
+
+/** The name and quantity a part will get (edited fields, else as read). */
+export function partEdit(
+  preview: PastePreview,
+  index: number,
+  edits?: ReadonlyMap<number, Partial<PartEdit>>,
+): PartEdit {
   const part = preview.parts[index]!;
-  return edits?.get(index) ?? { name: part.name, quantity: part.quantity };
+  const edit = edits?.get(index);
+  return { name: edit?.name ?? part.name, quantity: edit?.quantity ?? part.quantity };
 }
 
 /** Why the preview cannot be imported as it is (German), or null. */
@@ -51,10 +70,11 @@ export function pasteBlocker(preview: PastePreview, options: PasteOptions, doc: 
   }
   if (preview.localeUncertain) return "Bitte zuerst die Schreibweise bestätigen: Deutsch, US oder UK.";
   const count = preview.parts.length;
-  if (options.mode === "replace" && count > MAX_PARTS) {
+  const mode = effectiveMode(options.mode, doc);
+  if (mode === "replace" && count > MAX_PARTS) {
     return `Der Text ergibt ${count} Teile – der Builder bearbeitet höchstens ${MAX_PARTS}. Bitte den Text kürzen.`;
   }
-  if (options.mode === "append" && doc.parts.length + count > MAX_PARTS) {
+  if (mode === "append" && doc.parts.length + count > MAX_PARTS) {
     const free = MAX_PARTS - doc.parts.length;
     return `Die Anleitung hat schon ${plural(doc.parts.length, "Teil", "Teile")}, höchstens ${MAX_PARTS} sind möglich – ${
       free > 0 ? `es passen nur noch ${free} dazu` : "es passt keins mehr dazu"
@@ -76,11 +96,14 @@ export function pasteBlocker(preview: PastePreview, options: PasteOptions, doc: 
   return null;
 }
 
-/** Notes after the import: the old ones (when appending) plus the preamble. */
-function notesWith(previous: string | undefined, preamble: readonly string[]): string {
+/**
+ * Notes after the import: the old ones (when appending) plus the preamble — unless the old
+ * notes already hold it (the same pattern imported twice).
+ */
+export function notesWith(previous: string | undefined, preamble: readonly string[]): string {
   const added = preamble.join("\n").trim();
   const old = previous?.trim() ?? "";
-  if (!added) return old;
+  if (!added || old.includes(added)) return old;
   return old ? `${old}\n\n${added}` : added;
 }
 
@@ -96,6 +119,7 @@ export function applyPaste(
 ): PasteResult {
   const blocker = pasteBlocker(preview, options, doc);
   if (blocker) return { ok: false, message: blocker };
+  const mode = effectiveMode(options.mode, doc);
 
   const pinned: string[] = [];
   const parts: BuilderDoc["parts"] = preview.parts.map((part, i) => {
@@ -110,22 +134,26 @@ export function applyPaste(
   const unread = preview.counts.unread;
 
   // A title taken from the text is not repeated in the notes.
-  const useTitle = options.mode === "replace" && preview.title !== undefined;
-  const preamble = options.includePreamble ? preview.preamble.filter((line, i) => !(useTitle && i === 0)) : [];
+  const useTitle = mode === "replace" && preview.title !== undefined;
+  const preamble = options.includePreamble ? preview.preamble.filter((_, i) => !(useTitle && i === 0)) : [];
 
-  if (options.mode === "replace") {
+  if (mode === "replace") {
     const fresh = emptyDocument(makeId());
     const notes = notesWith(undefined, preamble);
     const next: BuilderDoc = {
       ...fresh,
-      title: useTitle ? preview.title! : doc.title,
+      // A new pattern: its title comes from the text, or stays empty.
+      title: preview.title ?? "",
       overview: notes ? { ...fresh.overview, notes } : fresh.overview,
       parts,
     };
-    return { ok: true, action: { type: "replaceDocument", doc: next, pinned }, parts: parts.length, unread };
+    return { ok: true, action: { type: "replaceDocument", doc: next, pinned }, mode, parts: parts.length, unread };
   }
 
   const action: EditorAction = { type: "appendParts", parts, pinned };
-  if (preamble.length > 0) action.notes = notesWith(doc.overview.notes, preamble);
-  return { ok: true, action, parts: parts.length, unread };
+  if (preamble.length > 0) {
+    const notes = notesWith(doc.overview.notes, preamble);
+    if (notes !== (doc.overview.notes?.trim() ?? "")) action.notes = notes;
+  }
+  return { ok: true, action, mode, parts: parts.length, unread };
 }
