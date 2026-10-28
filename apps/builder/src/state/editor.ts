@@ -675,6 +675,7 @@ function coalesceKey(action: EditorAction): string | undefined {
     case "updateRow":
       return "label" in action.patch || "note" in action.patch ? `row:${action.rowId}:text` : undefined;
     case "setTarget":
+    case "unpinTarget":
       return `row:${action.rowId}:target`;
     case "updateStitch":
       return "count" in action.patch ? `op:${action.rowId}:${action.path.join(".")}` : undefined;

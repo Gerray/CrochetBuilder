@@ -1,4 +1,4 @@
-import { useState, type InputHTMLAttributes } from "react";
+import { useState, type InputHTMLAttributes, type Ref } from "react";
 
 type BaseInputProps = Omit<InputHTMLAttributes<HTMLInputElement>, "value" | "onChange" | "type" | "min" | "step">;
 
@@ -12,6 +12,7 @@ interface NumberFieldProps extends BaseInputProps {
   step?: number;
   decimal?: boolean;
   allowEmpty?: boolean;
+  inputRef?: Ref<HTMLInputElement>;
 }
 
 function formatNumber(value: number | undefined, decimal: boolean): string {
@@ -35,6 +36,7 @@ export function NumberField({
   className,
   onBlur,
   onKeyDown,
+  inputRef,
   ...rest
 }: NumberFieldProps) {
   const [draft, setDraft] = useState<string | null>(null);
@@ -54,6 +56,7 @@ export function NumberField({
   return (
     <input
       {...rest}
+      ref={inputRef}
       type="text"
       inputMode={decimal ? "decimal" : "numeric"}
       autoComplete="off"

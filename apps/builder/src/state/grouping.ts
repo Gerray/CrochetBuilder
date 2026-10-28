@@ -3,11 +3,13 @@
  * ("Runde 7–12 · 6 Runden"), like patterns write them. Display only — the rows stay separate
  * in the document with their own ids; edits on a group card go to every row of the group.
  *
- * Rows group when they have the same type, ops, Soll and note, no own label, and none of them
- * was split off by the user ("aufteilen" puts their ids into `split`).
+ * Rows group when they have the same type, ops, Soll and note, no own label, the same findings
+ * (a row whose check differs — the first of a run after a change of count — stands out as its
+ * own card, so a finding always names the card it belongs to), and none of them was split off
+ * by the user ("aufteilen" puts their ids into `split`).
  */
 
-import type { Row } from "@crochetbuilder/engine";
+import type { Finding, Row } from "@crochetbuilder/engine";
 import { isStitchRow } from "./rounds.js";
 
 export interface RowItem {
@@ -17,17 +19,25 @@ export interface RowItem {
   rows: Row[];
 }
 
-function groupKey(row: Row): string | null {
+function groupKey(row: Row, findings: readonly Finding[] | undefined): string | null {
   if (!isStitchRow(row) || row.label?.trim()) return null;
-  return JSON.stringify([row.type, row.ops, row.stitchCountTarget, row.note ?? null]);
+  const checks = (findings ?? []).map((f) => [f.code, f.expected ?? null, f.actual ?? null]);
+  return JSON.stringify([row.type, row.ops, row.stitchCountTarget, row.note ?? null, checks]);
 }
 
-/** Rows → cards: single rows and runs of identical rows. */
-export function groupRows(rows: readonly Row[], split: ReadonlySet<string> = new Set()): RowItem[] {
+/**
+ * Rows → cards: single rows and runs of identical rows. `findings` per row id (rows with
+ * different findings never share a card).
+ */
+export function groupRows(
+  rows: readonly Row[],
+  split: ReadonlySet<string> = new Set(),
+  findings: ReadonlyMap<string, readonly Finding[]> = new Map(),
+): RowItem[] {
   const items: RowItem[] = [];
   let previousKey: string | null = null;
   rows.forEach((row, i) => {
-    const key = split.has(row.id) ? null : groupKey(row);
+    const key = split.has(row.id) ? null : groupKey(row, findings.get(row.id));
     const current = items[items.length - 1];
     if (key !== null && key === previousKey && current) current.rows.push(row);
     else items.push({ start: i, rows: [row] });

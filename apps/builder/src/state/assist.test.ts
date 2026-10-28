@@ -203,6 +203,11 @@ describe("grouping", () => {
     expect(groupRows(list, new Set(["4"])).map((i) => i.rows.length).slice(0, 3)).toEqual([1, 2, 1]);
   });
 
+  it("rows with different findings never share a card", () => {
+    const findings = new Map([["3", [{ rowId: "3", severity: "warning", code: "CONSUMES_UNDERFLOW", message: "", expected: 9, actual: 6 } as const]]]);
+    expect(groupRows(list, new Set(), findings).map((i) => i.rows.length).slice(0, 4)).toEqual([1, 1, 1, 1]);
+  });
+
   it("labels ranges and counts", () => {
     expect(rangeLabel("Runde 7", "Runde 12")).toBe("Runde 7–12");
     expect(rangeLabel("Runde 7", "Runde 7")).toBe("Runde 7");
