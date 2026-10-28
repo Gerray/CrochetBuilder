@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { BuilderExportSchema, buildModel, computeRowStitches, validate } from "@crochetbuilder/engine";
+import { PreviewComputer } from "../preview/protocol.js";
 import { loadDemo } from "./actions.js";
+import { partFindings } from "./parts.js";
 import { DEMOS, demoDocument } from "./document.js";
 import { currentPart, editorReducer, initEditorState } from "./editor.js";
 
@@ -66,7 +68,19 @@ describe("demo patterns", () => {
     // Row ids are unique across all parts.
     const ids = doc.parts.flatMap((p) => p.content.rows.map((r) => r.id));
     expect(new Set(ids).size).toBe(ids.length);
-    // Each part builds a closed or tubular model; the ears are long and slim.
+    // Every part builds a 3D model as the preview computes it (stitch lattice), of a real
+    // size, without findings — also against the preview's stitch budget.
+    const computer = new PreviewComputer();
+    for (const [i, part] of doc.parts.entries()) {
+      expect(partFindings(part.content), part.name).toEqual([]);
+      const result = computer.compute({ id: i, content: part.content, gauge: doc.overview.gauge, style: "stitches" });
+      expect(result.kind, part.name).toBe("model");
+      if (result.kind !== "model") continue;
+      const { width, height, depth } = result.model.size;
+      for (const v of [width, height, depth]) expect(Number.isFinite(v) && v > 5, part.name).toBe(true);
+      expect(result.model.rowIds, part.name).toEqual(part.content.rows.map((r) => r.id));
+    }
+    // The ears are long and slim, the head round and wide.
     const model = (name: string) => buildModel(doc.parts.find((p) => p.name === name)!.content, doc.overview.gauge);
     const head = model("Kopf");
     const ear = model("Ohr");
