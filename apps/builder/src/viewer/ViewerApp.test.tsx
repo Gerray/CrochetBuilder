@@ -118,6 +118,8 @@ describe("ViewerApp", () => {
 
   it("the TellmeCrochet notice: focus on „Weiter“, closed by Escape or a click elsewhere", async () => {
     render(<ViewerApp location={at("", `#data=${await encodeShare(ballExport())}`)} />);
+    // Let the page settle (model loaded) so nothing re-renders between the steps.
+    await waitFor(() => expect(fakeViews.last?.mesh?.rowIds).toHaveLength(11));
     const link = await screen.findByRole("link", { name: "In TellmeCrochet öffnen" });
     const notice = () => screen.queryByRole("note", { name: "Hinweis zu TellmeCrochet" });
     expect(fireEvent.click(link)).toBe(false);

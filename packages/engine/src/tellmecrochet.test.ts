@@ -444,6 +444,13 @@ describe("German wording", () => {
       "Teil 2: Kopf in der Mitte zwischen Reihe 1 und 2 annähen – gut feststecken.",
     );
     expect(describePlacement(pl({ target: "weg", kind: "attach", part: "auch-weg" }), parts)).toBe("weg: auch-weg vorne annähen.");
+    // A note that is a whole sentence (as the text import writes it) ends with one full stop.
+    expect(describePlacement(pl({ note: "Augen einsetzen, 4 M auseinander. " }), parts)).toBe(
+      "Kopf: Sicherheitsaugen vorne zwischen Runde 1 und 2 einsetzen – Augen einsetzen, 4 M auseinander.",
+    );
+    expect(describePlacement(pl({ kind: "embroidery", note: "Nase sticken!" }), parts)).toBe(
+      "Kopf: Nase sticken vorne zwischen Runde 1 und 2 aufsticken.",
+    );
     expect(describePlacement(pl({ row: "nope" }), parts)).toBe("Kopf: Sicherheitsaugen vorne einsetzen.");
     const labelled = [part([round("x", [sc(6)], 6, { label: "Rnd 1–3" }), round("y", [], 0, { note: "Augen" }), round("z", [sc(6)], 6)], { id: "k", name: "Kopf" })];
     expect(describePlacement(pl({ row: "x" }), labelled)).toBe("Kopf: Sicherheitsaugen vorne zwischen Rnd 1–3 und Runde 2 einsetzen.");

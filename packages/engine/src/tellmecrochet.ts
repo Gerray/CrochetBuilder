@@ -321,7 +321,8 @@ export function describePlacement(placement: Placement, parts: readonly BuilderP
   const phrase = targetIndex < 0 ? null : rowPhrase(parts[targetIndex]!.content.rows, placement.row);
   const side = phrase?.type === "row" ? rowSide(placement.angle) : roundSide(placement.angle);
   const where = [side, phrase?.text ?? ""].filter(Boolean).join(" ");
-  const note = placement.note?.trim() ?? "";
+  // The sentence ends with our own full stop: a note's closing punctuation is dropped.
+  const note = (placement.note ?? "").trim().replace(/[\s.!?…]+$/u, "");
   const size = placement.size !== undefined ? `${deNum(placement.size)} mm` : "";
 
   let text: string;
