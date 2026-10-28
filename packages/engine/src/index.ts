@@ -208,6 +208,7 @@ export {
   STITCH_NAMES,
   MOD_ABBREVIATIONS,
   MOD_NAMES,
+  AROUND_MARKS,
 } from "./notation.js";
 export type { NotationLocale, ParseRowResult, ParseRowErrorCode, ParseRowContext } from "./notation.js";
 
