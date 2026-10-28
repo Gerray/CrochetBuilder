@@ -328,5 +328,67 @@ describe("storage", () => {
     expect(parseStored({ doc: { ...doc, parts: [] } })).toBeNull();
     expect(parseStored({ doc: { title: 1 } })).toBeNull();
     expect(parseStored(null)).toBeNull();
+    // Provenance (E25) only when it is really `true`.
+    expect(parseStored({ doc, imported: true })).toEqual({ doc, pinned: [], imported: true, savedAt: 0 });
+    expect(parseStored({ doc, imported: "ja" })).toEqual({ doc, pinned: [], savedAt: 0 });
+  });
+});
+
+describe("provenance of pasted text (E25)", () => {
+  const pastedPart = () => ({
+    name: "Kopf",
+    quantity: 1,
+    content: { schemaVersion: 1 as const, rows: [{ id: "p1", type: "round" as const, ops: [sc(6)], stitchCountTarget: 6 }] },
+  });
+
+  it("starts as the author's own; appending pasted parts marks the document", () => {
+    const start = fresh();
+    expect(start.imported).toBe(false);
+    const pasted = run(start, { type: "appendParts", parts: [pastedPart()], pinned: [] });
+    expect(pasted.imported).toBe(true);
+    expect(pasted.doc).not.toHaveProperty("imported");
+    expect(run(pasted, { type: "setTitle", title: "Eigener Titel" }).imported).toBe(true);
+  });
+
+  it("rule: undoing the paste itself keeps the mark; redo keeps it too", () => {
+    for (const paste of [
+      { type: "appendParts", parts: [pastedPart()], pinned: [] } as EditorAction,
+      { type: "replaceDocument", doc: demoDocument(), source: "paste" } as EditorAction,
+    ]) {
+      const undone = run(fresh(), paste, { type: "undo" });
+      expect(undone.imported, paste.type).toBe(true);
+      expect(run(undone, { type: "redo" }).imported, paste.type).toBe(true);
+    }
+  });
+
+  it("undo and redo restore the mark that belongs to the document", () => {
+    const pasted = run(fresh(), { type: "replaceDocument", doc: demoDocument(), source: "paste" });
+    // „Neu“ after a paste: own document; undo brings the pasted one back with its mark.
+    const cleared = run(pasted, newDocument());
+    expect(cleared.imported).toBe(false);
+    const back = run(cleared, { type: "undo" });
+    expect(back.imported).toBe(true);
+    expect(run(back, { type: "redo" }).imported).toBe(false);
+    // A file opened over an own document: undo returns to the own, unmarked document.
+    const own = run(fresh(), { type: "setTitle", title: "Meins" });
+    const opened = run(own, { type: "replaceDocument", doc: demoDocument(), source: "foreign" });
+    expect(opened.imported).toBe(true);
+    const undone = run(opened, { type: "undo" });
+    expect(undone.imported).toBe(false);
+    expect(run(undone, { type: "redo" }).imported).toBe(true);
+  });
+
+  it("a pasted new document or one from a file or link is marked; „Neu“ and demos clear the mark", () => {
+    const pasted = run(fresh(), { type: "replaceDocument", doc: demoDocument(), source: "paste" });
+    expect(pasted.imported).toBe(true);
+    expect(run(fresh(), { type: "replaceDocument", doc: demoDocument(), source: "foreign" }).imported).toBe(true);
+    expect(run(pasted, newDocument()).imported).toBe(false);
+    expect(run(pasted, loadDemo("ball")).imported).toBe(false);
+    expect(run(pasted, { type: "replaceDocument", doc: demoDocument() }).imported).toBe(false);
+  });
+
+  it("hydrate restores the stored mark", () => {
+    expect(run(fresh(), { type: "hydrate", doc: demoDocument(), imported: true }).imported).toBe(true);
+    expect(run(fresh(), { type: "hydrate", doc: demoDocument() }).imported).toBe(false);
   });
 });

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { validateExport } from "@crochetbuilder/engine";
+import { TmcDraftSchema, toTellmeCrochetDraft, validateExport } from "@crochetbuilder/engine";
+import { prepareExport } from "../export/prepare.js";
 import { demoDocument, emptyDocument, type BuilderDoc } from "../state/document.js";
 import {
   MAX_PARTS,
@@ -52,6 +53,8 @@ describe("applyPaste — as a new pattern", () => {
     expect(result).toMatchObject({ ok: true, parts: 3, unread: 2 });
     if (!result.ok || result.action.type !== "replaceDocument") throw new Error("expected replaceDocument");
     const { doc, pinned } = result.action;
+    // Provenance for the TellmeCrochet hand-off (E25).
+    expect(result.action.source).toBe("paste");
     expect(doc.title).toBe("Kleiner Igel");
     expect(doc.overview).toEqual({
       materials: [],
@@ -310,6 +313,31 @@ describe("applyPaste — colours, finish, stuffing and assembly (format v2)", ()
     expect(state.doc.assembly!.map((p) => p.id)).toEqual(["p0", ...action.assembly!.map((p) => p.id)]);
     expect(problems(state.doc)).toEqual([]);
     expect(editorReducer(state, { type: "undo" }).doc).toEqual(existing);
+  });
+
+  it("a pasted v2 pattern is marked imported on both paths and reaches TellmeCrochet with colours and assembly (E25)", () => {
+    const base = demoDocument(ids("old"), "sphere");
+    for (const [label, doc, options] of [
+      ["replace", emptyDocument("old"), replace],
+      ["append", base, append],
+    ] as const) {
+      const state = editorReducer(initEditorState(doc), actionOf(v2, doc, options));
+      expect(state.imported, label).toBe(true);
+      expect(editorReducer(state, { type: "undo" }).imported, `${label}: undoing the paste keeps the mark`).toBe(true);
+      const { draft } = toTellmeCrochetDraft(prepareExport(state.doc));
+      expect(TmcDraftSchema.safeParse(draft).success, label).toBe(true);
+      const assembly = draft.parts.at(-1)!;
+      expect(assembly.name, label).toBe("Zusammensetzen");
+      expect(assembly.content.rows.map((r) => r.note), label).toEqual([
+        "Kopf: Sicherheitsaugen 8 mm vorne zwischen Runde 3 und 4 einsetzen, 4 Maschen Abstand – Sicherheitsaugen zwischen Runde 3 und 4 einsetzen, 4 M auseinander.",
+        "Kopf: Flügel vorne zwischen Runde 4 und 5 annähen – Flügel zwischen Runde 4 und 5 an den Kopf nähen.",
+      ]);
+      const yarnColours = (draft.materials ?? []).filter((m) => m.kind === "yarn").flatMap((m) => m.colors ?? []);
+      expect(yarnColours, label).toEqual(expect.arrayContaining(["Braun", "Creme"]));
+      const texts = draft.parts.flatMap((p) => p.content.rows.map((r) => r.note ?? ""));
+      // The head starts brown, the wing starts cream and changes back to brown.
+      expect(texts, label).toEqual(expect.arrayContaining(["Farbe: Braun", "Farbe: Creme", "Farbwechsel: Braun"]));
+    }
   });
 
   it("matches the main colour in every spelling, and names a kept shade when adding parts", () => {

@@ -114,6 +114,36 @@ All notable changes to this project are documented here. The format follows
   placements are matched by round label only, colour choices and stripes, felt, knots and
   "same colour" are no colour changes, and the written count decides "3 hdc inc". Sentences
   over 300 characters are not read for details, so long lines stay fast.
+- **Hand-off to TellmeCrochet** (`tellmecrochet.ts`): `toTellmeCrochetDraft(doc)` turns an
+  export into a TellmeCrochet draft (format version 1, strict `TmcDraftSchema`) and lists what
+  it carried differently (`losses`, summarised in German by `summarizeTmcLosses`). Rows
+  with groups, bobble-family stitches, picots or relief stitches, colour changes, finish,
+  stuffing, notes, gauge and the assembly (an extra part "Zusammensetzen",
+  `describePlacement`) become text steps; nothing is dropped silently. The draft travels in an
+  envelope `{ format: "tmc-draft", version: 1, sourceNotation, originHint, draft }`, packed
+  like a share payload with the prefix `tmc1.` (`encodeTmcPayload`, `decodeTmcPayload`).
+  `renderedRowLine` renders a single row like `renderedRows`. Documented in
+  docs/FORMAT.md, "Hand-off to TellmeCrochet".
+- **Builder:** "In TellmeCrochet öffnen" (export menu and viewer) carries that envelope and
+  first shows briefly what arrives differently, with one click to continue (the focus moves to
+  "Weiter zu TellmeCrochet"; Escape or a click elsewhere closes the notice); the new entry
+  "Für TellmeCrochet speichern (.json)" saves it as a file. The TellmeCrochet link is made
+  apart from the share links: if it fails, only that link is disabled, with a message. The
+  envelope's `originHint` is `imported` once the document took in pasted text ("Anleitung
+  einfügen"), for documents opened from a file or a link and in the viewer, and
+  `self_created` only for "Neu" and demos. It is remembered next to the stored document, not
+  in the format; undo and redo restore it, undoing a paste keeps `imported`.
+
+
+### Changed
+
+- `buildTmcImportUrl` and `TMC_IMPORT_URL` moved to `tellmecrochet.ts`; the link carries a
+  `tmc1.` payload (a `v1.` share payload is refused) instead of the builder export.
+
+### Fixed
+
+- Documentation no longer claims that TellmeCrochet re-exports the engine schema, reads
+  `pattern.overview.gauge` or already imports builder links.
 
 ## [0.2.0] — not released separately
 

@@ -34,7 +34,7 @@ test("share link opens the viewer, embed mode, and back into the builder", async
   expect((await canvas.boundingBox())?.width).toBeGreaterThan(50);
   await expect(viewer.getByRole("link", { name: "In TellmeCrochet öffnen" })).toHaveAttribute(
     "href",
-    /^https:\/\/tellmecrochet\.de\/import#data=v1\./,
+    /^https:\/\/tellmecrochet\.de\/import#data=tmc1\./,
   );
 
   // Embed: compact layout, no pattern text or edit link.

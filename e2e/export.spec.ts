@@ -87,7 +87,41 @@ test("'In TellmeCrochet öffnen' links to the TellmeCrochet import", async ({ pa
   const panel = await openExportMenu(page);
   const link = panel.getByRole("link", { name: "In TellmeCrochet öffnen" });
   const href = await link.getAttribute("href");
-  expect(href).toMatch(/^https:\/\/tellmecrochet\.de\/import#data=v1\.[A-Za-z0-9_-]+$/);
+  expect(href).toMatch(/^https:\/\/tellmecrochet\.de\/import#data=tmc1\.[A-Za-z0-9_-]+$/);
   await expect(link).toHaveAttribute("target", "_blank");
   await expect(link).toHaveAttribute("rel", /noopener/);
+
+  // The sphere's notes and gauge become a step in TellmeCrochet: the first click says so and
+  // offers to continue, without opening a tab yet.
+  let opened = false;
+  page.context().on("page", () => (opened = true));
+  await link.click();
+  const notice = panel.getByRole("note", { name: "Hinweis zu TellmeCrochet" });
+  await expect(notice).toContainText("am Anfang des ersten Teils");
+  await expect(notice.getByRole("link", { name: "Weiter zu TellmeCrochet" })).toHaveAttribute("href", href!);
+  expect(opened).toBe(false);
+  await notice.getByRole("button", { name: "Abbrechen" }).click();
+  await expect(notice).toHaveCount(0);
+});
+
+test("'Für TellmeCrochet speichern (.json)' saves the hand-off envelope", async ({ page }, testInfo) => {
+  await openBuilder(page);
+  await loadDemo(page, "Kugel");
+  const panel = await openExportMenu(page);
+  const [download] = await Promise.all([
+    page.waitForEvent("download"),
+    panel.getByRole("button", { name: "Für TellmeCrochet speichern (.json)" }).click(),
+  ]);
+  expect(download.suggestedFilename()).toBe("amigurumi-kugel.tellmecrochet.json");
+  // Into the test's own output folder, never the Downloads folder.
+  const file = testInfo.outputPath(download.suggestedFilename());
+  await download.saveAs(file);
+  await expect(panel.getByRole("status").filter({ hasText: "Datei für TellmeCrochet gespeichert." })).toBeVisible();
+
+  const env = JSON.parse(await readFile(file, "utf8"));
+  expect(env).toMatchObject({ format: "tmc-draft", version: 1, sourceNotation: "de", originHint: "self_created" });
+  expect(env.draft.schemaVersion).toBe(1);
+  expect(env.draft.title).toBe("Amigurumi-Kugel");
+  const rows = env.draft.parts[0].content.rows as Array<{ ops: unknown[]; stitchCountTarget: number }>;
+  expect(rows.filter((r) => r.ops.length > 0).map((r) => r.stitchCountTarget)).toEqual([6, 12, 18, 24, 24, 18, 12, 6]);
 });

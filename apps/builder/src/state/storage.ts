@@ -23,6 +23,11 @@ import { MAX_PART_QUANTITY, MAX_PARTS } from "./editor.js";
 export interface StoredState {
   doc: BuilderDoc;
   pinned: string[];
+  /**
+   * The document took in text through "Anleitung einfügen" (provenance, E25). App-local: it is
+   * stored next to the document, never in the export. Absent means false.
+   */
+  imported?: boolean;
   /** Milliseconds since epoch of the save. */
   savedAt: number;
 }
@@ -54,7 +59,7 @@ function savedAtOf(value: unknown): number {
  */
 export function parseStored(value: unknown): StoredState | null {
   if (!value || typeof value !== "object") return null;
-  const record = value as { doc?: unknown; pinned?: unknown };
+  const record = value as { doc?: unknown; pinned?: unknown; imported?: unknown };
   const parsed = BuilderExportSchema.safeParse(record.doc);
   if (!parsed.success || parsed.data.parts.length === 0 || parsed.data.parts.length > MAX_PARTS) return null;
   const withinLimits = parsed.data.parts.every(
@@ -64,7 +69,7 @@ export function parseStored(value: unknown): StoredState | null {
   );
   if (!withinLimits) return null;
   const pinned = Array.isArray(record.pinned) ? record.pinned.filter((x): x is string => typeof x === "string") : [];
-  return { doc: parsed.data, pinned, savedAt: savedAtOf(value) };
+  return { doc: parsed.data, pinned, ...(record.imported === true ? { imported: true } : {}), savedAt: savedAtOf(value) };
 }
 
 // ---------------------------------------------------------------------------
@@ -172,10 +177,15 @@ export async function loadState(): Promise<LoadResult> {
  * first `await`, so a save started on `pagehide` survives the tab closing. Rejects only if
  * neither store took the write.
  */
-export async function saveState(state: { doc: BuilderDoc; pinned: readonly string[] }): Promise<void> {
+export async function saveState(state: { doc: BuilderDoc; pinned: readonly string[]; imported?: boolean }): Promise<void> {
   // Stamped with the current format version, so a document opened as version 1 and then given
   // a version-2 feature still loads.
-  const record: StoredState = { doc: withCurrentVersion(state.doc), pinned: [...state.pinned], savedAt: Date.now() };
+  const record: StoredState = {
+    doc: withCurrentVersion(state.doc),
+    pinned: [...state.pinned],
+    ...(state.imported ? { imported: true } : {}),
+    savedAt: Date.now(),
+  };
   const lsOk = lsPut(LS_KEY, record);
   const idbOk = await idbPut(KEY, record);
   if (!lsOk && !idbOk) throw new Error("Speichern fehlgeschlagen");

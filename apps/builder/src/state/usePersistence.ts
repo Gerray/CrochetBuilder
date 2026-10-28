@@ -17,6 +17,7 @@ export const SAVE_DELAY_MS = 400;
 interface Pending {
   doc: EditorState["doc"];
   pinned: EditorState["pinned"];
+  imported: EditorState["imported"];
 }
 
 /**
@@ -54,7 +55,13 @@ export function usePersistence(state: EditorState, dispatch: Dispatch<EditorActi
       (result) => {
         if (cancelled) return;
         if (result.kind === "ok") {
-          dispatch({ type: "hydrate", doc: result.state.doc, pinned: result.state.pinned, part: loadShownPart() });
+          dispatch({
+            type: "hydrate",
+            doc: result.state.doc,
+            pinned: result.state.pinned,
+            part: loadShownPart(),
+            imported: result.state.imported === true,
+          });
         }
         if (result.kind === "invalid") {
           setInvalidStored(result.raw);
@@ -75,14 +82,14 @@ export function usePersistence(state: EditorState, dispatch: Dispatch<EditorActi
     };
   }, [dispatch]);
 
-  const { doc, pinned, part } = state;
+  const { doc, pinned, part, imported } = state;
   useEffect(() => {
     if (!ready.current) return;
-    pending.current = { doc, pinned };
+    pending.current = { doc, pinned, imported };
     setStatus("saving");
     clearTimeout(timer.current);
     timer.current = setTimeout(flush, SAVE_DELAY_MS);
-  }, [doc, pinned, resumed, flush]);
+  }, [doc, pinned, imported, resumed, flush]);
 
   // The part shown is remembered on its own: switching parts is no document save.
   useEffect(() => {

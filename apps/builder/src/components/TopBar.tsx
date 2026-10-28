@@ -31,11 +31,13 @@ interface TopBarProps {
   onDemo: (kind: DemoKind) => void;
   /** Replace the document with an imported one ("JSON öffnen…"). */
   onReplace: (doc: BuilderDoc, pinned: string[]) => void;
+  /** The document took in pasted text (provenance for TellmeCrochet, E25). */
+  imported?: boolean;
   /** Export side effects (tests). */
   exportActions?: Partial<ExportActions>;
 }
 
-export function TopBar({ doc, dispatch, canUndo, canRedo, status, onNew, onPaste, onDemo, onReplace, exportActions }: TopBarProps) {
+export function TopBar({ doc, dispatch, canUndo, canRedo, status, onNew, onPaste, onDemo, onReplace, imported = false, exportActions }: TopBarProps) {
   const [overviewOpen, setOverviewOpen] = useState(false);
   const materialCount = doc.overview.materials?.length ?? 0;
 
@@ -100,7 +102,11 @@ export function TopBar({ doc, dispatch, canUndo, canRedo, status, onNew, onPaste
           <span className={`save-status save-${status}`} role="status">
             {STATUS_TEXT[status]}
           </span>
-          <ExportMenu doc={doc} onReplace={onReplace} {...(exportActions ? { actions: exportActions } : {})} />
+          <ExportMenu
+            doc={doc}
+            onReplace={onReplace}
+            originHint={imported ? "imported" : "self_created"}
+            {...(exportActions ? { actions: exportActions } : {})} />
         </div>
       </div>
       {overviewOpen && <OverviewPanel doc={doc} dispatch={dispatch} />}
