@@ -102,7 +102,9 @@ export function SnippetButton({ currentCount, placeText, type, onInsert }: Snipp
                 type="button"
                 role="radio"
                 aria-checked={kind === s.kind}
-                className="snippet-kind"
+                // Shown muted in a piece worked in rows; a click still explains why it does not fit.
+                className={`snippet-kind${type === "row" && RING_SNIPPETS.includes(s.kind) ? " is-unavailable" : ""}`}
+                aria-disabled={type === "row" && RING_SNIPPETS.includes(s.kind) ? true : undefined}
                 title={
                   type === "row" && RING_SNIPPETS.includes(s.kind)
                     ? `${s.description} – nicht für Teile in Reihen (beginnt mit einem Magischen Ring)`

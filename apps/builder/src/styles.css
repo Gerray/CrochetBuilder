@@ -915,6 +915,9 @@ input[aria-invalid="true"]:focus-visible {
 .snippet-kinds {
   flex-wrap: wrap;
 }
+.snippet-kind.is-unavailable {
+  opacity: 0.5;
+}
 .snippet-param {
   display: flex;
   flex-wrap: wrap;

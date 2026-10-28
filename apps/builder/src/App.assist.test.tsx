@@ -343,6 +343,8 @@ describe("snippets", () => {
     const dialog = screen.getByRole("dialog", { name: "Baustein einfügen" });
     expect(within(dialog).getByRole("radio", { name: "Gerade Runden" }).getAttribute("aria-checked")).toBe("true");
     expect(within(dialog).getByRole("status").textContent).toBe("4 Reihen mit 20 M · am Ende");
+    expect(within(dialog).getByRole("radio", { name: "Kugelanfang" }).getAttribute("aria-disabled")).toBe("true");
+    expect(within(dialog).getByRole("radio", { name: "Gerade Runden" }).getAttribute("aria-disabled")).toBeNull();
     fireEvent.click(within(dialog).getByRole("radio", { name: "Kugelanfang" }));
     expect(within(dialog).getByRole("status").textContent).toMatch(/in Reihen gehäkelt/);
     expect((within(dialog).getByRole("button", { name: "Einfügen" }) as HTMLButtonElement).disabled).toBe(true);
