@@ -330,7 +330,6 @@ describe("parsePatternText — German patterns", () => {
         row: head.rows[3]!.id, // round 4 (R4-R6 is rows 3–5)
         angle: 0,
         spacing: 5,
-        note: "Sicherheitsaugen zwischen Runde 4 und 5 einsetzen, 5 M auseinander.",
       },
     ]);
   });
@@ -403,7 +402,6 @@ describe("parsePatternText — colours, finish, stuffing and assembly (format v2
         angle: 0,
         spacing: 5,
         size: 8,
-        note: "Insert the safety eyes between rounds 4 and 5, 5 sts apart.",
       },
       {
         id: "placement-2",
@@ -412,7 +410,6 @@ describe("parsePatternText — colours, finish, stuffing and assembly (format v2
         target: "head",
         row: roundRow(5),
         angle: 0,
-        note: "Sew the wings to the head between rounds 5 and 7.",
       },
     ]);
     const sewRow = wings!.rows.findIndex((r) => r.note === "Sew the wings to the head between rounds 5 and 7.");

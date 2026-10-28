@@ -18,6 +18,7 @@
 
 import { z } from "zod";
 import type { Placement } from "./assembly.js";
+import { isMirroredPair } from "./assembly-text.js";
 import { instructionText, rowOrdinals } from "./expand.js";
 import { renderedRowLine, type BuilderExport, type BuilderPart, type Material, type PaletteColor } from "./export.js";
 import type { Gauge, YarnWeight } from "./gauge.js";
@@ -310,7 +311,11 @@ function rowPhrase(rows: readonly Row[], rowId: string): { text: string; type: "
  * "Kopf: Ohr links zwischen Runde 14 und 15 annähen." `parts` are the export's parts (for names
  * and rows); unknown parts are named by their id, an unknown row leaves the position out.
  */
-export function describePlacement(placement: Placement, parts: readonly BuilderPart[]): string {
+export function describePlacement(
+  placement: Placement,
+  parts: readonly BuilderPart[],
+  assembly: readonly Placement[] = [placement],
+): string {
   const indexOf = (id: string | undefined) => (id === undefined ? -1 : parts.findIndex((p) => p.id === id));
   const nameOf = (id: string) => {
     const i = indexOf(id);
@@ -338,6 +343,8 @@ export function describePlacement(placement: Placement, parts: readonly BuilderP
     case "attach": {
       const what = placement.part !== undefined ? nameOf(placement.part) : "Teil";
       text = `${target}: ${what} ${where} annähen`;
+      // A part made twice with one placement: its second copy goes mirrored on the other side.
+      if (isMirroredPair({ parts, assembly }, placement)) text += ", das zweite gespiegelt auf der anderen Seite";
       if (note) text += ` – ${note}`;
       break;
     }
@@ -748,7 +755,7 @@ export function toTellmeCrochetDraft(doc: BuilderExport, opts: TmcDraftOptions =
         partName: assemblyName,
         message: `Die Platzierung steht im Teil „${assemblyName}“.`,
       });
-      return instruction(ids.fresh(`montage-${pl.id}`), "round", describePlacement(pl, doc.parts));
+      return instruction(ids.fresh(`montage-${pl.id}`), "round", describePlacement(pl, doc.parts, doc.assembly));
     });
     parts.push(finishPart(assemblyName, 1, rows));
   }

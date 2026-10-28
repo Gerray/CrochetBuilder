@@ -327,7 +327,7 @@ describe("toTellmeCrochetDraft — what becomes text", () => {
     expect(last.quantity).toBe(1);
     expect(last.content.rows.map((r) => r.note)).toEqual([
       "Kopf: Sicherheitsaugen 12 mm vorne zwischen Runde 2 und 3 einsetzen, 6 Maschen Abstand.",
-      "Kopf: Ohr links in Runde 4 annähen.",
+      "Kopf: Ohr links in Runde 4 annähen, das zweite gespiegelt auf der anderen Seite.",
     ]);
     expect(last.content.rows.map((r) => r.id)).toEqual(["montage-p1", "montage-p2"]);
     expect(losses.filter((l) => l.code === "assembly").map((l) => l.placementId)).toEqual(["p1", "p2"]);
@@ -444,6 +444,13 @@ describe("German wording", () => {
       "Teil 2: Kopf in der Mitte zwischen Reihe 1 und 2 annähen – gut feststecken.",
     );
     expect(describePlacement(pl({ target: "weg", kind: "attach", part: "auch-weg" }), parts)).toBe("weg: auch-weg vorne annähen.");
+    // A part made twice with a single placement: the second copy is the mirrored one.
+    const pair = [{ ...parts[0]! }, { ...parts[1]!, quantity: 2 }];
+    const ears = pl({ kind: "attach", part: "f", target: "k", angle: 30 });
+    expect(describePlacement(ears, pair, [ears])).toBe(
+      "Kopf: Teil 2 vorne rechts zwischen Runde 1 und 2 annähen, das zweite gespiegelt auf der anderen Seite.",
+    );
+    expect(describePlacement(ears, pair, [ears, { ...ears, id: "p2", angle: -30 }])).not.toContain("gespiegelt");
     // A note that is a whole sentence (as the text import writes it) ends with one full stop.
     expect(describePlacement(pl({ note: "Augen einsetzen, 4 M auseinander. " }), parts)).toBe(
       "Kopf: Sicherheitsaugen vorne zwischen Runde 1 und 2 einsetzen – Augen einsetzen, 4 M auseinander.",

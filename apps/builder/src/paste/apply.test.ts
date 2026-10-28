@@ -329,8 +329,8 @@ describe("applyPaste — colours, finish, stuffing and assembly (format v2)", ()
       const assembly = draft.parts.at(-1)!;
       expect(assembly.name, label).toBe("Zusammensetzen");
       expect(assembly.content.rows.map((r) => r.note), label).toEqual([
-        "Kopf: Sicherheitsaugen 8 mm vorne zwischen Runde 3 und 4 einsetzen, 4 Maschen Abstand – Sicherheitsaugen zwischen Runde 3 und 4 einsetzen, 4 M auseinander.",
-        "Kopf: Flügel vorne zwischen Runde 4 und 5 annähen – Flügel zwischen Runde 4 und 5 an den Kopf nähen.",
+        "Kopf: Sicherheitsaugen 8 mm vorne zwischen Runde 3 und 4 einsetzen, 4 Maschen Abstand.",
+        "Kopf: Flügel vorne zwischen Runde 4 und 5 annähen, das zweite gespiegelt auf der anderen Seite.",
       ]);
       const yarnColours = (draft.materials ?? []).filter((m) => m.kind === "yarn").flatMap((m) => m.colors ?? []);
       expect(yarnColours, label).toEqual(expect.arrayContaining(["Braun", "Creme"]));

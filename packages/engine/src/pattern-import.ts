@@ -963,7 +963,8 @@ class Importer {
       if (draft.spacing !== undefined) placement.spacing = draft.spacing;
       const size = draft.size ?? (draft.kind === "eyes" ? eyeSize : undefined);
       if (size !== undefined && size > 0) placement.size = size;
-      placement.note = p.note;
+      // The sentence stays an instruction row anyway; only embroidery needs it to say what.
+      if (draft.kind === "embroidery") placement.note = p.note;
       out.push(placement);
       if (draft.kind === "attach") {
         issueAt(

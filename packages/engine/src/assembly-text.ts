@@ -1,6 +1,7 @@
 /**
- * Placements in words (German) — the one wording of the assembly, shared by the builder's
- * "Montage" list, the PDF, the viewer and the hand-off text:
+ * Placements in words (German) — the compact wording of the assembly, shared by the builder's
+ * "Montage" list, the PDF and the viewer (the TellmeCrochet hand-off words them as steps,
+ * see `describePlacement`):
  *   "Ohr ×2 an Kopf, zwischen Runde 4 und 5, ±45°"
  *   "Augen 12 mm an Kopf, zwischen Runde 8 und 9, 6 M Abstand"
  *   "Kopf an Körper, auf Runde 14 (Ende)"
