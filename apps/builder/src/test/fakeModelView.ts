@@ -11,7 +11,7 @@ import type { ModelView, ModelViewStyle, PickResult, ViewMesh } from "../three/m
 
 export interface FakeView extends ModelView {
   mesh: ViewMesh | null;
-  highlight: string | null;
+  highlight: string | readonly string[] | null;
   style: Partial<ModelViewStyle>;
   resets: number;
   disposed: boolean;

@@ -202,7 +202,7 @@ describe("JSON öffnen…", () => {
     choose("topflappen.json", JSON.stringify(content));
     await within(panel).findByText("„topflappen.json“ geöffnet.");
     expect(title()).toBe("topflappen");
-    await screen.findByLabelText("Maschen von Reihe 21 als Text");
+    await screen.findByLabelText("Maschen von Reihe 2–21 als Text");
   });
 
   it("a file with several parts: opens all of them as tabs", async () => {

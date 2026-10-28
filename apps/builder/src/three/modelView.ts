@@ -57,7 +57,7 @@ import {
   choosePick,
   pickFromBacking,
   pickFromHit,
-  rowIndexOf,
+  rowIndicesOf,
   vertexColors,
   type Bounds,
   type Framing,
@@ -113,8 +113,11 @@ export interface ModelViewOptions {
 export interface ModelView {
   /** Show a mesh (or nothing). The first mesh, and every mesh while following, is framed. */
   setMesh(mesh: ViewMesh | null): void;
-  /** Highlight the stitches of one row (null: none). Unknown rows highlight nothing. */
-  setHighlight(rowId: string | null): void;
+  /**
+   * Highlight the stitches of one row, or of several (a group "Runde 7–12"); null: none.
+   * Unknown rows highlight nothing.
+   */
+  setHighlight(rowIds: string | readonly string[] | null): void;
   /** Change colours, grid or dimming. */
   setStyle(style: Partial<ModelViewStyle>): void;
   /** Frame the current mesh and follow new meshes again. */
@@ -233,7 +236,7 @@ export function createModelView(canvas: HTMLCanvasElement, opts: ModelViewOption
   let backingObject: Mesh | null = null;
   let bounds: Bounds | null = null;
   let grid: GridHelper | null = null;
-  let highlightRowId: string | null = null;
+  let highlightRowIds: string | readonly string[] | null = null;
   const follow = new CameraFollow();
   let animation: { from: Framing & { start: number }; to: Framing } | null = null;
   let dirty = true;
@@ -292,7 +295,7 @@ export function createModelView(canvas: HTMLCanvasElement, opts: ModelViewOption
     const attr = geometry.getAttribute("color");
     const base = linearRgb(style.yarn);
     const hi = linearRgb(style.highlight);
-    vertexColors(mesh, rowIndexOf(mesh, highlightRowId), base, hi, attr.array as Float32Array);
+    vertexColors(mesh, rowIndicesOf(mesh, highlightRowIds), base, hi, attr.array as Float32Array);
     attr.needsUpdate = true;
     invalidate();
   }
@@ -465,9 +468,9 @@ export function createModelView(canvas: HTMLCanvasElement, opts: ModelViewOption
       invalidate();
     },
 
-    setHighlight(rowId) {
+    setHighlight(rowIds) {
       if (disposed) return;
-      highlightRowId = rowId;
+      highlightRowIds = rowIds;
       applyColors();
     },
 

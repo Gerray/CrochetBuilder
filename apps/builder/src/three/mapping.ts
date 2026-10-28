@@ -71,21 +71,31 @@ export function rowIndexOf(mesh: Pick<ViewMesh, "rowIds">, rowId: string | null)
   return rowId === null ? -1 : mesh.rowIds.indexOf(rowId);
 }
 
+/** Indices of `rowIds` in the mesh's row list (rows without stitches in the model are left out). */
+export function rowIndicesOf(mesh: Pick<ViewMesh, "rowIds">, rowIds: string | readonly string[] | null): number[] {
+  if (rowIds === null) return [];
+  const list = typeof rowIds === "string" ? [rowIds] : rowIds;
+  return list.map((id) => mesh.rowIds.indexOf(id)).filter((i) => i >= 0);
+}
+
 /**
  * Vertex colours (linear RGB, 3 floats per vertex): `highlight` for the vertices of the row
- * with index `row`, `base` for all others. Writes into `out` when it has the right length.
+ * with index `row` (or of all rows in a list — a group "Runde 7–12"), `base` for all others.
+ * Writes into `out` when it has the right length.
  */
 export function vertexColors(
   mesh: Pick<ViewMesh, "nodeIndex" | "nodeRow">,
-  row: number,
+  row: number | readonly number[],
   base: Rgb,
   highlight: Rgb,
   out?: Float32Array,
 ): Float32Array {
   const n = mesh.nodeIndex.length;
   const colors = out && out.length === 3 * n ? out : new Float32Array(3 * n);
+  const rows = new Set(typeof row === "number" ? [row] : row);
+  rows.delete(-1);
   for (let v = 0; v < n; v++) {
-    const c = row >= 0 && mesh.nodeRow[mesh.nodeIndex[v]!] === row ? highlight : base;
+    const c = rows.size > 0 && rows.has(mesh.nodeRow[mesh.nodeIndex[v]!]!) ? highlight : base;
     colors[3 * v] = c[0];
     colors[3 * v + 1] = c[1];
     colors[3 * v + 2] = c[2];

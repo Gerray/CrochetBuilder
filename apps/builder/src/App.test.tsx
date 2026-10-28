@@ -44,7 +44,11 @@ describe("Builder editor", () => {
       const input = await textField(i + 1);
       fireEvent.change(input, { target: { value: line } });
       if (i < SPHERE_LINES.length - 1) fireEvent.keyDown(input, { key: "Enter" });
-      else fireEvent.blur(input);
+      else {
+        // The last round is exactly the suggestion ("6 Abn" after 12): Tab takes it.
+        fireEvent.keyDown(input, { key: "Tab" });
+        fireEvent.blur(input);
+      }
     }
 
     const cards = screen.getAllByRole("article");

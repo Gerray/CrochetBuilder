@@ -35,13 +35,15 @@ describe("3D preview in the builder", () => {
     const host = screen.getByRole("img", { name: /3D-Modell/ });
     fireEvent.pointerDown(host, { clientX: 5, clientY: 5, button: 0 });
     fireEvent.pointerUp(host, { clientX: 5, clientY: 5, button: 0 });
-    await waitFor(() => expect(document.activeElement).toBe(screen.getByLabelText("Maschen von Runde 7 als Text")));
-    expect(view.highlight).toBe(view.mesh!.rowIds[6]);
+    // Rounds 5–8 are identical ("24 fM") and share one card: it gets the focus, and all four
+    // rounds light up in the model.
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByLabelText("Maschen von Runde 5–8 als Text")));
+    expect(view.highlight).toEqual(view.mesh!.rowIds.slice(4, 8));
   });
 
   it("the potholder demo is a flat piece in rows", async () => {
     await loadDemo("Topflappen");
-    await screen.findByLabelText("Maschen von Reihe 21 als Text");
+    await screen.findByLabelText("Maschen von Reihe 2–21 als Text");
     await waitFor(() => expect(fakeViews.last?.mesh?.rowIds).toHaveLength(21));
     expect(screen.queryByText(/max\. Ø/)).toBeNull();
   });

@@ -66,7 +66,8 @@ test("paste a whole pattern: preview, fix in place, import as parts, undo", asyn
   await expect(page.getByRole("textbox", { name: "Titel der Anleitung" })).toHaveValue("Kleiner Igel");
   await expect(page.getByText(/^Anleitung übernommen: 3 Teile\. 2 Stellen blieben Text/)).toBeVisible();
   await expect(rowText(page, "Runde 1")).toHaveValue("1 MR, 6 fM");
-  await expect(rowText(page, "Runde 8")).toHaveValue("24 fM");
+  // Rounds 5–8 are identical and share one card.
+  await expect(rowText(page, "Runde 5–8")).toHaveValue("24 fM");
   await expect(page.locator(".parts-total")).toHaveText("Gesamt: 312 Maschen, 4 Teile zu häkeln");
 
   // Unread text stays visible as a marked instruction with the original text.
