@@ -27,6 +27,9 @@ export {
   POST_STITCH_CODES,
   consumesOf,
   isPostStitch,
+  consumesOfGroup,
+  usesFormatV2,
+  GROUP_FORBIDDEN_CODES,
 } from "./schema.js";
 export type {
   StitchCode,
@@ -90,6 +93,7 @@ export {
   checkEmptyGroups,
   checkModifiers,
   checkColors,
+  checkGroups,
 } from "./validate.js";
 export type { Finding, FindingCode, ValidateOptions } from "./validate.js";
 
@@ -186,6 +190,7 @@ export {
   PaletteColorSchema,
   renderedRows,
   validateExport,
+  withCurrentVersion,
 } from "./export.js";
 export type {
   MaterialKind,

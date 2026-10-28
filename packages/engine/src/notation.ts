@@ -29,6 +29,7 @@ import {
   consumesOfGroup,
   isPostStitch,
   type Mod,
+  type GroupOp,
   type Op,
   type Row,
   type StitchCode,
@@ -72,22 +73,25 @@ export function opsWithinLimits(ops: readonly Op[]): boolean {
 /**
  * Whether `mod` makes sense on `code`: loops (BLO/FLO) need a stitch worked into the
  * previous row (not MR/CH); TOG needs a stitch worked into one stitch that is not already
- * an increase or decrease (sc2tog yes, "inc tog" no).
+ * an increase or decrease (sc2tog yes, "inc tog" no); relief (FP/BP) needs a post stitch
+ * (SC, HDC, DC, TR, DTR — `isPostStitch`, as `checkModifiers` in validation).
  */
 export function modifierAllowed(code: StitchCode, mod: Mod): boolean {
   const consumes = STITCH_PROPERTIES[code].consumesStitches;
   if (mod === "TOG") return consumes === 1 && code !== "INC";
+  if (mod === "FP" || mod === "BP") return isPostStitch(code);
   return consumes > 0;
 }
 
 /**
  * Normalise a modifier list for `code`: duplicates removed (first occurrence kept).
- * Returns null when the list is contradictory (BLO with FLO) or contains a modifier that
- * does not apply to the code.
+ * Returns null when the list is contradictory (BLO with FLO, FP with BP) or contains a
+ * modifier that does not apply to the code.
  */
 export function normalizeModifiers(code: StitchCode, mods: readonly Mod[]): Mod[] | null {
   const unique = [...new Set(mods)];
   if (unique.includes("BLO") && unique.includes("FLO")) return null;
+  if (unique.includes("FP") && unique.includes("BP")) return null;
   if (!unique.every((m) => modifierAllowed(code, m))) return null;
   return unique;
 }
@@ -176,6 +180,12 @@ const MOD_ALIASES: Record<string, Mod> = {
   "vorderes mg": "FLO",
   "front loop": "FLO",
   zusammen: "TOG",
+  "front post": "FP",
+  "back post": "BP",
+  "relief vorne": "FP",
+  "relief hinten": "BP",
+  "von vorne": "FP",
+  "von hinten": "BP",
 };
 
 /** Words that act as a times sign next to a repeat group. */
@@ -213,6 +223,12 @@ const STITCH_ALIASES: Record<NotationLocale, Record<string, StitchCode>> = {
     abnahmen: "DEC",
     "unsichtbare abnahmen": "INVDEC",
     maschen: "ST",
+    noppen: "BOBBLE",
+    büschelmaschen: "PUFF",
+    popcornmaschen: "POPCORN",
+    picot: "PICOT",
+    picots: "PICOT",
+    pikots: "PICOT",
   },
   en_us: {
     slst: "SL_ST",
@@ -224,6 +240,16 @@ const STITCH_ALIASES: Record<NotationLocale, Record<string, StitchCode>> = {
     "inv dec": "INVDEC",
     "invisible dec": "INVDEC",
     sts: "ST",
+    bobbles: "BOBBLE",
+    "bobble st": "BOBBLE",
+    "bobble sts": "BOBBLE",
+    puffs: "PUFF",
+    "puff st": "PUFF",
+    "puff sts": "PUFF",
+    popcorns: "POPCORN",
+    "popcorn st": "POPCORN",
+    "popcorn sts": "POPCORN",
+    picots: "PICOT",
   },
   en_uk: {
     "sl st": "SL_ST",
@@ -235,6 +261,16 @@ const STITCH_ALIASES: Record<NotationLocale, Record<string, StitchCode>> = {
     "inv dec": "INVDEC",
     "invisible dec": "INVDEC",
     sts: "ST",
+    bobbles: "BOBBLE",
+    "bobble st": "BOBBLE",
+    "bobble sts": "BOBBLE",
+    puffs: "PUFF",
+    "puff st": "PUFF",
+    "puff sts": "PUFF",
+    popcorns: "POPCORN",
+    "popcorn st": "POPCORN",
+    "popcorn sts": "POPCORN",
+    picots: "PICOT",
   },
 };
 
@@ -335,27 +371,56 @@ export function resolveModTerm(term: string): Mod | undefined {
 // Rendering
 // ---------------------------------------------------------------------------
 
-function renderStitch(op: StitchOp, locale: NotationLocale): string {
-  const text = `${op.count} ${STITCH_ABBREVIATIONS[op.code][locale]}`;
+/** Word of a rendered colour change: `[Farbe: Weiß]`, `[Color: White]`, `[Colour: White]`. */
+const COLOR_WORDS: Record<NotationLocale, string> = { de: "Farbe", en_us: "Color", en_uk: "Colour" };
+
+/** Options of the render functions. */
+export interface RenderOptions {
+  /**
+   * Render colour changes (format v2): `[Farbe: Weiß] 6 fM`. A change shows the name of the
+   * palette colour with that id, else the id itself. Without this option colour changes are
+   * not rendered. `parseRowText` reads the marks back (`ParseRowContext.colors`).
+   */
+  colors?: readonly { id: string; name?: string }[];
+}
+
+/** A rendered colour change (with a trailing space), or "" when there is none to render. */
+function colorMark(id: string | undefined, locale: NotationLocale, opts: RenderOptions): string {
+  if (id === undefined || !opts.colors) return "";
+  const name = opts.colors.find((c) => c.id === id)?.name?.trim() || id;
+  return `[${COLOR_WORDS[locale]}: ${name.replace(/[[\]]/g, "")}] `;
+}
+
+function renderStitch(op: StitchOp, locale: NotationLocale, opts: RenderOptions): string {
+  const text = `${colorMark(op.color, locale, opts)}${op.count} ${STITCH_ABBREVIATIONS[op.code][locale]}`;
   if (!op.modifiers || op.modifiers.length === 0) return text;
   return `${text} (${op.modifiers.map((m) => MOD_ABBREVIATIONS[m][locale]).join(", ")})`;
 }
 
-/** Render a single op (a stitch or a repeat group). */
-export function renderOp(op: Op, locale: NotationLocale): string {
-  if (op.kind === "stitch") return renderStitch(op, locale);
-  if (op.kind === "group") return `(${renderOps(op.ops, locale)}) ${GROUP_WORDS[locale]}`;
-  return `${op.times}${TIMES_SIGN[locale]} (${renderOps(op.ops, locale)})`;
+/**
+ * Render a single op: a stitch, a repeat group (`6× (…)`) or a stitch group
+ * (`(2 Stb, 1 Lm, 2 Stb) in dieselbe M`, `(…) in same st`).
+ */
+export function renderOp(op: Op, locale: NotationLocale, opts: RenderOptions = {}): string {
+  if (op.kind === "stitch") return renderStitch(op, locale, opts);
+  if (op.kind === "group") return `(${renderOps(op.ops, locale, opts)}) ${GROUP_WORDS[locale]}`;
+  return `${op.times}${TIMES_SIGN[locale]} (${renderOps(op.ops, locale, opts)})`;
 }
 
 /** Render an op list as a comma-separated instruction, e.g. `6× (1 fM, 1 Zun)`. */
-export function renderOps(ops: readonly Op[], locale: NotationLocale): string {
-  return ops.map((op) => renderOp(op, locale)).join(", ");
+export function renderOps(ops: readonly Op[], locale: NotationLocale, opts: RenderOptions = {}): string {
+  return ops.map((op) => renderOp(op, locale, opts)).join(", ");
 }
 
-/** Render a row's ops. A row without ops (free instruction) renders to "". */
-export function renderRow(row: Row, locale: NotationLocale): string {
-  return renderOps(row.ops, locale);
+/**
+ * Render a row's ops. A row without ops (free instruction) renders to "". With
+ * `opts.colors` a row colour comes first: `[Farbe: Weiß] 6 fM`.
+ */
+export function renderRow(row: Row, locale: NotationLocale, opts: RenderOptions = {}): string {
+  const text = renderOps(row.ops, locale, opts);
+  const mark = colorMark(row.color, locale, opts);
+  if (!mark) return text;
+  return text ? `${mark}${text}` : mark.trim();
 }
 
 const ROW_WORDS: Record<NotationLocale, { round: string; row: string; note: string }> = {
@@ -445,6 +510,12 @@ export interface ParseRowContext {
    * `sc around`, `inc in each st`, `(1 sc, inc)*`, `fM rundherum`, `Zun in jede M`.
    */
   previousCount?: number;
+  /**
+   * The palette (`overview.colors`) for colour changes written as `[Farbe: Weiß]` /
+   * `[Color: White]`: a name or id of the palette becomes that colour's id; anything else is
+   * kept as written (validation then reports it as an unknown colour).
+   */
+  colors?: readonly { id: string; name?: string }[];
 }
 
 type Token =
@@ -456,8 +527,53 @@ type Token =
   | { t: "sep"; pos: number }
   /** "to the end of the round" marker — only produced by the lenient pre-pass (`@`). */
   | { t: "fill"; pos: number }
+  /** A colour change `[Farbe: Weiß]` (format v2); `name` as written. */
+  | { t: "color"; name: string; pos: number }
   | { t: "end"; pos: number }
   | { t: "bad"; pos: number };
+
+/** `[Farbe: Weiß]`, `[Farbwechsel zu Weiß]`, `[Color: White]`, `[Colour change to white]`. */
+const COLOR_MARK = /^\[\s*(?:Farbe|Farbwechsel(?:\s+zu)?|Colou?r(?:\s+change(?:\s+to)?)?)\s*:?\s*([^\]]*[^\]\s])\s*\]/iu;
+
+/**
+ * The words after `(…)` that make it a stitch group (format v2): `in dieselbe M`, `in same
+ * st`, `in the same stitch`, `in die gleiche Masche`, `in one st`.
+ */
+const GROUP_PHRASE =
+  /^in(?:to)?\s+(?:(?:the\s+)?same|dieselbe|derselben|die\s+gleiche|der\s+gleichen|one|1|eine|einer)\s+(?:sts?|stitch|M|Masche)$/iu;
+
+/** Whether an op list contains a stitch group (at any depth). */
+function containsGroup(ops: readonly Op[]): boolean {
+  return ops.some((op) => op.kind === "group" || (op.kind === "repeat" && containsGroup(op.ops)));
+}
+
+/** Put a colour change on the first stitch of `op`; false when it has none. */
+function applyColor(op: Op, color: string): boolean {
+  if (op.kind === "stitch") {
+    op.color = color;
+    return true;
+  }
+  return op.ops.length > 0 && applyColor(op.ops[0]!, color);
+}
+
+/** Map colour changes as written (a palette name or id) to palette ids. */
+function resolveColors(ops: readonly Op[], palette: ParseRowContext["colors"]): void {
+  if (!palette) return;
+  const key = (s: string) => s.trim().toLowerCase();
+  for (const op of ops) {
+    if (op.kind !== "stitch") {
+      resolveColors(op.ops, palette);
+      continue;
+    }
+    if (op.color === undefined) continue;
+    const written = op.color;
+    const hit =
+      palette.find((c) => c.id === written) ??
+      palette.find((c) => c.name !== undefined && key(c.name) === key(written)) ??
+      palette.find((c) => key(c.id) === key(written));
+    if (hit) op.color = hit.id;
+  }
+}
 
 const WORD_CHAR = /[\p{L}.\-]/u;
 const SPACE = /[\s ]/u;
@@ -475,6 +591,10 @@ function tokenize(text: string, lenient: boolean): Token[] {
       tokens.push({ t: "num", value: Number(text.slice(start, i)), pos: start });
     } else if (ch === "×" || ch === "*") {
       tokens.push({ t: "times", pos: i++ });
+    } else if (ch === "[" && COLOR_MARK.test(text.slice(i))) {
+      const m = COLOR_MARK.exec(text.slice(i))!;
+      tokens.push({ t: "color", name: m[1]!, pos: i });
+      i += m[0].length;
     } else if (ch === "(" || ch === "[") {
       tokens.push({ t: "lp", pos: i++ });
     } else if (ch === ")" || ch === "]") {
@@ -582,7 +702,12 @@ class Parser {
   private parseList(depth: number): Op[] {
     const ops: Op[] = [];
     for (;;) {
-      ops.push(this.parseItem(depth));
+      // A colour change applies from the first stitch of the item it precedes.
+      const mark = this.peek();
+      if (mark.t === "color") this.next();
+      const item = this.parseItem(depth);
+      if (mark.t === "color" && !applyColor(item, mark.name)) this.fail(mark);
+      ops.push(item);
       if (depth === 0) {
         const span = this.atTrailingCount();
         if (span !== undefined) {
@@ -599,6 +724,25 @@ class Parser {
       if (tok.t === "end" || tok.t === "rp") return ops;
       this.fail(tok);
     }
+  }
+
+  /**
+   * Number of tokens from here that spell "into the same stitch" (`GROUP_PHRASE`), up to the
+   * next separator, bracket or the end; 0 when they do not.
+   */
+  private groupPhraseLength(): number {
+    const first = this.peek();
+    if (first.t !== "word" || !["in", "into"].includes(first.text.toLowerCase())) return 0;
+    const words: string[] = [];
+    let k = 0;
+    for (;;) {
+      const tok = this.peek(k);
+      if (tok.t === "word") words.push(tok.text.replace(/\.$/, ""));
+      else if (tok.t === "num") words.push(String(tok.value));
+      else break;
+      k++;
+    }
+    return GROUP_PHRASE.test(words.join(" ")) ? k : 0;
   }
 
   /** `( list )` of a repeat group; `()` is an empty group (rendered as `N× ()`). */
@@ -645,6 +789,13 @@ class Parser {
     // Postfix repeat: "(1 sc, 1 inc) x6", "(1 fM, 1 Zun) 6 mal"
     if (tok.t === "lp") {
       const ops = this.parseGroupBody(depth);
+      // "(3 fM) in dieselbe M", "(2 dc, ch 1, 2 dc) in same st": a stitch group (format v2).
+      const phrase = this.groupPhraseLength();
+      if (phrase > 0) {
+        if (containsGroup(ops)) this.fail(tok); // groups do not nest
+        for (let k = 0; k < phrase; k++) this.next();
+        return { kind: "group", ops: ops as GroupOp[] };
+      }
       let times: number;
       if (this.isTimes(this.peek()) && this.peek(1).t === "num") {
         this.next();
@@ -965,6 +1116,18 @@ function rewriteLenient(input: string, locale: NotationLocale): LenientText {
   // "sc2tog" → "sc (tog)".
   s = s.replace(/\b(\p{L}+)2tog\b/giu, "$1 (tog)");
 
+  // Relief stitches: "FPdc", "BPtr", "front post dc", "RStbv", "Reliefstäbchen von hinten".
+  s = s.replace(/\b(FP|BP)(sc|hdc|htr|dc|tr|dtr|trtr)\b/giu, (_m, side: string, term: string) => `${term} (${side.toUpperCase()})`);
+  s = s.replace(
+    /\b(front|back)\s+post\s+((?:half\s+)?(?:single|double|treble|triple)(?:\s+treble)?(?:\s+crochet)?|sc|hdc|htr|dc|tr|dtr)\b/giu,
+    (_m, side: string, term: string) => `${term} (${side.toLowerCase() === "front" ? "FP" : "BP"})`,
+  );
+  s = s.replace(/\bR(?:elief)?Stb\s*([vh])\b\.?/gu, (_m, side: string) => `Stb (Relief ${side})`);
+  s = s.replace(
+    /\bReliefstäbchen\s+(?:von\s+)?(vorne?|hinten)\b/giu,
+    (_m, side: string) => `Stb (Relief ${side.toLowerCase().startsWith("v") ? "v" : "h"})`,
+  );
+
   // Repeats: "*A* …" → "(A) …"; "*A, rep from * N more times"; "repeat N times" → "x N".
   s = s.replace(/\b(rep(?:eat)?\s+from)\s*\*/giu, "$1 ");
   s = s.replace(/\*([^*]*\p{L}[^*]*)\*/gu, "($1)");
@@ -1101,6 +1264,7 @@ function runParser(
     const ops = parser.parseRow();
     if (rowModifier && applyRowModifier(ops, rowModifier) === 0) throw new ParseFailure("syntax", 0);
     resolveFills(ops, parser.fills, context.previousCount);
+    resolveColors(ops, context.colors);
     if (parser.postfixTimes) info.postfixTimes = parser.postfixTimes;
     info.hadFill = parser.fills.length > 0;
     if (countWorkedStitches(ops) > MAX_ROW_STITCHES) {

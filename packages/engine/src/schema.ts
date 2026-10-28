@@ -156,10 +156,38 @@ export const SchemaVersionSchema = z.union([z.literal(1), z.literal(2)]);
 /** The format version writers write. */
 export const CURRENT_SCHEMA_VERSION = 2 as const;
 
+/** Codes that only exist since format version 2. */
+const V2_CODES: ReadonlySet<string> = new Set(["BOBBLE", "PUFF", "POPCORN", "PICOT"]);
+/** Modifiers that only exist since format version 2. */
+const V2_MODS: ReadonlySet<string> = new Set(["FP", "BP"]);
+
+function opsUseV2(ops: readonly Op[]): boolean {
+  return ops.some((op) => {
+    if (op.kind === "group") return true;
+    if (op.kind === "repeat") return opsUseV2(op.ops);
+    return op.color !== undefined || V2_CODES.has(op.code) || (op.modifiers ?? []).some((m) => V2_MODS.has(m));
+  });
+}
+
+/**
+ * Whether a part uses anything of format version 2: `finish`, `stuffing`, a row or stitch
+ * colour, a stitch group, the codes BOBBLE/PUFF/POPCORN/PICOT or the modifiers FP/BP. Such
+ * a part must say `schemaVersion: 2` (a version-1 reader would reject it).
+ */
+export function usesFormatV2(content: {
+  finish?: unknown;
+  stuffing?: unknown;
+  rows: readonly { color?: string; ops: readonly Op[] }[];
+}): boolean {
+  if (content.finish !== undefined || content.stuffing !== undefined) return true;
+  return content.rows.some((row) => row.color !== undefined || opsUseV2(row.ops));
+}
+
 /**
  * The content of one project part (head/body/arm/…). Stored as a single JSONB
  * document; carries `schemaVersion` for forward migrations. `finish` and `stuffing` are
- * format v2; without them the engine guesses from the shape (see `relax`).
+ * format v2; without them the engine guesses from the shape (see `relax`). A document that
+ * says `schemaVersion: 1` but uses a version-2 feature is rejected (`usesFormatV2`).
  */
 export const PartContentSchema = z
   .object({
@@ -168,7 +196,16 @@ export const PartContentSchema = z
     finish: FinishSchema.optional(),
     stuffing: StuffingSchema.optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((content, ctx) => {
+    if (content.schemaVersion === 1 && usesFormatV2(content)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["schemaVersion"],
+        message: "Uses format version 2 features (colours, groups, new stitches, finish or stuffing) but says schemaVersion 1",
+      });
+    }
+  });
 
 // ---------------------------------------------------------------------------
 // Inferred TypeScript types — keep app/edge code in lock-step with the schema.

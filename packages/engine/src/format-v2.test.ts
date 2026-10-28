@@ -4,7 +4,7 @@
  */
 import { describe, it, expect } from "vitest";
 import { expandPart, expandRow } from "./expand.js";
-import { BuilderExportSchema, validateExport, type BuilderExport } from "./export.js";
+import { BuilderExportSchema, validateExport, withCurrentVersion, type BuilderExport } from "./export.js";
 import { STITCH_BULGE, STITCH_HEIGHT_FACTOR, resolveGauge } from "./gauge.js";
 import { buildGraph, isFabricNode, LEG_LEAN, type StitchGraph } from "./graph.js";
 import { measureRounds } from "./measure.js";
@@ -19,6 +19,7 @@ import {
   STITCH_PROPERTIES,
   StitchOpSchema,
   isPostStitch,
+  usesFormatV2,
   type Mod,
   type Op,
   type PartContent,
@@ -81,13 +82,55 @@ const fabricOf = (g: StitchGraph, rowId: string) => g.nodes.filter((n) => n.rowI
 // ---------------------------------------------------------------------------
 
 describe("format v2 — schema", () => {
-  it("writes version 2 and still reads every v1 document", () => {
+  it("reads every v1 document; writers stamp version 2 (withCurrentVersion)", () => {
     expect(CURRENT_SCHEMA_VERSION).toBe(2);
+    const old: BuilderExport = {
+      schemaVersion: 1,
+      title: "T",
+      overview: {},
+      parts: [{ name: "A", quantity: 1, content: { schemaVersion: 1, rows: TUBE_ROWS } }],
+    };
+    const written = withCurrentVersion(old);
+    expect(written.schemaVersion).toBe(2);
+    expect(written.parts[0]!.content).toEqual({ schemaVersion: 2, rows: TUBE_ROWS });
+    expect(old.schemaVersion).toBe(1); // not mutated
+    expect(BuilderExportSchema.safeParse(written).success).toBe(true);
     const v1 = { schemaVersion: 1, rows: [{ id: "a", type: "round", ops: [{ kind: "stitch", code: "SC", count: 6 }], stitchCountTarget: 6 }] };
     expect(PartContentSchema.parse(v1).schemaVersion).toBe(1);
     expect(PartContentSchema.parse({ ...v1, schemaVersion: 2 }).schemaVersion).toBe(2);
     expect(PartContentSchema.safeParse({ ...v1, schemaVersion: 3 }).success).toBe(false);
     expect(PartContentSchema.safeParse({ ...v1, schemaVersion: "2" }).success).toBe(false);
+  });
+
+  it("rejects version-2 features in a document that says version 1", () => {
+    const v1 = (extra: Record<string, unknown>, ops: unknown[] = [{ kind: "stitch", code: "SC", count: 6 }]) => ({
+      schemaVersion: 1,
+      rows: [{ id: "a", type: "round", ops, stitchCountTarget: 6 }],
+      ...extra,
+    });
+    const ok = (x: unknown) => PartContentSchema.safeParse(x).success;
+    expect(ok(v1({}))).toBe(true);
+    expect(ok(v1({ finish: "flat" }))).toBe(false);
+    expect(ok(v1({ stuffing: "none" }))).toBe(false);
+    expect(ok(v1({}, [{ kind: "group", ops: [{ kind: "stitch", code: "SC", count: 3 }] }]))).toBe(false);
+    expect(ok(v1({}, [{ kind: "repeat", times: 6, ops: [{ kind: "stitch", code: "PICOT", count: 1 }] }]))).toBe(false);
+    expect(ok(v1({}, [{ kind: "stitch", code: "DC", count: 6, modifiers: ["FP"] }]))).toBe(false);
+    expect(ok(v1({}, [{ kind: "stitch", code: "SC", count: 6, color: "a" }]))).toBe(false);
+    expect(ok({ ...v1({}), rows: [{ id: "a", type: "round", ops: [], stitchCountTarget: 0, color: "a" }] })).toBe(false);
+    const issue = PartContentSchema.safeParse(v1({ finish: "flat" }));
+    expect(!issue.success && issue.error.issues[0]!.path).toEqual(["schemaVersion"]);
+    // The same document as version 2 is fine.
+    expect(ok({ ...v1({ finish: "flat" }), schemaVersion: 2 })).toBe(true);
+    expect(usesFormatV2({ rows: [] })).toBe(false);
+
+    const exp = (extra: Record<string, unknown>) => ({ schemaVersion: 1, title: "T", overview: {}, parts: [], ...extra });
+    const okExp = (x: unknown) => BuilderExportSchema.safeParse(x).success;
+    expect(okExp(exp({}))).toBe(true);
+    expect(okExp(exp({ overview: { colors: [] } }))).toBe(false);
+    expect(okExp(exp({ assembly: [] }))).toBe(false);
+    expect(okExp(exp({ parts: [{ id: "p", name: "A", quantity: 1, content: { schemaVersion: 1, rows: [] } }] }))).toBe(false);
+    expect(okExp(exp({ parts: [{ name: "A", quantity: 1, content: { schemaVersion: 2, rows: [] } }] }))).toBe(false);
+    expect(okExp({ ...exp({ assembly: [] }), schemaVersion: 2 })).toBe(true);
   });
 
   it("parses every v2 field of a part", () => {
@@ -310,6 +353,67 @@ describe("format v2 — validation", () => {
     const f = validate(content);
     expect(f.map((x) => x.code)).toEqual(["EMPTY_GROUP"]);
     expect(f[0]).toMatchObject({ severity: "warning", actual: 1 });
+  });
+
+  it("rejects a magic ring, decreases and TOG inside a group; an INC is two stitches into it", () => {
+    const bad = (ops: Op[]) => validate(part([ring, row("r2", ops, 0)])).filter((x) => x.code === "INVALID_GROUP");
+    expect(bad([rep(6, [grp([st("DEC")])])])).toHaveLength(1);
+    expect(bad([grp([st("INVDEC"), st("SC")]), st("SC", 5)])[0]).toMatchObject({ severity: "error", actual: 1 });
+    expect(bad([grp([st("SC", 2, { modifiers: ["TOG"] })]), st("SC", 5)])).toHaveLength(1);
+    expect(bad([grp([rep(2, [st("MR")])]), st("SC", 5)])).toHaveLength(1);
+    expect(bad([rep(6, [grp([st("SC", 3)])])])).toEqual([]);
+    // "(inc, sc) in one stitch": 3 stitches into one stitch, no finding.
+    const inc = part([ring, row("r2", [rep(6, [grp([st("INC"), st("SC")])])], 18)]);
+    expect(computeRowStitches(inc.rows[1]!)).toBe(18);
+    expect(anchorsConsumed(inc.rows[1]!)).toBe(6);
+    expect(validate(inc)).toEqual([]);
+    const g = buildGraph(inc);
+    const r2 = g.nodes.filter((n) => n.rowId === "r2");
+    expect(r2[0]!.parentSlots).toEqual(r2[1]!.parentSlots);
+    expect(g.rows[1]!.anchorsOffered).toBe(18);
+  });
+
+  it("treats a group of only chains and picots as worked into no stitch, in validation and graph", () => {
+    const content = part([ring, row("r2", [rep(6, [st("SC"), grp([st("CH", 3)]), grp([st("PICOT")])])], 6), row("r3", [st("SC", 6)], 6)]);
+    expect(anchorsConsumed(content.rows[1]!)).toBe(6);
+    expect(validate(content).map((f) => f.code)).toEqual(["EMPTY_GROUP"]);
+    const g = buildGraph(content);
+    const slots = new Set(g.nodes.filter((n) => n.rowId === "r2").flatMap((n) => (n.parentSlots ?? []).map((s) => `${s.node}:${s.slot}`)));
+    expect(slots.size).toBe(6); // only the six SC
+  });
+
+  it("reads a row that is only a group of chains as a foundation chain, in validation and graph", () => {
+    const content = part([row("f", [grp([st("CH", 5)])], 0, { type: "row" }), row("1", [st("SC", 4)], 4, { type: "row" })]);
+    expect(anchorsOffered(content.rows[0]!)).toBe(5);
+    const g = buildGraph(content);
+    expect(g.rows[0]!.kind).toBe("chain");
+    expect(g.rows[0]!.anchorsOffered).toBe(5);
+    // Both skip the chain next to the hook: one chain left unworked. (The group itself is still
+    // reported: nothing in it is worked into a stitch.)
+    expect(validate(content).map((f) => [f.code, f.expected, f.actual])).toEqual([
+      ["EMPTY_GROUP", undefined, 1],
+      ["CONSUMES_UNDERFLOW", 5, 4],
+    ]);
+    expect(g.nodes.filter((n) => n.rowId === "1").map((n) => n.parents[0])).toEqual([3, 2, 1, 0]);
+  });
+
+  it("agrees with the graph on the anchors every kind of group consumes", () => {
+    const cases: Op[][] = [
+      [rep(6, [grp([st("SC", 3)])])],
+      [rep(6, [grp([st("INC")])])],
+      [rep(6, [grp([rep(2, [st("DC")]), st("CH"), rep(2, [st("DC")])])])],
+      [rep(6, [grp([st("CH", 3)])])],
+      [rep(6, [grp([st("PICOT")])])],
+      [rep(3, [grp([st("CH"), st("DC", 2)]), st("SC")])],
+      [rep(6, [grp([])]), st("SC", 6)],
+    ];
+    for (const ops of cases) {
+      const content = part([ring, row("r2", ops, 0)]);
+      const g = buildGraph(content);
+      const slots = new Set(g.nodes.filter((n) => n.rowId === "r2").flatMap((n) => (n.parentSlots ?? []).map((s) => `${s.node}:${s.slot}`)));
+      expect(slots.size, JSON.stringify(ops)).toBe(anchorsConsumed(content.rows[1]!));
+      expect(g.rows[1]!.anchorsOffered, JSON.stringify(ops)).toBe(anchorsOffered(content.rows[1]!));
+    }
   });
 
   it("checks the next row against the stitches a group row offers", () => {
@@ -619,6 +723,24 @@ describe("format v2 — mesh", () => {
     expect(bobble.offset).toBeGreaterThan(dc.offset + 0.25 * resolveGauge().stitchWidthMm);
     const picot = bobble.g.nodes.find((n) => n.code === "PICOT")!;
     expect(Array.from(bobble.mesh.nodeIndex).filter((i) => i === picot.id).length).toBeGreaterThan(0);
+  });
+});
+
+describe("format v2 — free instructions between rounds", () => {
+  it("builds, relaxes and meshes every finish in every style with notes between the rounds", () => {
+    const rows = [...TUBE_ROWS];
+    rows.splice(1, 0, row("n1", [], 0, { note: "Faden markieren" }));
+    rows.splice(5, 0, row("n2", [], 0, { note: "Augen einsetzen", color: "c1" }));
+    for (const finish of ["open", "gather", "flat"] as const) {
+      const model = buildModel(part(rows, { finish }));
+      expect(model.finish).toBe(finish);
+      expect(Array.from(model.graph.positions).every(Number.isFinite)).toBe(true);
+      for (const style of ["surface", "tube", "points", "stitches"] as const) {
+        const mesh = toMesh(model.graph, style, { finish, smooth: "auto" });
+        expect(mesh.positions.length, `${finish} ${style}`).toBeGreaterThan(0);
+        expect(Array.from(mesh.positions).every(Number.isFinite), `${finish} ${style}`).toBe(true);
+      }
+    }
   });
 });
 

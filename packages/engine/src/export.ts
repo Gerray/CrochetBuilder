@@ -12,7 +12,7 @@ import { instructionText, rowOrdinals } from "./expand.js";
 import { GaugeSchema } from "./gauge.js";
 import { renderRow, rowLabel, type NotationLocale } from "./notation.js";
 import { PlacementSchema } from "./assembly.js";
-import { PartContentSchema, SchemaVersionSchema, type PartContent } from "./schema.js";
+import { CURRENT_SCHEMA_VERSION, PartContentSchema, SchemaVersionSchema, type PartContent } from "./schema.js";
 import { validate, type Finding, type FindingCode } from "./validate.js";
 
 export const MaterialKindSchema = z.enum(["yarn", "hook", "accessory"]);
@@ -80,7 +80,37 @@ export const BuilderExportSchema = z
     rendered: RenderedRowsSchema.optional(),
     assembly: z.array(PlacementSchema).optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((doc, ctx) => {
+    if (doc.schemaVersion !== 1) return;
+    const v2 =
+      doc.overview.colors !== undefined ||
+      doc.assembly !== undefined ||
+      doc.parts.some((p) => p.id !== undefined || p.content.schemaVersion !== 1);
+    if (v2) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["schemaVersion"],
+        message: "Uses format version 2 (palette, part ids, assembly or version-2 parts) but says schemaVersion 1",
+      });
+    }
+  });
+
+/**
+ * `doc` as writers write it: the export and every part stamped with `CURRENT_SCHEMA_VERSION`
+ * (2). Every version-1 document is a valid version-2 document, so nothing else changes.
+ */
+export function withCurrentVersion(doc: BuilderExport): BuilderExport {
+  return {
+    ...doc,
+    schemaVersion: CURRENT_SCHEMA_VERSION,
+    parts: doc.parts.map((p) =>
+      p.content.schemaVersion === CURRENT_SCHEMA_VERSION
+        ? p
+        : { ...p, content: { ...p.content, schemaVersion: CURRENT_SCHEMA_VERSION } },
+    ),
+  };
+}
 
 export type MaterialKind = z.infer<typeof MaterialKindSchema>;
 export type Material = z.infer<typeof MaterialSchema>;
@@ -94,9 +124,16 @@ export type BuilderExport = z.infer<typeof BuilderExportSchema>;
  * One display line per row, e.g. `Runde 3: 6× (1 fM, 1 Zun) (18)` — the content of
  * `rendered.rows`. A row's own label replaces the automatic "Runde n"/"Reihe n"; a note is
  * appended after a dash. Free instructions render as their text ("Label: note" when both
- * are set); rows with neither stitches nor text are skipped.
+ * are set); rows with neither stitches nor text are skipped. With a `palette`
+ * (`overview.colors`) colour changes are shown with the colour names: `[Farbe: Weiß] 6 fM`;
+ * a free instruction that changes the colour gets the mark in front.
  */
-export function renderedRows(content: PartContent, locale: NotationLocale): string[] {
+export function renderedRows(
+  content: PartContent,
+  locale: NotationLocale,
+  palette?: readonly { id: string; name?: string }[],
+): string[] {
+  const opts = palette ? { colors: palette } : {};
   const ordinals = rowOrdinals(content.rows);
   const lines: string[] = [];
   content.rows.forEach((row, i) => {
@@ -104,10 +141,11 @@ export function renderedRows(content: PartContent, locale: NotationLocale): stri
     if (row.ops.length === 0) {
       const label = row.label?.trim() ?? "";
       const text = label && note ? `${label}: ${note}` : instructionText(row);
-      if (text) lines.push(text);
+      const mark = renderRow(row, locale, opts);
+      if (text) lines.push(mark ? `${mark} ${text}` : text);
       return;
     }
-    let line = `${rowLabel(row, ordinals[i] ?? 0, locale)}: ${renderRow(row, locale)} (${row.stitchCountTarget})`;
+    let line = `${rowLabel(row, ordinals[i] ?? 0, locale)}: ${renderRow(row, locale, opts)} (${row.stitchCountTarget})`;
     if (note) line += ` – ${note}`;
     lines.push(line);
   });
