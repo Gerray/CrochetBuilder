@@ -72,6 +72,7 @@ under `/CrochetBuilder/` like on GitHub Pages.
 npx playwright install chromium   # once, downloads the browser
 npm run e2e                       # builds, serves on port 4179, runs all tests
 E2E_SKIP_BUILD=1 npm run e2e      # reuse an existing apps/builder/dist (PowerShell: $env:E2E_SKIP_BUILD=1)
+E2E_PORT=4279 npm run e2e          # another port, e.g. when several checkouts test at once
 ```
 
 Use roles, labels and visible German text as selectors (`getByRole`, `getByLabel`), not CSS
