@@ -173,6 +173,7 @@ export { parsePatternText } from "./pattern-import.js";
 export type {
   PatternImport,
   ImportedPart,
+  ImportedColor,
   ImportIssue,
   ImportIssueCode,
   ImportIssueSeverity,

@@ -30,7 +30,7 @@ export const SAMPLE_PATTERN = [
   "Ohren (2x)",
   "Runde 1: 5 fM in den Fadenring (5)",
   "Runde 2: 5 Zun (10)",
-  "Runde 3: 3 Noppen, 7 fM (10)",
+  "Runde 3: 3 Krebsmaschen, 7 fM (10)",
   "Runde 4: 10 fM, dann xq kringeln (10)",
 ].join("\n");
 

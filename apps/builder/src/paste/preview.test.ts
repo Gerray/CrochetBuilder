@@ -53,13 +53,13 @@ describe("buildPastePreview — the sample pattern", () => {
     expect(view(preview, 2)).toEqual([
       "Runde 1: 1 MR, 5 fM (5) [ok @24]",
       "Runde 2: 5 Zun (10) [ok @25]",
-      `${UNSUPPORTED_ROW_LABEL}: Runde 3: 3 Noppen, 7 fM (10) [unread @${SAMPLE_LINES.ohrenUnsupported}]`,
+      `${UNSUPPORTED_ROW_LABEL}: Runde 3: 3 Krebsmaschen, 7 fM (10) [unread @${SAMPLE_LINES.ohrenUnsupported}]`,
       `${UNREAD_ROW_LABEL}: Runde 4: 10 fM, dann xq kringeln (10) [unread @${SAMPLE_LINES.ohrenUnreadable}]`,
     ]);
     const rows = preview.parts[2]!.rows;
-    expect(rows[2]).toMatchObject({ ops: [], label: UNSUPPORTED_ROW_LABEL, note: "Runde 3: 3 Noppen, 7 fM (10)" });
+    expect(rows[2]).toMatchObject({ ops: [], label: UNSUPPORTED_ROW_LABEL, note: "Runde 3: 3 Krebsmaschen, 7 fM (10)" });
     expect(rows[3]).toMatchObject({ ops: [], label: UNREAD_ROW_LABEL, note: "Runde 4: 10 fM, dann xq kringeln (10)" });
-    expect(preview.parts[2]!.lines[2]!.messages[0]!.text).toMatch(/^Spezialmaschen/);
+    expect(preview.parts[2]!.lines[2]!.messages[0]!.text).toMatch(/^Diese Spezialmasche/);
     expect(preview.parts[2]!.lines[3]!.messages[0]!.text).toBe(importIssueMessage({ code: "UNREADABLE" }));
   });
 

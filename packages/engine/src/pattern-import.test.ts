@@ -1,10 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { renderOps, resolveStitchTerm } from "./notation.js";
 import { parsePatternText, type ImportedPart, type PatternImport } from "./pattern-import.js";
+import type { Row } from "./schema.js";
 import { validate } from "./validate.js";
 
 /** Compact view of a part: "ops (target)" per stitch row, "> note" per instruction row. */
-function view(part: ImportedPart, locale: "en_us" | "de" = "en_us"): string[] {
+function view(part: Pick<ImportedPart, "rows">, locale: "en_us" | "de" = "en_us"): string[] {
   return part.rows.map((r) => (r.ops.length > 0 ? `${renderOps(r.ops, locale)} (${r.stitchCountTarget})` : `> ${r.note}`));
 }
 
@@ -214,7 +215,9 @@ describe("parsePatternText — part headers", () => {
       ["Body", 1],
     ]);
     expect(view(res.parts[1]!)).toEqual(["> In white.", "1 MR, 6 sc (6)", "6 sc (6)"]);
-    expect(issuesOf(res, "UNSUPPORTED_COLOR").map((i) => i.partIndex)).toEqual([0, 1]);
+    expect(res.colors.map((c) => c.id)).toEqual(["grey", "white"]);
+    expect(res.parts.map((p) => p.rows.find((r) => r.ops.length > 0)?.color)).toEqual(["grey", "white", undefined]);
+    expect(res.parts.map((p) => p.id)).toEqual(["head", "ears", "body"]);
   });
 
   it("starts a new part when the numbering restarts without a header", () => {
@@ -309,12 +312,151 @@ describe("parsePatternText — German patterns", () => {
     expectEveryWordKept(text, res);
   });
 
-  it("reports the colour change as information", () => {
-    expect(issuesOf(res, "UNSUPPORTED_COLOR")).toMatchObject([{ line: 18, partIndex: 1, rowIndex: 2, severity: "info" }]);
+  it("reads the colour change into the palette and the next round", () => {
+    expect(res.colors).toEqual([{ id: "weiss", name: "Weiß", hex: "#ffffff" }]);
+    expect(res.parts[1]!.rows.map((r) => r.color)).toEqual([undefined, undefined, undefined, "weiss"]);
+    expect(issuesOf(res, "COLOR_UNNAMED")).toEqual([]);
+  });
+
+  it("reads finish, stuffing and the safety eyes of the head", () => {
+    const head = res.parts[0]!;
+    expect(head).toMatchObject({ id: "kopf", finish: "gather", stuffing: "firm" });
+    expect(res.parts[1]).not.toHaveProperty("finish");
+    expect(res.assembly).toEqual([
+      {
+        id: "placement-1",
+        kind: "eyes",
+        target: "kopf",
+        row: head.rows[3]!.id, // round 4 (R4-R6 is rows 3–5)
+        angle: 0,
+        spacing: 5,
+        note: "Sicherheitsaugen zwischen Runde 4 und 5 einsetzen, 5 M auseinander.",
+      },
+    ]);
   });
 });
 
-describe("parsePatternText — what the format cannot represent yet", () => {
+describe("parsePatternText — colours, finish, stuffing and assembly (format v2)", () => {
+  const text = [
+    "Little Owl",
+    "Materials: brown and cream yarn, 8 mm safety eyes",
+    "Head",
+    "In brown.",
+    "Rnd 1: 6 sc in MR (6)",
+    "Rnd 2: inc around (12)",
+    "Rnd 3: (sc, inc) x 6 (18)",
+    "Rnd 4-6: 18 sc",
+    "Insert the safety eyes between rounds 4 and 5, 5 sts apart.",
+    "Rnd 7: (sc, dec) x 6 (12)",
+    "Stuff the head firmly.",
+    "Rnd 8: 6 dec (6)",
+    "Fasten off and close the hole.",
+    "Wings (make 2)",
+    "With cream yarn:",
+    "Rnd 1: 4 sc in MR",
+    "Rnd 2: (sc, inc) x 2 (6)",
+    "Rnd 3-5: 6 sc",
+    "Change color to brown.",
+    "Rnd 6: 6 sc",
+    "Do not stuff. Fold flat and sc through both layers. Leave a long tail for sewing.",
+    "Assembly",
+    "Sew the wings to the head between rounds 5 and 7.",
+    "Tail",
+    "Rnd 1: 4 sc in MR",
+    "Rnd 2: 4 sc",
+    "Leave open.",
+  ].join("\n");
+  const res = parsePatternText(text, { locale: "en_us" });
+  const [head, wings, tail] = res.parts;
+
+  it("gives every part a stable id", () => {
+    expect(res.parts.map((p) => p.id)).toEqual(["head", "wings", "tail"]);
+    expect(parsePatternText("Arm\n1. 6 sc in MR\nArm\n1. 6 sc in MR", { locale: "en_us" }).parts.map((p) => p.id)).toEqual(["arm", "arm-2"]);
+  });
+
+  it("builds the palette and switches the colour on the next stitch row, until the next change", () => {
+    expect(res.colors).toEqual([
+      { id: "brown", name: "Brown", hex: "#8b5a2b" },
+      { id: "cream", name: "Cream", hex: "#fffdd0" },
+    ]);
+    const colorOf = (rows: Row[]) => rows.filter((r) => r.ops.length > 0).map((r) => r.color ?? "-");
+    expect(colorOf(head!.rows)).toEqual(["brown", "-", "-", "-", "-", "-", "-", "-"]);
+    expect(colorOf(wings!.rows)).toEqual(["cream", "-", "-", "-", "-", "brown"]);
+    // The colour lines stay as instructions.
+    expect(view(wings!)[0]).toBe("> With cream yarn:");
+  });
+
+  it("reads finish and stuffing per part", () => {
+    expect([head!.finish, head!.stuffing]).toEqual(["gather", "firm"]);
+    expect([wings!.finish, wings!.stuffing]).toEqual(["flat", "none"]);
+    expect([tail!.finish, tail!.stuffing]).toEqual(["open", undefined]);
+  });
+
+  it("reads the eyes and the sewn-on wings, with the angle reported as guessed", () => {
+    const roundRow = (n: number) => head!.rows.filter((r) => r.ops.length > 0)[n - 1]!.id;
+    expect(res.assembly).toEqual([
+      {
+        id: "placement-1",
+        kind: "eyes",
+        target: "head",
+        row: roundRow(4),
+        angle: 0,
+        spacing: 5,
+        size: 8,
+        note: "Insert the safety eyes between rounds 4 and 5, 5 sts apart.",
+      },
+      {
+        id: "placement-2",
+        kind: "attach",
+        part: "wings",
+        target: "head",
+        row: roundRow(5),
+        angle: 0,
+        note: "Sew the wings to the head between rounds 5 and 7.",
+      },
+    ]);
+    const sewRow = wings!.rows.findIndex((r) => r.note === "Sew the wings to the head between rounds 5 and 7.");
+    expect(issuesOf(res, "ASSEMBLY_ANGLE_GUESSED")).toMatchObject([{ line: 23, partIndex: 1, rowIndex: sewRow, severity: "info" }]);
+  });
+
+  it("keeps every word of the input", () => {
+    expectEveryWordKept(text, res);
+  });
+
+  it("places nothing it cannot resolve to a part and a round", () => {
+    const base = "Head\n1. 6 sc in MR\n2. inc around (12)\n3. 12 sc\nArms (make 2)\n1. 4 sc in MR\n2. 4 sc\n";
+    const assemblyOf = (line: string) => parsePatternText(base + line, { locale: "en_us" }).assembly;
+    expect(assemblyOf("Sew the arms between rounds 2 and 3.")).toEqual([]); // no target named
+    expect(assemblyOf("Sew the arms to the body between rounds 2 and 3.")).toEqual([]); // no part "Body"
+    expect(assemblyOf("Sew the arms to the head between rounds 9 and 10.")).toEqual([]); // no round 9
+    expect(assemblyOf("Sew the arms to the head between rounds 2 and 3.")).toMatchObject([{ part: "arms", target: "head" }]);
+  });
+
+  it("reads one pair of eyes per part and German assembly sentences", () => {
+    const res2 = parsePatternText(
+      [
+        "Kopf",
+        "R1: 6 fM in den Fadenring (6)",
+        "R2: Zun in jede M (12)",
+        "R3-R5: 12 fM",
+        "Augen zwischen Runde 3 und 4 einsetzen, 4 M Abstand.",
+        "Die Augen zwischen Runde 4 und 5 befestigen.",
+        "Ohren (2x)",
+        "R1: 5 fM in den Fadenring",
+        "R2: 5 fM",
+        "Ohren zwischen Runde 2 und 3 an den Kopf nähen.",
+      ].join("\n"),
+    );
+    expect(res2.assembly.map((p) => [p.kind, p.part, p.target, p.spacing])).toEqual([
+      ["eyes", undefined, "kopf", 4],
+      ["attach", "ohren", "kopf", undefined],
+    ]);
+    // "4 M Abstand" after a comma is not a row "4 M": German nouns do not start rows.
+    expect(view(res2.parts[0]!, "de")).toContain("> Augen zwischen Runde 3 und 4 einsetzen, 4 M Abstand.");
+  });
+});
+
+describe("parsePatternText — what the format cannot represent", () => {
   const text = [
       "Body",
       "1. 6 sc in MR",
@@ -335,12 +477,14 @@ describe("parsePatternText — what the format cannot represent yet", () => {
   const at = (part: number, row: number) =>
     res.issues.filter((i) => i.partIndex === part && i.rowIndex === row).map((i) => i.code);
 
-  it("keeps the raw text as an instruction row with a distinct issue", () => {
+  it("reads groups and special stitches (format v2) and keeps the rest as text with a distinct issue", () => {
     const rows = view(res.parts[0]!);
-    expect(rows[2]).toBe("> 3. 3 sc in one st, 11 sc (14)");
-    expect(at(0, 2)).toEqual(["UNSUPPORTED_GROUP"]);
-    expect(at(0, 3)).toEqual(["UNSUPPORTED_GROUP"]);
-    expect(at(0, 4)).toEqual(["UNSUPPORTED_SPECIAL_STITCH"]);
+    expect(rows.slice(2, 5)).toEqual([
+      "(3 sc) in same st, 11 sc (14)",
+      "7x ((2 hdc) in same st, 1 sc) (21)",
+      "5 sc, 1 bobble, 15 sc (21)",
+    ]);
+    expect([at(0, 2), at(0, 3), at(0, 4)]).toEqual([[], [], []]);
     expect(at(0, 5)).toEqual(["UNSUPPORTED_JOIN"]);
     expect(at(0, 6)).toEqual(["UNSUPPORTED_CHAIN_SPACE"]);
     expect(rows[7]).toBe("> 8. 21 sx (21)");
@@ -356,17 +500,25 @@ describe("parsePatternText — what the format cannot represent yet", () => {
   it("reports rounds worked around a foundation chain", () => {
     const muzzle = res.parts[1]!;
     expect(muzzle.rows[0]!.ops).toEqual([]);
-    expect(at(1, 0)).toEqual(["UNSUPPORTED_FOUNDATION_OVAL", "UNSUPPORTED_GROUP"]);
+    expect(at(1, 0)).toEqual(["UNSUPPORTED_FOUNDATION_OVAL"]);
     // The declared count of the oval round still serves as context for later rounds.
     expect(view(muzzle)[1]).toBe("7x (1 sc, 1 inc) (21)");
   });
 
-  it("names every special stitch, shells and joining legs", () => {
-    for (const stitch of ["puff st", "popcorn", "cluster", "FPdc", "picot", "bobble"]) {
-      const r = parsePatternText(`1. 6 sc in MR\n2. 2 sc, ${stitch}, 3 sc (6)`, { locale: "en_us" });
-      expect(codes(r), stitch).toEqual(["UNSUPPORTED_SPECIAL_STITCH"]);
+  it("reads the v2 special stitches and names the others, shells and joining legs", () => {
+    const row = (stitch: string) => parsePatternText(`1. 6 sc in MR\n2. 2 sc, ${stitch}, 3 sc (6)`, { locale: "en_us" });
+    for (const stitch of ["puff st", "popcorn", "FPdc", "bobble", "5-dc bobble"]) {
+      const r = row(stitch);
+      expect(codes(r), stitch).toEqual([]);
+      expect(r.parts[0]!.rows[1]!.ops, stitch).toHaveLength(3);
     }
-    expect(codes(parsePatternText("1. 6 sc in MR\n2. (sc, shell) x 3", { locale: "en_us" }))).toEqual(["UNSUPPORTED_GROUP"]);
+    expect(codes(row("picot"))).toEqual([]);
+    for (const stitch of ["cluster", "bullion st", "spike sc", "V-st"]) {
+      expect(codes(row(stitch)), stitch).toEqual(["UNSUPPORTED_SPECIAL_STITCH"]);
+    }
+    expect(codes(parsePatternText("1. 6 sc in MR\n2. (sc, shell) x 3", { locale: "en_us" }))).toEqual([
+      "UNSUPPORTED_SPECIAL_STITCH",
+    ]);
     expect(codes(parsePatternText("1. 6 sc in MR\n2. join the legs with 3 ch, 6 sc", { locale: "en_us" }))).toEqual([
       "UNSUPPORTED_JOIN",
     ]);
@@ -380,7 +532,7 @@ describe("parsePatternText — what the format cannot represent yet", () => {
 /** Words a stitch row may consume without repeating them (notation, not content). */
 const NOTATION_WORDS = new Set(
   (
-    "rnd rnds round rounds row rows repeat rep times around each every into next magic ring make from more " +
+    "rnd rnds round rounds row rows repeat rep times around each every into next one same magic ring make from more " +
     "the and with runde runden reihe reihen jede rundherum einen den fadenring mal wiederholen " +
     "back front loop loops only blo flo nur hinteres vorderes maschenglied"
   ).split(" "),
@@ -427,8 +579,17 @@ describe("parsePatternText — instruction lines", () => {
       "> Continue on next page",
       "12 sc (12)",
     ]);
-    expect(issuesOf(res, "UNSUPPORTED_COLOR")).toMatchObject([{ line: 3, partIndex: 0, rowIndex: 1 }]);
+    // The colour change stays as text and switches the next round; the embroidery thread is no colour change.
     expect(res.parts[0]!.rows[1]).toMatchObject({ ops: [], stitchCountTarget: 0, note: "cc to white" });
+    expect(res.colors).toEqual([{ id: "white", name: "White", hex: "#ffffff" }]);
+    expect(res.parts[0]!.rows.map((r) => r.color)).toEqual([undefined, undefined, "white", undefined, undefined, undefined]);
+    expect(issuesOf(res, "COLOR_UNNAMED")).toEqual([]);
+  });
+
+  it("reports a colour change it cannot name", () => {
+    const res = parsePatternText("Head\n1. 6 sc in MR\nChange colour.\n2. inc around (12)", { locale: "en_us" });
+    expect(res.colors).toEqual([]);
+    expect(issuesOf(res, "COLOR_UNNAMED")).toMatchObject([{ line: 3, partIndex: 0, rowIndex: 1, severity: "info" }]);
   });
 });
 
@@ -503,7 +664,15 @@ describe("parsePatternText — preamble, pages and robustness", () => {
   });
 
   it("returns an empty import for empty text", () => {
-    expect(parsePatternText("")).toEqual({ locale: "de", localeConfidence: 0, parts: [], issues: [], preamble: [] });
+    expect(parsePatternText("")).toEqual({
+      locale: "de",
+      localeConfidence: 0,
+      parts: [],
+      issues: [],
+      preamble: [],
+      colors: [],
+      assembly: [],
+    });
   });
 
   it("never throws on garbage and is deterministic", () => {
@@ -545,17 +714,27 @@ describe("parsePatternText — no silent misreadings", () => {
     const res = parsePatternText(start + round, { locale: "en_us" });
     const rows = res.parts[0]!.rows.slice(2);
     const found = res.issues.filter((i) => i.rowIndex !== undefined && i.rowIndex >= 2).map((i) => i.code);
-    return { res, rows, codes: found, view: view({ name: "", quantity: 1, rows }) };
+    return { res, rows, codes: found, view: view({ rows }) };
   };
 
-  it("reports several stitches into one stitch instead of reading a plain run", () => {
-    for (const round of ["Rnd 3: 2 hdc in next st, 10 sc (13)", "Rnd 3: 3 sc in next st, 11 sc (14)", "Rnd 3: 11 sc, 3 sc in next st"]) {
-      const result = third(round);
-      expect(result.rows.map((r) => r.ops), round).toEqual([[]]);
-      expect(result.codes, round).toEqual(["UNSUPPORTED_GROUP"]);
+  it("reads several stitches into one stitch as a group, never as a plain run", () => {
+    expect(third("Rnd 3: 2 hdc in next st, 10 sc (13)").view).toEqual(["(2 hdc) in same st, 10 sc (13)"]);
+    expect(third("Rnd 3: 3 sc in next st, 11 sc (14)").view).toEqual(["(3 sc) in same st, 11 sc (14)"]);
+    expect(third("Rnd 3: 11 sc, 3 sc in next st").view).toEqual(["11 sc, (3 sc) in same st (14)"]);
+    for (const round of ["Rnd 3: 2 hdc in next st, 10 sc (13)", "Rnd 3: 11 sc, 3 sc in next st"]) {
+      expect(third(round).codes, round).toEqual([]);
     }
     // Two single crochets into one stitch are an increase.
     expect(third("Rnd 3: 2 sc in next st, 10 sc (13)").view).toEqual(["1 inc, 10 sc (13)"]);
+    // Into the next three stitches is not one stitch: unread.
+    expect(third("Rnd 3: 3 sc in next 3 sts, 9 sc (12)").codes).toEqual(["UNREADABLE"]);
+  });
+
+  it("flags '3 hdc inc' without a count instead of trusting one reading", () => {
+    const result = third("Rnd 3: (3hdc inc, 3sc) x 2");
+    expect(result.view).toEqual(["2x (3x ((2 hdc) in same st), 3 sc) (18)"]);
+    expect(issuesOf(result.res, "AMBIGUOUS_INCREASE")).toMatchObject([{ severity: "warning", rowIndex: 2 }]);
+    expect(third("Rnd 3: (3hdc inc, 3sc) x 2 = [18]").codes).toEqual([]);
   });
 
   it("never splits a labelled round into an instruction and a row, or into two rows", () => {

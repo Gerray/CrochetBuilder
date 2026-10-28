@@ -22,6 +22,11 @@ All notable changes to this project are documented here. The format follows
   `BuilderExportSchema` are refined schemas now (no `.shape` / `.extend`).
 - `modifierAllowed` allows `FP` / `BP` only on SC, HDC, DC, TR and DTR; `normalizeModifiers`
   refuses FP together with BP (the same rules as validation).
+- Whole-pattern import: `ImportIssueCode` loses `UNSUPPORTED_GROUP` and `UNSUPPORTED_COLOR`
+  (both are read now) and gains `COLOR_UNNAMED`, `ASSEMBLY_ANGLE_GUESSED` and
+  `AMBIGUOUS_INCREASE`; `UNSUPPORTED_SPECIAL_STITCH` only covers stitches without a code
+  (clusters, bullions, shells …). `ImportedPart.id` and `PatternImport.colors` / `.assembly`
+  are new required fields; `ParseRowWarning` gains `increase-ambiguous`.
 
 ### Added
 
@@ -63,6 +68,17 @@ All notable changes to this project are documented here. The format follows
   apart). The 3D preview closes a part as its finish says and relaxes again when finish or
   stuffing change. Importing duplicate row ids renames them and moves the placements that
   point at them; a duplicated part gets no part id of its own.
+- **Pasted patterns in format v2.** `parseRowText` reads several stitches into one stitch as
+  groups ("3 sc in next st", "5 dc in same st", "3 fM in 1 M", "(3 dc, ch 2, 3 dc) in next
+  st", "3 sc in each st"), taller-stitch increases ("hdc inc", "3 hdc-inc", "2 hStb-Zun"),
+  bobble-family stitches with their loops in the name ("5-dc bobble", "Noppe aus 5 Stb",
+  "ch-3 picot") and more relief spellings ("Reliefstäbchen vorne", "Relief-Stb h").
+  `parsePatternText` gives every part an `id` and reads from the instruction sentences a
+  palette (`colors`, with `hex` for common colour names or from "Color A: Gray" in the
+  materials) and `Row.color` on the row after a colour change, `finish` and `stuffing` per
+  part, and `assembly` placements for safety eyes and sewn-on parts; the sentences stay
+  instruction rows. In German text a capitalised noun no longer starts a row ("…, 4 M
+  Abstand" stays text).
 
 ## [0.2.0] — not released separately
 
