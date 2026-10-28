@@ -6,9 +6,10 @@
  */
 
 import { useEffect, useRef } from "react";
-import { createModelView, WebGLUnavailableError, type ModelView, type PickResult, type ViewSphere } from "../three/modelView.js";
+import { createModelView, WebGLUnavailableError, type ModelView, type PickResult } from "../three/modelView.js";
 import { themeColors, watchTheme } from "../three/ModelCanvas.js";
 import type { CombinedScene } from "./combine.js";
+import { sceneSpheres } from "./spheres.js";
 
 export interface AssemblyCanvasProps {
   combined: CombinedScene | null;
@@ -24,19 +25,6 @@ export interface AssemblyCanvasProps {
   onUnavailable: (error: WebGLUnavailableError) => void;
   /** The view, once created (and null on unmount). */
   onView?: (view: ModelView | null) => void;
-}
-
-/** Eyes and embroidery of a combined scene as spheres. */
-export function sceneSpheres(combined: CombinedScene | null): ViewSphere[] {
-  if (!combined) return [];
-  const eyes = combined.eyes.map((e): ViewSphere => ({ center: e.position, radius: e.diameter / 2, kind: "eye" }));
-  // An embroidered mark is flat on the fabric: a sphere mostly sunk in shows as a low bump.
-  const marks = combined.marks.map((m): ViewSphere => {
-    const r = m.size / 2;
-    const c: [number, number, number] = [m.position[0] - 0.6 * r * m.normal[0], m.position[1] - 0.6 * r * m.normal[1], m.position[2] - 0.6 * r * m.normal[2]];
-    return { center: c, radius: r, kind: "mark" };
-  });
-  return [...eyes, ...marks];
 }
 
 const CLICK_SLOP = 5;

@@ -212,3 +212,35 @@ describe("ViewerApp", () => {
     expect(within(screen.getByRole("list", { name: "Reihen" })).getAllByRole("listitem")).toHaveLength(11);
   });
 });
+
+describe("ViewerApp: Montage", () => {
+  it("lists the assembly and switches between the part and the assembled toy", async () => {
+    const { AssemblyComputer } = await import("../assembly/compute.js");
+    const { mainThreadBackend, PreviewClient } = await import("../preview/protocol.js");
+    const sceneOptions = {
+      debounceMs: 0,
+      createClient: () => new PreviewClient(mainThreadBackend(new AssemblyComputer())) as never,
+    };
+    const exp = prepareExport(demoDocument(ids(), "bunny"));
+    render(<ViewerApp location={at("", `#data=${await encodeShare(exp)}`)} assemblySceneOptions={sceneOptions} />);
+    const heading = await screen.findByRole("heading", { level: 2, name: "Montage" });
+    const section = heading.closest("section")!;
+    expect(within(section).getAllByRole("listitem")[1]!.textContent).toBe("Ohr ×2 an Kopf, zwischen Runde 4 und 5, ±45° – flach annähen");
+
+    const switcher = screen.getByRole("radiogroup", { name: "Ansicht" });
+    fireEvent.click(within(switcher).getByRole("radio", { name: "Montage" }));
+    await waitFor(() => expect(fakeViews.last?.mesh?.rowIds.some((id) => id.startsWith("7|"))).toBe(true));
+    expect(fakeViews.last!.spheres.filter((s) => s.kind === "eye")).toHaveLength(2);
+    // Read-only: nothing to place.
+    expect(screen.queryByRole("button", { name: "+ Annähen" })).toBeNull();
+    // A part tab goes back to that part.
+    fireEvent.click(screen.getByRole("tab", { name: "Ohr ×2" }));
+    expect(within(switcher).getByRole("radio", { name: "Teil" }).getAttribute("aria-checked")).toBe("true");
+  });
+
+  it("has no switch for a pattern without an assembly", async () => {
+    render(<ViewerApp location={at("", `#data=${await encodeShare(ballExport())}`)} />);
+    await screen.findByRole("heading", { level: 1 });
+    expect(screen.queryByRole("radiogroup", { name: "Ansicht" })).toBeNull();
+  });
+});

@@ -99,6 +99,8 @@ export interface PdfInput {
   overview?: { lines: string[]; total: string };
   parts: Array<{ heading: string | null; rows: string[] }>;
   image: PdfImage | null;
+  /** "Montage": the placements in words, after the rows; left out without an assembly. */
+  assembly?: string[];
 }
 
 export type PdfCommand =
@@ -292,6 +294,11 @@ export function layoutPdf(input: PdfInput, measure: TextMeasure): PdfLayout {
       paragraph(part.heading, 11, { bold: true, after: 1 });
     }
     for (const row of part.rows) paragraph(row, 10.5, { hang: 6, after: 0.8 });
+  }
+
+  if (input.assembly && input.assembly.length > 0) {
+    heading("Montage");
+    for (const line of input.assembly) paragraph(`• ${line}`, 10.5, { hang: 3 });
   }
 
   // Footer on every page.

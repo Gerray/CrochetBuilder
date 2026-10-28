@@ -294,3 +294,47 @@ describe("PDF with several parts", () => {
     expect(pdfInput(one, model, null).parts[0]!.heading).toBe("Ball ×2");
   });
 });
+
+describe("PDF with an assembly", () => {
+  const exp = () => prepareExport(demoDocument(ids(), "bunny"));
+
+  it("lists the placements in words in a Montage section after the rows", () => {
+    const input = pdfInput(exp(), null, null);
+    expect(input.assembly?.[0]).toBe("Kopf an Körper, auf Runde 14 (Ende)");
+    const lines = texts(layoutPdf(input, mono).commands).map((c) => c.text);
+    expect(lines.indexOf("Montage")).toBeGreaterThan(lines.indexOf("Anleitung"));
+    expect(lines).toContain(toWinAnsi("• Augen 8 mm an Kopf, zwischen Runde 8 und 9, 6 M Abstand"));
+    const plain = prepareExport(demoDocument(ids(), "ball"));
+    expect(pdfInput(plain, null, null).assembly).toBeUndefined();
+  });
+
+  it("shows the assembled toy, eyes included, and says so at the size", async () => {
+    const shots: unknown[][] = [];
+    let partModel = false;
+    let pdfSize = 0;
+    const assembled = {
+      mesh: { primitive: "triangles" as const, positions: new Float32Array(9), normals: new Float32Array(9), indices: new Uint32Array([0, 1, 2]), nodeIndex: new Uint32Array(3), nodeRow: new Uint32Array(1), rowIds: ["0|r"] },
+      spheres: [{ center: [0, 0, 0] as [number, number, number], radius: 4, kind: "eye" as const }],
+      size: { width: 84, height: 115, depth: 51 },
+    };
+    await savePdf(demoDocument(ids(), "bunny"), {
+      loadJsPdf: async () => jsPDF,
+      computeAssembly: async () => assembled,
+      computeModel: async () => {
+        partModel = true;
+        return null;
+      },
+      snapshot: async (...args) => {
+        shots.push(args);
+        return null;
+      },
+      save: (blob) => {
+        pdfSize = blob.size;
+      },
+    });
+    expect(partModel).toBe(false);
+    expect(shots).toEqual([[assembled.mesh, assembled.spheres]]);
+    expect(pdfSize).toBeGreaterThan(1000);
+    expect(pdfInput(exp(), { size: assembled.size, maxDiameter: 0 }, null, true).size).toBe("8,4 × 11,5 × 5,1 cm (B × H × T) – zusammengesetzt");
+  });
+});

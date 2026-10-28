@@ -52,7 +52,7 @@ export interface AssemblyWorkspaceProps {
   showGrid: boolean;
   backing: number;
   resetToken: number;
-  /** Read-only (the viewer): no list editing, no placing. */
+  /** Read-only (the viewer): only the assembled view, no list and no placing. */
   readOnly?: boolean;
   sceneOptions?: AssemblySceneOptions;
   loadCanvas?: AssemblyCanvasLoader;
@@ -247,6 +247,8 @@ export function AssemblyWorkspace({
         {scene.computing && <span className="muted">berechne …</span>}
       </p>
 
+      {/* Read-only (the viewer) lists the placements with the pattern text instead. */}
+      {!readOnly && (
       <section className="assembly-list" aria-labelledby="assembly-title">
         <h2 id="assembly-title" className="section-title">
           Montage
@@ -328,6 +330,7 @@ export function AssemblyWorkspace({
           </p>
         )}
       </section>
+      )}
     </div>
   );
 }

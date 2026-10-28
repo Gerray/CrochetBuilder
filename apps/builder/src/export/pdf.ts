@@ -2,7 +2,8 @@
  * "Als PDF speichern": the export as an A4 pattern sheet. jsPDF is loaded on demand (it is
  * only needed here); the model image is a snapshot of the 3D view at a fixed size, rendered
  * off screen, and simply left out when there is no model or no WebGL. With several parts the
- * image and the finished size show the first part.
+ * image and the finished size show the assembled toy when parts are sewn together (B4), else
+ * the first part. The assembly follows the rows as a "Montage" section in words.
  */
 
 import { renderedRows, type BuilderExport, type MeshStyle } from "@crochetbuilder/engine";
@@ -14,6 +15,9 @@ import { partName, partStitches, partsTotal, totalText } from "../state/parts.js
 import { estimateNote, gaugeLine, materialLine, partHeading, sizeLine } from "./labels.js";
 import { layoutPdf, type PdfImage, type PdfInput, type PdfLayout, type TextMeasure } from "./pdfLayout.js";
 import { exportFileName, downloadBlob, prepareExport } from "./prepare.js";
+import { assemblyLines } from "../assembly/wording.js";
+import type { ViewMesh } from "../three/mapping.js";
+import type { ViewSphere } from "../three/modelView.js";
 
 /**
  * Pixel size the model is rendered at (square, like the framing). The image is then cropped
@@ -126,8 +130,12 @@ export function partOverviewLine(part: BuilderExport["parts"][number], index: nu
   return `${partHeading(part.name, part.quantity, index)}: ${counts.join(", ")}`;
 }
 
-/** The PDF content for an export: labels, parts overview, rows per part, size from the model. */
-export function pdfInput(exp: BuilderExport, model: PdfModel | null, image: PdfImage | null): PdfInput {
+/**
+ * The PDF content for an export: labels, parts overview, rows per part, size from the model,
+ * the assembly in words. `assembled`: the model (and image) is the assembled toy, not the
+ * first part.
+ */
+export function pdfInput(exp: BuilderExport, model: PdfModel | null, image: PdfImage | null, assembled = false): PdfInput {
   const several = exp.parts.length > 1;
   const gauge = exp.overview.gauge;
   const size = model ? sizeLine({ ...model.size, maxDiameter: model.maxDiameter }) : null;
@@ -135,8 +143,8 @@ export function pdfInput(exp: BuilderExport, model: PdfModel | null, image: PdfI
     title: exp.title,
     materials: (exp.overview.materials ?? []).map(materialLine).filter(Boolean),
     gauge: gaugeLine(gauge),
-    // The model is the first part's; with several parts the line says so.
-    size: size && several ? `${size} – ${partName(exp.parts[0]!.name, 0)}` : size,
+    // The model is the first part's (or the assembled toy); with several parts the line says so.
+    size: size && several ? `${size} – ${assembled ? "zusammengesetzt" : partName(exp.parts[0]!.name, 0)}` : size,
     estimate: model ? estimateNote(gauge) : null,
     parts: exp.parts.map((part, i) => ({
       heading: several || part.quantity > 1 ? partHeading(part.name, part.quantity, i) : null,
@@ -148,6 +156,8 @@ export function pdfInput(exp: BuilderExport, model: PdfModel | null, image: PdfI
     input.overview = { lines: exp.parts.map(partOverviewLine), total: totalText(partsTotal(exp)) };
   }
   if (exp.overview.notes?.trim()) input.notes = exp.overview.notes;
+  const assembly = assemblyLines(exp);
+  if (assembly.length > 0) input.assembly = assembly;
   return input;
 }
 
@@ -207,8 +217,34 @@ async function computeModel(exp: BuilderExport): Promise<PreviewModel | null> {
   }
 }
 
+/** The assembled toy for the PDF image: one mesh, eyes and embroidery, its size. */
+export interface AssembledModel {
+  mesh: ViewMesh;
+  spheres: ViewSphere[];
+  size: { width: number; height: number; depth: number };
+}
+
+/** Compute the assembled toy once (Worker when available); null when nothing is placed. */
+async function computeAssembly(exp: BuilderExport): Promise<AssembledModel | null> {
+  const [{ createAssemblyClient }, { combineScene, sceneSize }, { sceneSpheres }] = await Promise.all([
+    import("../assembly/client.js"),
+    import("../assembly/combine.js"),
+    import("../assembly/spheres.js"),
+  ]);
+  const client = createAssemblyClient();
+  try {
+    const result = await client.compute({ doc: exp, style: SNAPSHOT_STYLE, have: [] });
+    if (result?.kind !== "scene" || !result.scene.instances.some((i) => i.placement)) return null;
+    const combined = combineScene(result.scene, result.parts.map((p) => p.mesh));
+    const size = combined ? sceneSize(combined) : null;
+    return combined && size ? { mesh: combined.mesh, spheres: sceneSpheres(combined), size } : null;
+  } finally {
+    client.dispose();
+  }
+}
+
 /** Render the model off screen at `SNAPSHOT_SIZE`; null without WebGL or on any failure. */
-export async function snapshotModel(model: PreviewModel): Promise<PdfImage | null> {
+export async function snapshotModel(model: ViewMesh, spheres: readonly ViewSphere[] = []): Promise<PdfImage | null> {
   try {
     const { createModelView } = await import("../three/modelView.js");
     const canvas = document.createElement("canvas");
@@ -222,6 +258,7 @@ export async function snapshotModel(model: PreviewModel): Promise<PdfImage | nul
     let dataUrl: string | null;
     try {
       view.setMesh(model);
+      view.setSpheres(spheres);
       // Lossless first: the crop looks for the exact background colour.
       dataUrl = view.snapshot({ type: "image/png", ...SNAPSHOT_SIZE });
     } finally {
@@ -238,7 +275,9 @@ export async function snapshotModel(model: PreviewModel): Promise<PdfImage | nul
 export interface SavePdfDeps {
   loadJsPdf?: () => Promise<typeof JsPdf>;
   computeModel?: (exp: BuilderExport) => Promise<PreviewModel | null>;
-  snapshot?: (model: PreviewModel) => Promise<PdfImage | null>;
+  /** The assembled toy (patterns with placements); its image replaces the first part's. */
+  computeAssembly?: (exp: BuilderExport) => Promise<AssembledModel | null>;
+  snapshot?: (model: ViewMesh, spheres?: readonly ViewSphere[]) => Promise<PdfImage | null>;
   save?: (blob: Blob, fileName: string) => void;
 }
 
@@ -247,12 +286,22 @@ const loadJsPdf = async () => (await import("jspdf")).jsPDF;
 /** Build the PDF of `doc` and offer it as a download. Resolves with the file name. */
 export async function savePdf(doc: BuilderDoc, deps: SavePdfDeps = {}): Promise<string> {
   const exp = prepareExport(doc);
-  const [JsPdfCtor, model] = await Promise.all([
+  const placed = (exp.assembly ?? []).some((p) => p.kind === "attach");
+  const [JsPdfCtor, assembled] = await Promise.all([
     (deps.loadJsPdf ?? loadJsPdf)(),
-    (deps.computeModel ?? computeModel)(exp).catch(() => null),
+    placed ? (deps.computeAssembly ?? computeAssembly)(exp).catch(() => null) : Promise.resolve(null),
   ]);
-  const image = model ? await (deps.snapshot ?? snapshotModel)(model) : null;
-  const { pdf } = renderPdf(JsPdfCtor, pdfInput(exp, model, image));
+  const snapshot = deps.snapshot ?? snapshotModel;
+  let input: PdfInput;
+  if (assembled) {
+    const image = await snapshot(assembled.mesh, assembled.spheres);
+    input = pdfInput(exp, { size: assembled.size, maxDiameter: 0 }, image, true);
+  } else {
+    const model = await (deps.computeModel ?? computeModel)(exp).catch(() => null);
+    const image = model ? await snapshot(model) : null;
+    input = pdfInput(exp, model, image);
+  }
+  const { pdf } = renderPdf(JsPdfCtor, input);
   const fileName = exportFileName(exp.title, "pdf");
   (deps.save ?? downloadBlob)(pdf.output("blob"), fileName);
   return fileName;
