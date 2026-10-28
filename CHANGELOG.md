@@ -68,6 +68,14 @@ All notable changes to this project are documented here. The format follows
   apart). The 3D preview closes a part as its finish says and relaxes again when finish or
   stuffing change. Importing duplicate row ids renames them and moves the placements that
   point at them; a duplicated part gets no part id of its own.
+- **Montage in the builder.** The preview switches between "Teil" and "Montage": all parts
+  assembled in 3D (computed in a worker, eyes as glossy spheres) with a placement list in
+  words ("Ohr ×2 an Kopf, zwischen Runde 4 und 5, ±45°"). "+ Annähen", "+ Augen" and
+  "+ Stickerei" take one click on the target in the 3D view (the round under the pointer
+  lights up, Escape cancels); small fields fine-tune round, angle, spacing and size; every
+  edit is undoable, deleting a part removes its placements. The PDF lists the assembly and
+  shows the assembled toy, the viewer has a "Teil | Montage" switch. The bunny demo comes
+  sewn together.
 
 ## [0.2.0] — not released separately
 
