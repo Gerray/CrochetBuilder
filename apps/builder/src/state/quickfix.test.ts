@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseRowText, renderOps, validate, type Finding, type Row } from "@crochetbuilder/engine";
+import { parseRowText, renderOps, validate, type Finding, type Op, type Row, type StitchOp } from "@crochetbuilder/engine";
 import { emptyDocument } from "./document.js";
 import { currentPart, editorReducer, initEditorState, type EditorAction } from "./editor.js";
 import { quickFixes, repeatPaths } from "./quickfix.js";
@@ -89,6 +89,21 @@ describe("quick fixes", () => {
     // Nothing sensible: an odd excess on decreases.
     const odd = part(["35 fM (35)"], ["18 Abn"]);
     expect(quickFixes(findingsOf(odd).find((f) => f.code === "CONSUMES_OVERFLOW")!, odd)).toEqual([]);
+  });
+
+  it("leaves stitch groups („in dieselbe Masche“) and the repeats inside them alone", () => {
+    const sc = (count: number): StitchOp => ({ kind: "stitch", code: "SC", count });
+    // 5× (2 fM, [2× (1 fM)] in one stitch): each repeat uses 3 stitches and makes 4.
+    const inner: Op = { kind: "group", ops: [{ kind: "repeat", times: 2, ops: [sc(1)] }] };
+    const row: Row = { id: "r1", type: "round", ops: [{ kind: "repeat", times: 5, ops: [sc(2), inner] }], stitchCountTarget: 20 };
+    expect(repeatPaths(row.ops)).toEqual([[0]]);
+    const rows = [...part(["18 fM (18)"]), row];
+    const finding = findingsOf(rows).find((f) => f.code === "CONSUMES_UNDERFLOW")!;
+    const fixes = quickFixes(finding, rows);
+    const byRepeat = fixes.find((f) => f.label === "Wiederholung auf ×6 ändern")!;
+    const fixed = apply(rows, byRepeat.action)[1]!;
+    expect(fixed.ops).toEqual([{ kind: "repeat", times: 6, ops: [sc(2), inner] }]);
+    expect(findingsOf(apply(rows, byRepeat.action))).toEqual([]);
   });
 
   it("says which repeat count replaces which", () => {

@@ -38,7 +38,8 @@ export interface GroupOptions {
 function groupKey(row: Row, findings: readonly Finding[] | undefined): string | null {
   if (!isStitchRow(row) || row.label?.trim()) return null;
   const checks = (findings ?? []).map((f) => [f.code, f.expected ?? null, f.actual ?? null]);
-  return JSON.stringify([row.type, row.ops, row.stitchCountTarget, row.note ?? null, checks]);
+  // Ops compared structurally (stitch groups and colour changes included), plus the row's colour.
+  return JSON.stringify([row.type, row.ops, row.color ?? null, row.stitchCountTarget, row.note ?? null, checks]);
 }
 
 const sameIds = (a: readonly string[], b: readonly Row[]) => a.length === b.length && a.every((id, i) => b[i]!.id === id);

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { computeRowStitches, parseRowText, type Op, type Row } from "@crochetbuilder/engine";
+import { computeRowStitches, parseRowText, type Op, type Row, type StitchOp } from "@crochetbuilder/engine";
 import {
   decreaseRound,
   increaseRound,
@@ -121,6 +121,25 @@ describe("next-round suggestion", () => {
 
   it("copies only plain rounds: modifiers give a plain N fM", () => {
     expect(next("1 MR, 6 fM", "6 Zun", "6× (1 fM, 1 Zun)", "18 fM hMg")).toMatchObject({ text: "18 fM", count: 18 });
+  });
+
+  it("never copies colour changes, stitch groups or special stitches (format v2)", () => {
+    const base = rowsOf("1 MR, 6 fM", "6 Zun");
+    const last = (ops: Op[], extra: Partial<Row> = {}): Row[] => [
+      ...base,
+      { id: "x", type: "round", ops, stitchCountTarget: 12, ...extra },
+    ];
+    const sc = (count: number, more: Partial<Extract<Op, { kind: "stitch" }>> = {}): StitchOp => ({ kind: "stitch", code: "SC", count, ...more });
+    const plain = { text: "12 fM", count: 12, kind: "even" };
+    expect(suggestNextRow(last([sc(12)], { color: "c2" }), 3)).toMatchObject(plain);
+    expect(suggestNextRow(last([sc(6), sc(6, { color: "c2" })]), 3)).toMatchObject(plain);
+    expect(suggestNextRow(last([{ kind: "stitch", code: "BOBBLE", count: 12 }]), 3)).toMatchObject(plain);
+    expect(suggestNextRow(last([sc(12, { modifiers: ["FP"] })]), 3)).toMatchObject(plain);
+    // "3 fM in 1 M" style groups: 6× (group of 2 fM) = 12 from 6 — not an even round.
+    const group: Op = { kind: "repeat", times: 6, ops: [{ kind: "group", ops: [sc(2)] }] };
+    const grouped = [...rowsOf("1 MR, 6 fM"), { id: "g", type: "round" as const, ops: [group], stitchCountTarget: 12 }];
+    expect(suggestNextRow(grouped, 2)).toMatchObject(plain);
+    expect(evenSpread([group], "INC")).toBeNull();
   });
 
   it("continues only evenly spread decreases, and never below 6", () => {

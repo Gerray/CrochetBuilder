@@ -51,7 +51,11 @@ interface Candidate {
 /** Most repeat-count fixes offered for one finding. */
 const MAX_REPEAT_FIXES = 2;
 
-/** Paths of all repeat groups in the op tree, outermost first. */
+/**
+ * Paths of all repeat groups in the op tree, outermost first. Stitch groups ("in dieselbe
+ * Masche") and the repeats inside them are left alone: they are worked into one stitch, so
+ * their times are no lever on how many stitches the row uses.
+ */
 export function repeatPaths(ops: readonly Op[], prefix: OpPath = []): OpPath[] {
   const out: OpPath[] = [];
   ops.forEach((op, i) => {
@@ -116,7 +120,7 @@ function repeatCandidates(row: Row, pick: (path: OpPath) => Candidate | null): C
 /** `ops` plus `n` single crochets at the end (merged into a trailing plain "fM"). */
 function appendSingleCrochets(ops: readonly Op[], n: number): Op[] {
   const last = ops[ops.length - 1];
-  if (last?.kind === "stitch" && last.code === "SC" && !last.modifiers && !last.into) {
+  if (last?.kind === "stitch" && last.code === "SC" && !last.modifiers?.length && !last.into && last.color === undefined) {
     return [...ops.slice(0, -1), { ...last, count: last.count + n }];
   }
   return [...ops, { kind: "stitch", code: "SC", count: n }];

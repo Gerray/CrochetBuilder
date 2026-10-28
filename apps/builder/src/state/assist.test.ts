@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { Finding, Op, Row } from "@crochetbuilder/engine";
+import type { Finding, Op, Row, StitchOp } from "@crochetbuilder/engine";
 import { insertRounds, setRunLength } from "./actions.js";
 import { emptyDocument } from "./document.js";
 import {
@@ -17,7 +17,7 @@ import {
 import { activeSplits, cardFindings, countLabel, groupRows, rangeLabel } from "./grouping.js";
 import { ballStart } from "./snippets.js";
 
-const sc = (count: number): Op => ({ kind: "stitch", code: "SC", count });
+const sc = (count: number): StitchOp => ({ kind: "stitch", code: "SC", count });
 const inc = (count: number): Op => ({ kind: "stitch", code: "INC", count });
 const mr: Op = { kind: "stitch", code: "MR", count: 1 };
 const run = (s: EditorState, ...actions: EditorAction[]) => actions.reduce(editorReducer, s);
@@ -246,6 +246,16 @@ describe("grouping", () => {
     expect(shape(["4"])).toEqual(["1", "2,3", "4", "n"]);
     expect(shape(["2", "3", "4"])).toEqual(["1", "2,3,4", "n", "5"]);
     expect(shape(["3"])).toEqual(["1", "2", "3", "4"]);
+  });
+
+  it("compares ops structurally, colours and stitch groups included (format v2)", () => {
+    const group: Op = { kind: "group", ops: [sc(2)] };
+    const pair = (a: Row, b: Row) => groupRows([a, b]).length;
+    expect(pair(stitchRow("a", [group], 2), stitchRow("b", [group], 2))).toBe(1);
+    expect(pair(stitchRow("a", [group], 2), stitchRow("b", [{ kind: "group", ops: [sc(1), sc(1)] }], 2))).toBe(2);
+    expect(pair(stitchRow("a", [sc(6)], 6, { color: "c1" }), stitchRow("b", [sc(6)], 6, { color: "c2" }))).toBe(2);
+    expect(pair(stitchRow("a", [sc(6)], 6), stitchRow("b", [{ kind: "stitch", code: "SC", count: 6, color: "c2" }], 6))).toBe(2);
+    expect(pair(stitchRow("a", [sc(6)], 6, { color: "c1" }), stitchRow("b", [sc(6)], 6, { color: "c1" }))).toBe(1);
   });
 
   it("rows with different findings never share a card", () => {

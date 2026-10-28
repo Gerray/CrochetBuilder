@@ -12,8 +12,8 @@
  *                                           "6× (1 fM, 1 Abn)" (12) — never below 6 stitches
  *   - otherwise                          → an even round: a copy of the previous round when
  *                                           it was a plain one ("24 fM", "1 Lm, 20 fM",
- *                                           "24 hStb" — no modifiers), else "N fM" with N = its
- *                                           count
+ *                                           "24 hStb" — no modifiers, colour changes, groups or
+ *                                           special stitches), else "N fM" with N = its count
  *
  * One decrease is enough to continue (after the even rounds of a ball the decreases run to
  * the end); an increase needs two in a row, because a single one is often followed by even
@@ -46,19 +46,31 @@ export const MIN_DECREASE_COUNT = 6;
 
 const PLAIN_CODES = new Set(["CH", "SL_ST", "SC", "HDC", "DC", "TR", "DTR", "ST"]);
 
-/** Plain stitches only: no shaping, no modifiers (BLO, FLO …), no "into" notes. */
+/**
+ * Plain stitches only: no shaping, no special stitches (bobble, puff …), no modifiers (BLO,
+ * FLO, FP …), no "into" notes, no colour changes, no groups "in dieselbe Masche".
+ */
 function plainOnly(ops: readonly Op[]): boolean {
-  return ops.every((op) =>
-    op.kind === "stitch" ? PLAIN_CODES.has(op.code) && !op.modifiers?.length && !op.into : plainOnly(op.ops),
-  );
+  return ops.every((op) => {
+    if (op.kind === "group") return false;
+    if (op.kind === "repeat") return plainOnly(op.ops);
+    return PLAIN_CODES.has(op.code) && !op.modifiers?.length && !op.into && op.color === undefined;
+  });
 }
 
 /** A round without shaping: no ring, no increases or decreases, one stitch into each. */
 function isEvenRound(row: Row): boolean {
-  return !isRingRow(row) && plainOnly(row.ops) && rowCount(row) > 0 && anchorsConsumed(row) === rowCount(row);
+  return (
+    row.color === undefined &&
+    !isRingRow(row) &&
+    plainOnly(row.ops) &&
+    rowCount(row) > 0 &&
+    anchorsConsumed(row) === rowCount(row)
+  );
 }
 
-const isPlainStitch = (op: Op, code: string) => op.kind === "stitch" && op.code === code && !op.modifiers?.length && !op.into;
+const isPlainStitch = (op: Op, code: string) =>
+  op.kind === "stitch" && op.code === code && !op.modifiers?.length && !op.into && op.color === undefined;
 
 /**
  * Sections of an evenly spread increase/decrease round ("6 Zun", "6× (2 fM, 1 Abn)", also
@@ -69,6 +81,7 @@ export function evenSpread(ops: readonly Op[], code: "INC" | "DEC"): number | nu
   if (body.length !== 1) return null;
   const op = body[0]!;
   if (op.kind === "stitch") return isPlainStitch(op, code) ? op.count : null;
+  if (op.kind === "group") return null;
   const shaped = op.ops.filter((o) => isPlainStitch(o, code));
   const rest = op.ops.filter((o) => !isPlainStitch(o, code));
   if (shaped.length !== 1 || (shaped[0] as { count: number }).count !== 1) return null;
