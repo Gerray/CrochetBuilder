@@ -130,6 +130,16 @@ export type { NotationLocale, ParseRowResult, ParseRowErrorCode, ParseRowContext
 export { detectNotationLocale } from "./detect-locale.js";
 export type { LocaleDetection } from "./detect-locale.js";
 
+export { parsePatternText } from "./pattern-import.js";
+export type {
+  PatternImport,
+  ImportedPart,
+  ImportIssue,
+  ImportIssueCode,
+  ImportIssueSeverity,
+  ParsePatternOptions,
+} from "./pattern-import.js";
+
 export {
   MaterialKindSchema,
   MaterialSchema,
