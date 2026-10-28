@@ -112,6 +112,17 @@ export function placementForPick(doc: BuilderDoc, mode: PlacingMode, pick: Scene
   };
 }
 
+/**
+ * Where the pointer is, for the hint: rows as in the list. Parts without an id yet (nothing
+ * placed on them so far) are looked up by index.
+ */
+function hoverPosition(doc: BuilderDoc, hover: ScenePick): string {
+  const part = doc.parts[hover.part];
+  if (!part) return "";
+  const withId = part.id !== undefined ? doc : { ...doc, parts: doc.parts.map((p, i) => (i === hover.part ? { ...p, id: "\u0000" } : p)) };
+  return rowPositionText(withId, withId.parts[hover.part]!.id!, hover.rowId).replace(/^auf /, "");
+}
+
 /** The instruction shown while placing. */
 function placingHint(doc: BuilderDoc, mode: PlacingMode): string {
   switch (mode.kind) {
@@ -227,7 +238,12 @@ export function AssemblyWorkspace({
           <div className="assembly-hint" role="status">
             <span>
               {placingHint(doc, placing)}
-              {hover && <strong> {rowPositionText(doc, parts[hover.part]?.id ?? "", hover.rowId).replace(/^auf /, "")}</strong>}
+              {hover && (
+                <strong className="assembly-hover">
+                  {" "}
+                  {partName(parts[hover.part]?.name ?? "", hover.part)}: {hoverPosition(doc, hover)}
+                </strong>
+              )}
               {hover && <span className="muted"> · {hover.angleDeg}°</span>}
             </span>
             <button type="button" className="btn btn-small" onClick={cancel}>
