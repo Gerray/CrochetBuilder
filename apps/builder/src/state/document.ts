@@ -4,6 +4,7 @@
  */
 
 import { CURRENT_SCHEMA_VERSION, type BuilderExport, type Op, type Row } from "@crochetbuilder/engine";
+import { withDemoAssembly } from "./demoAssembly.js";
 
 export type BuilderDoc = BuilderExport;
 
@@ -212,6 +213,11 @@ const DEMO_SPECS: Record<DemoKind, DemoSpec> = {
 /** A demo pattern (default: the amigurumi sphere of docs/FORMAT.md), with fresh row ids. */
 export function demoDocument(makeId: () => string = newId, kind: DemoKind = "sphere"): BuilderDoc {
   const spec = DEMO_SPECS[kind];
+  // Part ids, finishes for sewing on and the placements (B4) come from `demoAssembly.ts`.
+  return withDemoAssembly(demoParts(spec, makeId), kind);
+}
+
+function demoParts(spec: DemoSpec, makeId: () => string): BuilderDoc {
   return {
     schemaVersion: CURRENT_SCHEMA_VERSION,
     title: spec.title,
