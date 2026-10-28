@@ -4,7 +4,8 @@ import { buildGraph } from "./graph.js";
 import { relax } from "./relax.js";
 import { measure, maxRoundDiameter, measureRounds } from "./measure.js";
 import type { Gauge } from "./gauge.js";
-import type { Op, PartContent, StitchCode } from "./schema.js";
+import type { Op, PartContent, Row, StitchCode } from "./schema.js";
+import { toMesh } from "./mesh.js";
 
 const st = (code: StitchCode, count = 1): Op => ({ kind: "stitch", code, count });
 
@@ -113,4 +114,32 @@ describe("increases per round and cone angle", () => {
       }
     });
   }
+});
+
+describe("instruction rows between rounds", () => {
+  // Free instructions ("Augen einsetzen") create no graph row, so graph rows and document
+  // rows are numbered differently. That used to crash the relaxation.
+  const note = (id: string): Row => ({ id, type: "round", ops: [], stitchCountTarget: 0, note: "Augen einsetzen" });
+  const content: PartContent = {
+    schemaVersion: 1,
+    rows: [
+      CUP.rows[0]!,
+      note("n1"),
+      { id: "r2", type: "round", ops: [st("INC", 6)], stitchCountTarget: 12 },
+      note("n2"),
+      { id: "r3", type: "round", ops: [st("SC", 12)], stitchCountTarget: 12 },
+      { id: "r4", type: "round", ops: [st("DEC", 6)], stitchCountTarget: 6 },
+      note("n3"),
+    ],
+  };
+
+  it("builds the model and every mesh style like without them", () => {
+    const plain: PartContent = { ...content, rows: content.rows.filter((r) => r.ops.length > 0) };
+    const m = buildModel(content);
+    expect(m.findings).toEqual([]);
+    expect(Array.from(m.graph.positions)).toEqual(Array.from(buildModel(plain).graph.positions));
+    for (const style of ["surface", "tube", "stitches", "points"] as const) {
+      expect(toMesh(m.graph, style).positions.length).toBeGreaterThan(0);
+    }
+  });
 });
