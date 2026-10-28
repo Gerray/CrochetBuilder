@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import type { ExportActions } from "./components/ExportMenu.js";
 import { focusLater } from "./components/focus.js";
 import { PART_PANEL_ID, PartsBar, partTabId } from "./components/PartsBar.js";
-import { PasteDialog, type PasteImport } from "./components/PasteDialog.js";
+import { PasteDialog, pasteShortcut, type PasteImport } from "./components/PasteDialog.js";
 import { commitPendingEdits } from "./components/pendingEdits.js";
 import { PreviewPane } from "./components/PreviewPane.js";
 import { RowList, type FocusRequest } from "./components/RowList.js";
@@ -186,16 +187,19 @@ export function App({ exportActions, pastePreviewOptions }: AppProps = {}) {
     [rows, focusRow],
   );
 
+  /** Open "Anleitung einfügen"; false when typed text elsewhere could not be committed. */
   const openPaste = useCallback(
-    (text?: string) => {
-      if (!commitPendingEdits()) return;
+    (text?: string): boolean => {
+      if (!commitPendingEdits()) return false;
       setPaste({ text: text ?? pasteDraft });
+      return true;
     },
     [pasteDraft],
   );
 
   const importPasted = useCallback(
     (result: PasteImport) => {
+      // `result.mode`: adding parts to an empty pattern is a new pattern.
       const first = result.mode === "replace" ? 0 : state.doc.parts.length;
       dispatch(result.action);
       setSelectedRowId(null);
@@ -210,14 +214,16 @@ export function App({ exportActions, pastePreviewOptions }: AppProps = {}) {
     [state.doc.parts.length],
   );
 
-  // Pasting a pattern outside a text field opens "Anleitung einfügen" with it.
+  // Pasting a pattern outside a text field opens "Anleitung einfügen" with it. The browser's
+  // own paste is only cancelled when the dialog really opens.
+  // Safari fires "paste" only where something is editable or selected, so there Ctrl/⌘+V on
+  // the page usually does nothing; the button and the offer in an empty pattern still work.
   useEffect(() => {
     const onPaste = (e: ClipboardEvent) => {
       if (paste !== null || isEditable(e.target) || isEditable(document.activeElement) || overlayOpen()) return;
       const text = e.clipboardData?.getData("text/plain") ?? "";
       if (!looksLikePattern(text)) return;
-      e.preventDefault();
-      openPaste(text);
+      if (openPaste(text)) e.preventDefault();
     };
     document.addEventListener("paste", onPaste);
     return () => document.removeEventListener("paste", onPaste);
@@ -255,6 +261,14 @@ export function App({ exportActions, pastePreviewOptions }: AppProps = {}) {
     return () => window.removeEventListener("keydown", onKey);
   }, [rows, selectedRowId, addRowAfter, selectPart, state.doc.parts.length, state.part, paste]);
 
+  const appRoot = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const root = appRoot.current;
+    if (!root) return;
+    if (paste !== null) root.setAttribute("inert", "");
+    else root.removeAttribute("inert");
+  }, [paste]);
+
   useEffect(() => {
     document.title = state.doc.title.trim() ? `${state.doc.title.trim()} – CrochetBuilder` : "CrochetBuilder";
   }, [state.doc.title]);
@@ -269,118 +283,123 @@ export function App({ exportActions, pastePreviewOptions }: AppProps = {}) {
 
   return (
     // Leaving a field ends its typing streak: the next edit is a separate undo step.
-    <div className="app" onBlurCapture={() => dispatch({ type: "endTyping" })}>
-      {persistence.invalidStored !== undefined && (
-        <StorageNotice raw={persistence.invalidStored} onStartFresh={persistence.resume} />
-      )}
-      {linkError !== null && (
-        <div className="link-notice" role="alert">
-          <span>
-            <strong>Anleitung aus dem Link konnte nicht geöffnet werden.</strong> {linkError}
-          </span>
-          <button type="button" className="btn btn-small" onClick={() => setLinkError(null)}>
-            Schließen
-          </button>
-        </div>
-      )}
-      {importNotice !== null && (
-        <div className="link-notice link-notice-info" role="status">
-          <span>{importNotice}</span>
-          <button type="button" className="btn btn-small" onClick={() => setImportNotice(null)}>
-            Schließen
-          </button>
-        </div>
-      )}
-      {linkNotice !== null && (
-        <div className="link-notice link-notice-info" role="status">
-          <span>{linkNotice}</span>
-          <button type="button" className="btn btn-small" onClick={() => setLinkNotice(null)}>
-            Schließen
-          </button>
-        </div>
-      )}
-      <TopBar
-        doc={state.doc}
-        dispatch={dispatch}
-        canUndo={canUndo(state)}
-        canRedo={canRedo(state)}
-        status={persistence.status}
-        onNew={() => dispatch(newDocument())}
-        onPaste={() => openPaste()}
-        onDemo={(kind) => dispatch(loadDemo(kind))}
-        onReplace={replaceDocument}
-        {...(exportActions ? { exportActions } : {})}
-      />
-      <main className="workspace">
-        <SplitPane
-          left={
-            <>
-              <PartsBar
-                doc={state.doc}
-                selected={state.part}
-                dispatch={dispatch}
-                onSelect={selectPart}
-                onAdd={addNewPart}
-                onDuplicate={duplicateSelectedPart}
-                onDelete={deletePart}
-                nameFocusToken={nameFocusToken}
-                onRequestNameFocus={() => setNameFocusToken((t) => t + 1)}
-                deletedName={deletedName}
-                onUndoDelete={() => {
-                  dispatch({ type: "undo" });
-                  if (deleted) focusLater(partTabId(deleted.index));
-                  setDeleted(null);
-                }}
-              />
-              <div id={PART_PANEL_ID} role="tabpanel" aria-labelledby={partTabId(state.part)}>
-                {isDocumentEmpty(state.doc) && (
-                  <p className="paste-offer">
-                    Anleitung schon als Text?
-                    <button type="button" className="btn btn-small" onClick={() => openPaste()}>
-                      Ganze Anleitung einfügen…
-                    </button>
-                    <span className="muted small">oder Strg+V außerhalb eines Eingabefelds</span>
-                  </p>
-                )}
-                <RowList
-                  rows={rows}
-                  findings={findings}
-                  selectedRowId={selectedRowId}
-                  focusRequest={focusRequest}
-                  dispatch={dispatch}
-                  onSelect={setSelectedRowId}
-                  onFocusRow={focusRow}
-                  onAddRow={addRowAfter}
-                  onDuplicate={duplicate}
-                  onDelete={deleteRow}
-                  severalParts={state.doc.parts.length > 1}
-                />
-              </div>
-            </>
-          }
-          right={
-            <PreviewPane
-              content={part}
-              gauge={state.doc.overview.gauge}
-              findings={findings}
-              selectedRowId={selectedRowId}
-              onSelectRow={focusRow}
-            />
-          }
-        />
-      </main>
-      {paste !== null && (
-        <PasteDialog
-          initialText={paste.text}
+    <>
+      <div ref={appRoot} className="app" onBlurCapture={() => dispatch({ type: "endTyping" })}>
+        {persistence.invalidStored !== undefined && (
+          <StorageNotice raw={persistence.invalidStored} onStartFresh={persistence.resume} />
+        )}
+        {linkError !== null && (
+          <div className="link-notice" role="alert">
+            <span>
+              <strong>Anleitung aus dem Link konnte nicht geöffnet werden.</strong> {linkError}
+            </span>
+            <button type="button" className="btn btn-small" onClick={() => setLinkError(null)}>
+              Schließen
+            </button>
+          </div>
+        )}
+        {importNotice !== null && (
+          <div className="link-notice link-notice-info" role="status">
+            <span>{importNotice}</span>
+            <button type="button" className="btn btn-small" onClick={() => setImportNotice(null)}>
+              Schließen
+            </button>
+          </div>
+        )}
+        {linkNotice !== null && (
+          <div className="link-notice link-notice-info" role="status">
+            <span>{linkNotice}</span>
+            <button type="button" className="btn btn-small" onClick={() => setLinkNotice(null)}>
+              Schließen
+            </button>
+          </div>
+        )}
+        <TopBar
           doc={state.doc}
-          onImport={importPasted}
-          onClose={(text) => {
-            setPaste(null);
-            setPasteDraft(text);
-          }}
-          {...(pastePreviewOptions ? { previewOptions: pastePreviewOptions } : {})}
+          dispatch={dispatch}
+          canUndo={canUndo(state)}
+          canRedo={canRedo(state)}
+          status={persistence.status}
+          onNew={() => dispatch(newDocument())}
+          onPaste={() => openPaste()}
+          onDemo={(kind) => dispatch(loadDemo(kind))}
+          onReplace={replaceDocument}
+          {...(exportActions ? { exportActions } : {})}
         />
-      )}
-    </div>
+        <main className="workspace">
+          <SplitPane
+            left={
+              <>
+                <PartsBar
+                  doc={state.doc}
+                  selected={state.part}
+                  dispatch={dispatch}
+                  onSelect={selectPart}
+                  onAdd={addNewPart}
+                  onDuplicate={duplicateSelectedPart}
+                  onDelete={deletePart}
+                  nameFocusToken={nameFocusToken}
+                  onRequestNameFocus={() => setNameFocusToken((t) => t + 1)}
+                  deletedName={deletedName}
+                  onUndoDelete={() => {
+                    dispatch({ type: "undo" });
+                    if (deleted) focusLater(partTabId(deleted.index));
+                    setDeleted(null);
+                  }}
+                />
+                <div id={PART_PANEL_ID} role="tabpanel" aria-labelledby={partTabId(state.part)}>
+                  {isDocumentEmpty(state.doc) && (
+                    <p className="paste-offer">
+                      Anleitung schon als Text?
+                      <button type="button" className="btn btn-small" onClick={() => openPaste()}>
+                        Ganze Anleitung einfügen…
+                      </button>
+                      <span className="muted small">oder {pasteShortcut()} außerhalb eines Eingabefelds</span>
+                    </p>
+                  )}
+                  <RowList
+                    rows={rows}
+                    findings={findings}
+                    selectedRowId={selectedRowId}
+                    focusRequest={focusRequest}
+                    dispatch={dispatch}
+                    onSelect={setSelectedRowId}
+                    onFocusRow={focusRow}
+                    onAddRow={addRowAfter}
+                    onDuplicate={duplicate}
+                    onDelete={deleteRow}
+                    severalParts={state.doc.parts.length > 1}
+                  />
+                </div>
+              </>
+            }
+            right={
+              <PreviewPane
+                content={part}
+                gauge={state.doc.overview.gauge}
+                findings={findings}
+                selectedRowId={selectedRowId}
+                onSelectRow={focusRow}
+              />
+            }
+          />
+        </main>
+      </div>
+      {/* Outside the app root, which is inert while the dialog is open. */}
+      {paste !== null &&
+        createPortal(
+          <PasteDialog
+            initialText={paste.text}
+            doc={state.doc}
+            onImport={importPasted}
+            onClose={(text) => {
+              setPaste(null);
+              setPasteDraft(text);
+            }}
+            {...(pastePreviewOptions ? { previewOptions: pastePreviewOptions } : {})}
+          />,
+          document.body,
+        )}
+    </>
   );
 }

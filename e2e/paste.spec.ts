@@ -35,6 +35,14 @@ test("paste a whole pattern: preview, fix in place, import as parts, undo", asyn
   await expect(dialog.getByRole("textbox", { name: "Anzahl von Teil 3" })).toHaveValue("2");
   await expect(dialog.getByText("Runde 5–8:")).toBeVisible();
 
+  // Modal: after a click on a non-focusable area, Tab never reaches the page behind it.
+  await dialog.getByRole("heading", { name: "Anleitung einfügen" }).click();
+  for (let i = 0; i < 60; i++) {
+    await page.keyboard.press(i < 45 ? "Tab" : "Shift+Tab");
+    expect(await page.evaluate(() => document.activeElement?.closest("[role='dialog']") !== null)).toBe(true);
+  }
+  await expect(page.locator(".app")).toHaveAttribute("inert", "");
+
   // Only the problem spots; a click marks the source line in the text.
   await dialog.getByRole("checkbox", { name: "nur Problemstellen" }).check();
   await expect(dialog.getByRole("listitem")).toHaveCount(3);

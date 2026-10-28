@@ -16,6 +16,13 @@ describe("looksLikePattern", () => {
     expect(looksLikePattern("Liebe Grüße\nund bis bald\nAnna\nPS: schöne Woche")).toBe(false);
   });
 
+  it("does not take numbered lines alone for rounds (a shopping list)", () => {
+    expect(looksLikePattern("1. Milch\n2. Eier\n3. Brot\n4. Butter")).toBe(false);
+    expect(looksLikePattern("1) Anmelden\n2) Zahlen\n3) Fertig")).toBe(false);
+    // Numbered lines with stitches still count.
+    expect(looksLikePattern("1. 6 fM in den Fadenring\n2. 6 Zun\n3. 12 fM")).toBe(true);
+  });
+
   it("does not read words that only contain stitch letters", () => {
     expect(looksLikePattern("describe\nchapter\nincoming\ndecade")).toBe(false);
   });

@@ -1,11 +1,26 @@
 import { memo, useCallback, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import type { NotationLocale } from "@crochetbuilder/engine";
-import { applyPaste, partEdit, pasteBlocker, type PartEdit, type PasteMode, type PasteResult } from "../paste/apply.js";
-import { summaryText, type LineStatus, type PastePreview, type PreviewLine, type LocaleChoice } from "../paste/preview.js";
+import {
+  applyPaste,
+  effectiveMode,
+  partEdit,
+  pasteBlocker,
+  type PartEdit,
+  type PasteMode,
+  type PasteResult,
+} from "../paste/apply.js";
+import {
+  summaryText,
+  type LineStatus,
+  type PastePreview,
+  type PreviewLine,
+  type LocaleChoice,
+} from "../paste/preview.js";
 import { usePastePreview, type PastePreviewOptions } from "../paste/usePastePreview.js";
 import type { BuilderDoc } from "../state/document.js";
 import { MAX_PART_QUANTITY } from "../state/editor.js";
 import { localeName } from "../state/import-messages.js";
+import { isMacPlatform } from "../state/shortcuts.js";
 import { NumberField } from "./fields.js";
 import "./paste.css";
 
@@ -23,7 +38,7 @@ const STATUS: Record<LineStatus, { icon: string; label: string }> = {
   unread: { icon: "?", label: "nicht gelesen" },
 };
 
-export type PasteImport = Extract<PasteResult, { ok: true }> & { mode: PasteMode };
+export type PasteImport = Extract<PasteResult, { ok: true }>;
 
 export interface PasteDialogProps {
   /** Text to start with (pasted, or the draft of the last time). */
@@ -37,6 +52,11 @@ export interface PasteDialogProps {
 }
 
 const FOCUSABLE = "button:not([disabled]), input:not([disabled]), textarea, select, summary, a[href]";
+
+/** "Strg+V", or "⌘V" on a Mac. */
+export function pasteShortcut(): string {
+  return isMacPlatform() ? "⌘V" : "Strg+V";
+}
 
 /** Text offset of the start and end of 1-based `line`. */
 export function lineRange(text: string, line: number): [number, number] {
@@ -69,15 +89,23 @@ function scrollToOffset(area: HTMLTextAreaElement, offset: number): void {
   area.scrollTop = Math.max(0, top - area.clientHeight / 3);
 }
 
-/** "Anleitung einfügen": pasted text on the left, live preview of the import on the right. */
+/**
+ * "Anleitung einfügen": pasted text on the left, live preview of the import on the right.
+ * Modal: the app behind it is made inert by the caller (see App.tsx), Tab stays inside.
+ */
 export function PasteDialog({ initialText, doc, onImport, onClose, previewOptions }: PasteDialogProps) {
   const [text, setText] = useState(() => initialText.replace(/\r\n?/g, "\n"));
   const [choice, setChoice] = useState<LocaleChoice>("auto");
-  const [edits, setEdits] = useState<ReadonlyMap<string, PartEdit>>(new Map());
+  const [edits, setEdits] = useState<ReadonlyMap<string, Partial<PartEdit>>>(new Map());
   const [onlyProblems, setOnlyProblems] = useState(false);
   const [includePreamble, setIncludePreamble] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const { preview, computing, error: readError } = usePastePreview(text, choice, previewOptions);
+  const read = usePastePreview(text, choice, previewOptions);
+  const { preview, error: readError } = read;
+  // The preview belongs to the text and notation in view, and nothing newer is being read:
+  // only then can it be imported and its line numbers be trusted.
+  const current = preview !== null && !read.computing && read.text === text && read.choice === choice;
+  const computing = preview !== null && !current;
   const dialog = useRef<HTMLDivElement>(null);
   const area = useRef<HTMLTextAreaElement>(null);
   const titleId = useId();
@@ -95,9 +123,9 @@ export function PasteDialog({ initialText, doc, onImport, onClose, previewOption
   }, []);
 
   // Edited names and quantities belong to a part as read from the text (index and name), so a
-  // changed text never carries an edit over to another part.
+  // changed text never carries an edit over to another part. Only the edited field is kept.
   const indexEdits = useMemo(() => {
-    const map = new Map<number, PartEdit>();
+    const map = new Map<number, Partial<PartEdit>>();
     preview?.parts.forEach((part, i) => {
       const edit = edits.get(`${i}:${part.name}`);
       if (edit) map.set(i, edit);
@@ -105,14 +133,13 @@ export function PasteDialog({ initialText, doc, onImport, onClose, previewOption
     return map;
   }, [preview, edits]);
   // Stable callbacks: the preview (hundreds of lines) is not re-rendered on every keystroke.
-  const editState = useRef({ preview, indexEdits });
-  editState.current = { preview, indexEdits };
+  const live = useRef({ preview, current });
+  live.current = { preview, current };
   const setEdit = useCallback((index: number, patch: Partial<PartEdit>) => {
-    const { preview: current, indexEdits: known } = editState.current;
-    const part = current?.parts[index];
-    if (!current || !part) return;
-    const edit = partEdit(current, index, known);
-    setEdits((m) => new Map(m).set(`${index}:${part.name}`, { ...edit, ...patch }));
+    const part = live.current.preview?.parts[index];
+    if (!part) return;
+    const key = `${index}:${part.name}`;
+    setEdits((m) => new Map(m).set(key, { ...m.get(key), ...patch }));
     setError(null);
   }, []);
   const changeChoice = useCallback((next: LocaleChoice) => {
@@ -121,24 +148,27 @@ export function PasteDialog({ initialText, doc, onImport, onClose, previewOption
   }, []);
 
   const close = () => onClose(text);
-  const blocker = useMemo(
-    () => (preview ? pasteBlocker(preview, { mode: "replace", edits: indexEdits, includePreamble }, doc) : null),
-    [preview, indexEdits, includePreamble, doc],
-  );
+  // Both actions are checked up front, so a button is disabled with its reason before a click.
+  const blockers = useMemo(() => {
+    if (!preview) return { replace: null, append: null };
+    const check = (mode: PasteMode) => pasteBlocker(preview, { mode, edits: indexEdits, includePreamble }, doc);
+    return { replace: check("replace"), append: check("append") };
+  }, [preview, indexEdits, includePreamble, doc]);
 
   const submit = (mode: PasteMode) => {
-    if (!preview || computing) return;
+    if (!preview || !current) return;
     const result = applyPaste(preview, doc, { mode, edits: indexEdits, includePreamble });
     if (!result.ok) {
       setError(result.message);
       return;
     }
-    onImport({ ...result, mode });
+    onImport(result);
   };
 
   const selectLine = useCallback((line: number | undefined) => {
     const el = area.current;
-    if (!el || line === undefined) return;
+    // While a newer text is being read, the line numbers may be outdated.
+    if (!el || line === undefined || !live.current.current) return;
     const [start, end] = lineRange(el.value, line);
     el.focus();
     el.setSelectionRange(start, end);
@@ -147,6 +177,8 @@ export function PasteDialog({ initialText, doc, onImport, onClose, previewOption
 
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
     if (e.key === "Escape") {
+      // Escape that ends an input method composition is not meant for the dialog.
+      if (e.nativeEvent.isComposing) return;
       e.preventDefault();
       e.stopPropagation();
       close();
@@ -157,18 +189,27 @@ export function PasteDialog({ initialText, doc, onImport, onClose, previewOption
     const first = items[0];
     const last = items[items.length - 1];
     if (!first || !last) return;
-    if (e.shiftKey && document.activeElement === first) {
+    const active = document.activeElement;
+    if (!active || !dialog.current.contains(active)) {
+      e.preventDefault();
+      (e.shiftKey ? last : first).focus();
+    } else if (e.shiftKey && active === first) {
       e.preventDefault();
       last.focus();
-    } else if (!e.shiftKey && document.activeElement === last) {
+    } else if (!e.shiftKey && active === last) {
       e.preventDefault();
       first.focus();
     }
   };
 
   const lineCount = text === "" ? 0 : text.split("\n").length;
-  const ready = preview !== null && !computing;
-  const disabled = !ready || preview.parts.length === 0 || preview.localeUncertain;
+  const appendIsReplace = effectiveMode("append", doc) === "replace";
+  const blocked = (mode: PasteMode) => !current || blockers[mode] !== null;
+  let notice = error ?? readError ?? "";
+  if (!notice && current && preview.parts.length > 0) {
+    if (blockers.replace) notice = blockers.replace;
+    else if (blockers.append) notice = `„Teile hinzufügen“ geht nicht: ${blockers.append}`;
+  }
 
   return (
     <div
@@ -196,7 +237,13 @@ export function PasteDialog({ initialText, doc, onImport, onClose, previewOption
               und korrigiere links den Text; ein Klick auf eine Zeile markiert sie im Text.
             </p>
           </div>
-          <button type="button" className="btn btn-icon btn-quiet" aria-label="Schließen" title="Schließen (Esc)" onClick={close}>
+          <button
+            type="button"
+            className="btn btn-icon btn-quiet"
+            aria-label="Schließen"
+            title="Schließen (Esc)"
+            onClick={close}
+          >
             ✕
           </button>
         </header>
@@ -211,7 +258,7 @@ export function PasteDialog({ initialText, doc, onImport, onClose, previewOption
               ref={area}
               className="paste-text"
               spellCheck={false}
-              placeholder={"Anleitung hier einfügen (Strg+V), z. B.\n\nKopf\nRunde 1: 6 fM in den Fadenring (6)\nRunde 2: 6 Zun (12)\n…"}
+              placeholder={`Anleitung hier einfügen (${pasteShortcut()}), z. B.\n\nKopf\nRunde 1: 6 fM in den Fadenring (6)\nRunde 2: 6 Zun (12)\n…`}
               value={text}
               onChange={(e) => {
                 setText(e.target.value);
@@ -223,13 +270,13 @@ export function PasteDialog({ initialText, doc, onImport, onClose, previewOption
             </p>
           </div>
 
-          <section className="paste-preview" aria-label="Vorschau des Imports" aria-busy={computing}>
+          <section className="paste-preview" aria-label="Vorschau des Imports" aria-busy={read.computing}>
             {preview === null ? (
               <p className="paste-empty muted">
-                {computing
+                {read.computing
                   ? "Lese den Text …"
                   : readError
-                    ? `Der Text konnte nicht gelesen werden: ${readError}`
+                    ? "Keine Vorschau – siehe Meldung unten."
                     : "Füge links eine Anleitung ein – hier siehst du sofort, welche Teile und Runden erkannt werden."}
               </p>
             ) : (
@@ -250,7 +297,7 @@ export function PasteDialog({ initialText, doc, onImport, onClose, previewOption
 
         <footer className="paste-foot">
           <p className="paste-error" role="alert">
-            {error ?? (ready && blocker && preview.parts.length > 0 ? blocker : "")}
+            {notice}
           </p>
           <label className="paste-check">
             <input type="checkbox" checked={includePreamble} onChange={(e) => setIncludePreamble(e.target.checked)} />
@@ -263,8 +310,13 @@ export function PasteDialog({ initialText, doc, onImport, onClose, previewOption
             <button
               type="button"
               className="btn"
-              disabled={disabled}
-              title="Die erkannten Teile hinten an die aktuelle Anleitung anhängen"
+              disabled={blocked("append")}
+              title={
+                blockers.append ??
+                (appendIsReplace
+                  ? "Die Anleitung ist noch leer: die erkannten Teile werden zur neuen Anleitung"
+                  : "Die erkannten Teile hinten an die aktuelle Anleitung anhängen")
+              }
               onClick={() => submit("append")}
             >
               Teile hinzufügen
@@ -272,8 +324,8 @@ export function PasteDialog({ initialText, doc, onImport, onClose, previewOption
             <button
               type="button"
               className="btn btn-primary"
-              disabled={disabled}
-              title="Die aktuelle Anleitung ersetzen (mit „Rückgängig“ zurückholbar)"
+              disabled={blocked("replace")}
+              title={blockers.replace ?? "Die aktuelle Anleitung ersetzen (mit „Rückgängig“ zurückholbar)"}
               onClick={() => submit("replace")}
             >
               Als neue Anleitung übernehmen
@@ -294,7 +346,7 @@ interface PreviewContentProps {
   onChoice: (choice: LocaleChoice) => void;
   onlyProblems: boolean;
   onOnlyProblems: (on: boolean) => void;
-  edits: ReadonlyMap<number, PartEdit>;
+  edits: ReadonlyMap<number, Partial<PartEdit>>;
   onEdit: (index: number, patch: Partial<PartEdit>) => void;
   onSelectLine: (line: number | undefined) => void;
 }
@@ -330,6 +382,7 @@ const PreviewContent = memo(function PreviewContent(props: PreviewContentProps) 
               <button
                 type="button"
                 className={`paste-line is-${g.severity === "warning" ? "mismatch" : "info"}`}
+                disabled={computing}
                 onClick={() => onSelectLine(g.line)}
               >
                 <StatusIcon status={g.severity === "warning" ? "mismatch" : "info"} />
@@ -378,7 +431,7 @@ const PreviewContent = memo(function PreviewContent(props: PreviewContentProps) 
               <ol className="paste-lines">
                 {shown.map((line) => (
                   <li key={line.first}>
-                    <LineView line={line} onSelectLine={onSelectLine} />
+                    <LineView line={line} disabled={computing} onSelectLine={onSelectLine} />
                   </li>
                 ))}
               </ol>
@@ -420,7 +473,16 @@ function StatusIcon({ status }: { status: LineStatus }) {
   );
 }
 
-function LineView({ line, onSelectLine }: { line: PreviewLine; onSelectLine: (line: number | undefined) => void }) {
+function LineView({
+  line,
+  disabled,
+  onSelectLine,
+}: {
+  line: PreviewLine;
+  /** A newer text is being read: the line numbers may be outdated. */
+  disabled: boolean;
+  onSelectLine: (line: number | undefined) => void;
+}) {
   const body = (
     <>
       <StatusIcon status={line.status} />
@@ -443,6 +505,7 @@ function LineView({ line, onSelectLine }: { line: PreviewLine; onSelectLine: (li
       type="button"
       className={`paste-line is-${line.status}`}
       title={`Zeile ${line.source} im Text markieren`}
+      disabled={disabled}
       onClick={() => onSelectLine(line.source)}
     >
       {body}
