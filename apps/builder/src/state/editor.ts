@@ -100,6 +100,8 @@ export type EditorAction =
   | { type: "duplicatePart"; index: number; rowIds: readonly string[] }
   | { type: "deletePart"; index: number }
   | { type: "movePart"; index: number; delta: number }
+  // pattern paste ("Anleitung einfügen", see the block at the end of `applyEdit`)
+  | AppendPartsAction
   // document
   | { type: "replaceDocument"; doc: BuilderDoc; pinned?: readonly string[] }
   | { type: "hydrate"; doc: BuilderDoc; pinned?: readonly string[]; part?: number }
@@ -512,12 +514,53 @@ function applyEdit(state: EditorState, action: EditorAction): DocResult {
     case "hydrate":
       return { doc: action.doc, pinned: action.pinned ?? [] };
 
+    case "appendParts":
+      return appendParts(state, action);
+
     case "selectPart":
     case "undo":
     case "redo":
     case "endTyping":
       return same;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Pattern paste ("Anleitung einfügen"): parts from a pasted text appended in one undo step.
+// Replacing the whole document uses `replaceDocument`.
+// ---------------------------------------------------------------------------
+
+export interface AppendPartsAction {
+  type: "appendParts";
+  /** Complete parts with fresh row ids (see `paste/apply.ts`). */
+  parts: readonly Part[];
+  /** Row ids among them whose Soll is declared by the pattern. */
+  pinned: readonly string[];
+  /** New overview notes (the old ones plus the pasted preamble), if they change. */
+  notes?: string;
+}
+
+function appendParts(state: EditorState, action: AppendPartsAction): DocResult {
+  const { doc, pinned } = state;
+  const same = { doc, pinned };
+  if (action.parts.length === 0 || doc.parts.length + action.parts.length > MAX_PARTS) return same;
+  const ids = action.parts.flatMap((p) => p.content.rows.map((r) => r.id));
+  // Row ids stay unique across the document.
+  if (new Set(ids).size !== ids.length || ids.some((id) => partOfRow(doc, id) >= 0)) return same;
+  if (action.parts.some((p) => !Number.isInteger(p.quantity) || p.quantity < 1 || p.quantity > MAX_PART_QUANTITY)) {
+    return same;
+  }
+  let overview = doc.overview;
+  if (action.notes !== undefined && action.notes !== (doc.overview.notes ?? "")) {
+    overview = setOptionalText(doc.overview, "notes", action.notes === "" ? undefined : action.notes);
+  }
+  const known = new Set(ids);
+  return {
+    doc: { ...doc, overview, parts: [...doc.parts, ...structuredClone(action.parts)] },
+    pinned: [...pinned, ...action.pinned.filter((id) => known.has(id))],
+    scope: state.part,
+    select: doc.parts.length,
+  };
 }
 
 /** Edits that coalesce into one undo step while the same field is being typed into. */

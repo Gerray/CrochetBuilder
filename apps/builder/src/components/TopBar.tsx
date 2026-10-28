@@ -24,6 +24,8 @@ interface TopBarProps {
   canRedo: boolean;
   status: SaveStatus;
   onNew: () => void;
+  /** Open "Anleitung einfügen" (a pasted pattern text becomes parts and rows). */
+  onPaste: () => void;
   /** Load a demo pattern (the button itself loads the sphere). */
   onDemo: (kind: DemoKind) => void;
   /** Replace the document with an imported one ("JSON öffnen…"). */
@@ -32,7 +34,7 @@ interface TopBarProps {
   exportActions?: Partial<ExportActions>;
 }
 
-export function TopBar({ doc, dispatch, canUndo, canRedo, status, onNew, onDemo, onReplace, exportActions }: TopBarProps) {
+export function TopBar({ doc, dispatch, canUndo, canRedo, status, onNew, onPaste, onDemo, onReplace, exportActions }: TopBarProps) {
   const [overviewOpen, setOverviewOpen] = useState(false);
   const materialCount = doc.overview.materials?.length ?? 0;
 
@@ -63,6 +65,14 @@ export function TopBar({ doc, dispatch, canUndo, canRedo, status, onNew, onDemo,
           <span className="toolbar-sep" aria-hidden="true" />
           <button type="button" className="btn" onClick={onNew} title="Neue, leere Anleitung (rückgängig machbar)">
             Neu
+          </button>
+          <button
+            type="button"
+            className="btn"
+            onClick={onPaste}
+            title="Ganze Anleitung als Text einfügen (aus PDF oder Webseite) – wird zu Teilen und Runden"
+          >
+            Anleitung einfügen…
           </button>
           <DemoMenu onDemo={onDemo} />
           <span className="toolbar-sep" aria-hidden="true" />

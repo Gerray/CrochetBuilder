@@ -76,6 +76,18 @@ All notable changes to this project are documented here. The format follows
   parts (older saves load unchanged). The PDF starts with a parts overview and has one
   section per part; the viewer gets part tabs. New demo "Hase (einfach)". The canonical
   format is unchanged.
+- **"Anleitung einfügen" in the builder.** Paste a whole pattern (from a PDF or a web page)
+  — via the top bar, the offer in an empty pattern, or Ctrl+V outside a text field — and see
+  a live preview next to the text: notation (Deutsch / US / UK, a doubtful detection must be
+  confirmed), parts with editable name and quantity, every round as it will appear
+  ("Runde 5–8: 24 fM (24)") with a status, Soll/Ist for wrong stitch counts and a German
+  message per import finding, a summary and a "nur Problemstellen" filter. A click on a line
+  marks its source line in the text, so it can be fixed in place. "Als neue Anleitung
+  übernehmen" replaces the pattern (title from the text), "Teile hinzufügen" appends the
+  parts; both are one undo step, keep the part limits and can put materials and
+  abbreviations into the pattern notes. Text that stayed unread becomes an instruction row
+  labelled „Nicht gelesen“ / „Nicht unterstützt“ with the original text. The preview is
+  computed in a Web Worker, so large pastes do not block typing.
 - **Whole-pattern import.** `parsePatternText(text, { locale?, makeId? })` reads a pattern
   pasted from a PDF or web page into parts (name, quantity) and rows: part headers
   ("Ears (make 2)", "Kopf", "2 Ohren"), round labels anywhere in a line ("R1:", "Rnd 8 – 9",

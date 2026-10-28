@@ -98,6 +98,7 @@
   --c-yarn: #e0a983;
 
   --el-popover: 0 8px 24px rgba(0, 0, 0, 0.5);
+  --c-scrim: rgba(0, 0, 0, 0.6); /* behind modal dialogs */
 
   /* ---- Roles (aliases; identical in both themes) ---- */
   --c-bg: var(--c-neutral-50);
@@ -150,6 +151,7 @@
     --c-yarn: #e7b48f;
 
     --el-popover: 0 8px 24px rgba(39, 39, 44, 0.12);
+    --c-scrim: rgba(39, 39, 44, 0.4);
   }
 }
 
@@ -185,4 +187,5 @@
   --c-yarn: #e7b48f;
 
   --el-popover: 0 8px 24px rgba(39, 39, 44, 0.12);
+  --c-scrim: rgba(39, 39, 44, 0.4);
 }
