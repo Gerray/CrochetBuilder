@@ -44,6 +44,11 @@ All notable changes to this project are documented here. The format follows
 - **Assembly:** `BuilderPart.id` and `BuilderExport.assembly` (placements `attach`, `eyes`,
   `embroidery` on a row and angle of a target part). `placementAnchor(graph, rowId, angle)`
   gives the point and outward normal of a placement on a relaxed part.
+  `composeAssembly(doc, models)` puts the parts together: a rigid transform per part copy
+  (attached parts sewn on with their last row, pointing outwards, mirrored second copy for a
+  part ×2 with one placement), safety eyes and embroidery positions, and findings for
+  unknown references and cycles. `anchorOfNode(graph, node)` is the inverse of
+  `placementAnchor` (row and angle of a stitch) for creating placements by clicking.
 - Validation: `INVALID_MODIFIER` (FP/BP on a stitch without a post), `UNKNOWN_COLOR` (with a
   palette), `EMPTY_GROUP` (a group with nothing worked into its stitch), `INVALID_GROUP` (MR,
   DEC, INVDEC or TOG inside a group); `validateExport` checks a whole export — part findings,
