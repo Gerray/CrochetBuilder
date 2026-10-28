@@ -34,8 +34,8 @@ export const HISTORY_LIMIT = 200;
 
 /** More parts are refused (keeps the parts bar and the export manageable). */
 export const MAX_PARTS = 50;
-/** Highest quantity of one part ("×99"). */
-export const MAX_PART_QUANTITY = 99;
+/** Highest quantity of one part ("×999", e.g. the squares of a blanket). */
+export const MAX_PART_QUANTITY = 999;
 
 export interface EditorState {
   doc: BuilderDoc;

@@ -286,7 +286,7 @@ describe("Parts and saving", () => {
 describe("PartsBar quantity stepper", () => {
   it("'−' brings a quantity above the limit back into range", () => {
     const doc = emptyDocument("r1");
-    doc.parts[0]!.quantity = 150;
+    doc.parts[0]!.quantity = 1500;
     const actions: EditorAction[] = [];
     render(
       <PartsBar
