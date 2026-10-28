@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { encodeShare, type BuilderExport } from "@crochetbuilder/engine";
 import { prepareExport } from "../export/prepare.js";
 import { demoDocument } from "../state/document.js";
@@ -126,6 +126,49 @@ describe("ViewerApp", () => {
     expect(screen.queryByRole("link", { name: "Im Builder bearbeiten" })).toBeNull();
     expect(fakeViews.last?.style.showGrid).toBe(false);
     expect(document.documentElement.classList.contains("is-embed")).toBe(true);
+  });
+
+  it("several parts: tabs switch the model and the rows; the TellmeCrochet link carries all parts", async () => {
+    const exp = prepareExport(demoDocument(ids(), "bunny"));
+    const payload = await encodeShare(exp);
+    render(<ViewerApp location={at("", `#data=${payload}`)} />);
+    const tablist = await screen.findByRole("tablist", { name: "Teile" });
+    const tabs = within(tablist).getAllByRole("tab");
+    expect(tabs.map((t) => t.textContent)).toEqual(["Kopf", "Körper", "Ohr ×2", "Arm ×2", "Bein ×2"]);
+    expect(tabs[0]!.getAttribute("aria-selected")).toBe("true");
+    expect(screen.getByText("Gesamt: 1.140 Maschen in 8 Teilen")).toBeTruthy();
+    // First part: its 14 rounds, in the model and as text.
+    await waitFor(() => expect(fakeViews.last?.mesh?.rowIds).toHaveLength(14));
+    expect(within(screen.getByRole("list", { name: "Reihen von Kopf" })).getAllByRole("listitem")).toHaveLength(14);
+
+    fireEvent.click(tabs[2]!);
+    expect(within(tablist).getByRole("tab", { name: "Ohr ×2" }).getAttribute("aria-selected")).toBe("true");
+    expect(screen.getByRole("heading", { level: 3 }).textContent).toBe("Ohr ×2");
+    const earRows = within(screen.getByRole("list", { name: "Reihen von Ohr ×2" })).getAllByRole("listitem");
+    expect(earRows).toHaveLength(13);
+    expect(earRows[1]!.textContent).toBe("Runde 2: 3× (1 fM, 1 Zun) (9)");
+    await waitFor(() => expect(fakeViews.last?.mesh?.rowIds).toEqual(exp.parts[2]!.content.rows.map((r) => r.id)));
+
+    // Arrow keys move between the tabs.
+    fireEvent.keyDown(within(tablist).getByRole("tab", { name: "Ohr ×2" }), { key: "ArrowRight" });
+    expect(within(tablist).getByRole("tab", { name: "Arm ×2" }).getAttribute("aria-selected")).toBe("true");
+
+    const tmc = screen.getByRole("link", { name: "In TellmeCrochet öffnen" }) as HTMLAnchorElement;
+    expect(tmc.href).toBe(`https://tellmecrochet.de/import#data=${payload}`);
+  });
+
+  it("a single part has no part tabs; an embed of several parts gets compact tabs", async () => {
+    render(<ViewerApp location={at("", `#data=${await encodeShare(ballExport())}`)} />);
+    await screen.findByRole("heading", { level: 1 });
+    expect(screen.queryByRole("tablist")).toBeNull();
+    cleanup();
+
+    const payload = await encodeShare(prepareExport(demoDocument(ids(), "bunny")));
+    render(<ViewerApp location={at("?embed=1", `#data=${payload}`)} />);
+    const tablist = await screen.findByRole("tablist", { name: "Teile" });
+    fireEvent.click(within(tablist).getByRole("tab", { name: "Bein ×2" }));
+    await waitFor(() => expect(fakeViews.last?.mesh?.rowIds).toHaveLength(8));
+    expect(screen.queryByText(/^Gesamt:/)).toBeNull();
   });
 
   it("without WebGL the page still shows the pattern", async () => {

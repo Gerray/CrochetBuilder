@@ -337,7 +337,8 @@ input[aria-invalid="true"]:focus-visible {
 .segmented button:hover {
   color: var(--c-text);
 }
-.segmented button[aria-checked="true"] {
+.segmented button[aria-checked="true"],
+.segmented button[aria-selected="true"] {
   background: var(--c-surface);
   color: var(--c-accent-text);
   font-weight: var(--fw-semibold);

@@ -41,6 +41,34 @@ body,
   gap: var(--sp-2);
 }
 
+/* Part switcher (several parts): a segmented row of tabs, wrapping on narrow screens. */
+.viewer-parts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2) var(--sp-4);
+}
+.viewer-parts .segmented {
+  flex-wrap: wrap;
+}
+/* In an embed it floats over the top of the model. */
+.viewer-parts-compact {
+  position: absolute;
+  top: var(--sp-2);
+  left: var(--sp-2);
+  right: var(--sp-2);
+  z-index: 1;
+  pointer-events: none;
+}
+.viewer-parts-compact .segmented {
+  pointer-events: auto;
+  font-size: var(--fs-xs);
+}
+.viewer-parts-compact .segmented button {
+  min-height: calc(var(--h-control-sm) - 6px);
+  padding: 0 var(--sp-2);
+}
+
 .viewer-main {
   display: grid;
   grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);

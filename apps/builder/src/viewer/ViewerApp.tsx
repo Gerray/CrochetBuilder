@@ -1,7 +1,8 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useState, type KeyboardEvent, type ReactNode } from "react";
 import { buildTmcImportUrl, renderedRows, type BuilderExport, type MeshStyle } from "@crochetbuilder/engine";
 import { loadModelCanvas, ViewBoundary, ViewError, type ViewLoader } from "../components/PreviewPane.js";
-import { estimateNote, gaugeLine, materialLine, sizeLine } from "../export/labels.js";
+import { estimateNote, gaugeLine, materialLine, partHeading, sizeLine } from "../export/labels.js";
+import { partsTotal, totalText } from "../state/parts.js";
 import { builderBaseUrl } from "../export/share.js";
 import { usePreviewModel, type PreviewOptions } from "../preview/usePreviewModel.js";
 import { isEmbed, loadViewerData, type ViewerData } from "./load.js";
@@ -20,9 +21,13 @@ const STYLES: Array<[MeshStyle, string]> = [
   ["points", "Punkte"],
 ];
 
-/** Read-only page for share links and embeds: title, 3D model, size, materials, rows. */
+/**
+ * Read-only page for share links and embeds: title, 3D model, size, materials, rows. With
+ * several parts a switcher picks the part whose model and rows are shown.
+ */
 export function ViewerApp({ location = globalThis.location, previewOptions, loadView = loadModelCanvas }: ViewerAppProps) {
   const [data, setData] = useState<ViewerData>({ status: "loading" });
+  const [part, setPart] = useState(0);
   const [hash, setHash] = useState(location.hash);
   const embed = isEmbed(location.search);
   const builderUrl = builderBaseUrl(location.href);
@@ -37,7 +42,9 @@ export function ViewerApp({ location = globalThis.location, previewOptions, load
     let cancelled = false;
     setData({ status: "loading" });
     void loadViewerData(hash).then((next) => {
-      if (!cancelled) setData(next);
+      if (cancelled) return;
+      setData(next);
+      setPart(0);
     });
     return () => {
       cancelled = true;
@@ -79,14 +86,17 @@ export function ViewerApp({ location = globalThis.location, previewOptions, load
   const tmcUrl = buildTmcImportUrl(data.payload);
   const editUrl = `${builderUrl}#data=${data.payload}`;
   const title = data.exp.title.trim() || "Häkelanleitung";
+  const shown = Math.min(part, data.exp.parts.length - 1);
   const model = (
-    <ViewerModel exp={data.exp} embed={embed} previewOptions={previewOptions} loadView={loadView} />
+    <ViewerModel exp={data.exp} part={shown} embed={embed} previewOptions={previewOptions} loadView={loadView} />
   );
+  const switcher = <PartSwitcher exp={data.exp} selected={shown} onSelect={setPart} compact={embed} />;
 
   if (embed) {
     return (
       <div className="viewer viewer-embed">
         {model}
+        {switcher}
         <div className="viewer-embed-bar">
           <span className="viewer-embed-title" title={title}>
             {title}
@@ -115,11 +125,12 @@ export function ViewerApp({ location = globalThis.location, previewOptions, load
           </a>
         </div>
       </header>
+      {switcher}
       <main className="viewer-main">
         <section className="viewer-model-panel" aria-label="3D-Modell">
           {model}
         </section>
-        <PatternText exp={data.exp} />
+        <PatternText exp={data.exp} part={shown} />
       </main>
       <footer className="viewer-footer muted small">
         Erstellt mit <a href={builderUrl}>CrochetBuilder</a> – Anleitungen mit 3D-Vorschau bauen, kostenlos und ohne
@@ -131,13 +142,66 @@ export function ViewerApp({ location = globalThis.location, previewOptions, load
 
 // ---------------------------------------------------------------------------
 
+/** id of the panel the part tabs control (the model and the rows). */
+const VIEWER_PART_TAB = (index: number) => `viewer-part-${index}`;
+
+/** Tabs to pick a part ("Kopf", "Ohr ×2"); nothing for a single part. */
+function PartSwitcher({
+  exp,
+  selected,
+  onSelect,
+  compact,
+}: {
+  exp: BuilderExport;
+  selected: number;
+  onSelect: (index: number) => void;
+  compact: boolean;
+}) {
+  const count = exp.parts.length;
+  if (count < 2) return null;
+  const go = (index: number) => {
+    onSelect(index);
+    setTimeout(() => document.getElementById(VIEWER_PART_TAB(index))?.focus(), 0);
+  };
+  const onKey = (e: KeyboardEvent<HTMLDivElement>) => {
+    if (e.key === "ArrowRight") go((selected + 1) % count);
+    else if (e.key === "ArrowLeft") go((selected - 1 + count) % count);
+    else if (e.key === "Home") go(0);
+    else if (e.key === "End") go(count - 1);
+    else return;
+    e.preventDefault();
+  };
+  return (
+    <div className={`viewer-parts${compact ? " viewer-parts-compact" : ""}`}>
+      <div className="segmented" role="tablist" aria-label="Teile" onKeyDown={onKey}>
+        {exp.parts.map((p, i) => (
+          <button
+            key={i}
+            id={VIEWER_PART_TAB(i)}
+            type="button"
+            role="tab"
+            aria-selected={i === selected}
+            tabIndex={i === selected ? 0 : -1}
+            onClick={() => onSelect(i)}
+          >
+            {partHeading(p.name, p.quantity, i)}
+          </button>
+        ))}
+      </div>
+      {!compact && <span className="muted small">{totalText(partsTotal(exp))}</span>}
+    </div>
+  );
+}
+
 function ViewerModel({
   exp,
+  part: index,
   embed,
   previewOptions,
   loadView,
 }: {
   exp: BuilderExport;
+  part: number;
   embed: boolean;
   previewOptions: PreviewOptions | undefined;
   loadView: ViewLoader;
@@ -150,7 +214,7 @@ function ViewerModel({
   const retry = useCallback(() => setAttempt((a) => a + 1), []);
   const onUnavailable = useCallback(() => setWebgl(false), []);
   const ignorePick = useCallback(() => {}, []);
-  const part = exp.parts[0]!;
+  const part = exp.parts[index]!;
   const preview = usePreviewModel(part.content, exp.overview.gauge, style, previewOptions);
   const size = preview.model;
 
@@ -224,11 +288,14 @@ function Message({ title, children }: { title?: string; children: ReactNode }) {
   );
 }
 
-function PatternText({ exp }: { exp: BuilderExport }) {
+function PatternText({ exp, part: index }: { exp: BuilderExport; part: number }) {
   const materials = (exp.overview.materials ?? []).map(materialLine).filter(Boolean);
   const estimate = estimateNote(exp.overview.gauge);
   const notes = exp.overview.notes?.trim();
   const several = exp.parts.length > 1;
+  const part = exp.parts[index]!;
+  const rows = renderedRows(part.content, "de");
+  const heading = partHeading(part.name, part.quantity, index);
   return (
     <div className="viewer-text">
       {materials.length > 0 && (
@@ -262,28 +329,18 @@ function PatternText({ exp }: { exp: BuilderExport }) {
         <h2 id="viewer-rows" className="section-title">
           Anleitung
         </h2>
-        {exp.parts.map((part, i) => {
-          const rows = renderedRows(part.content, "de");
-          return (
-            <div key={i} className="viewer-part">
-              {(several || part.quantity > 1) && (
-                <h3>
-                  {part.name.trim() || `Teil ${i + 1}`}
-                  {part.quantity > 1 ? ` (${part.quantity}×)` : ""}
-                </h3>
-              )}
-              {rows.length === 0 ? (
-                <p className="muted">Noch keine Reihen.</p>
-              ) : (
-                <ol className="viewer-rows" aria-label={several ? `Reihen von ${part.name}` : "Reihen"}>
-                  {rows.map((row, k) => (
-                    <li key={k}>{row}</li>
-                  ))}
-                </ol>
-              )}
-            </div>
-          );
-        })}
+        <div className="viewer-part">
+          {(several || part.quantity > 1) && <h3>{heading}</h3>}
+          {rows.length === 0 ? (
+            <p className="muted">Noch keine Reihen.</p>
+          ) : (
+            <ol className="viewer-rows" aria-label={several ? `Reihen von ${heading}` : "Reihen"}>
+              {rows.map((row, k) => (
+                <li key={k}>{row}</li>
+              ))}
+            </ol>
+          )}
+        </div>
       </section>
     </div>
   );
