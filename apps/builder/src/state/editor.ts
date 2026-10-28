@@ -48,6 +48,12 @@ export interface EditorState {
   future: readonly Snapshot[];
   /** Key of the last coalescable edit (typing into one field = one undo step). */
   lastKey: string | undefined;
+  /**
+   * Provenance (E25): the document took in text through "Anleitung einfügen". Set by the paste
+   * actions, cleared only by replacing the document otherwise ("Neu", opening a file or link);
+   * undo keeps it (cautious). App-local, never part of the export.
+   */
+  imported: boolean;
 }
 
 interface Snapshot {
@@ -115,15 +121,23 @@ export type EditorAction =
   // pattern paste ("Anleitung einfügen", see the block at the end of `applyEdit`)
   | AppendPartsAction
   // document
-  | { type: "replaceDocument"; doc: BuilderDoc; pinned?: readonly string[] }
-  | { type: "hydrate"; doc: BuilderDoc; pinned?: readonly string[]; part?: number }
+  /** `imported`: the new document comes from "Anleitung einfügen" (provenance, E25). */
+  | { type: "replaceDocument"; doc: BuilderDoc; pinned?: readonly string[]; imported?: boolean }
+  | { type: "hydrate"; doc: BuilderDoc; pinned?: readonly string[]; part?: number; imported?: boolean }
   | { type: "undo" }
   | { type: "redo" }
   /** Typing in a field ended (blur): the next edit starts a new undo step. */
   | { type: "endTyping" };
 
-export function initEditorState(doc: BuilderDoc, pinned: readonly string[] = [], part = 0): EditorState {
-  return { doc, pinned, part: clampPart(doc, part), past: [], future: [], lastKey: undefined };
+export function initEditorState(doc: BuilderDoc, pinned: readonly string[] = [], part = 0, imported = false): EditorState {
+  return { doc, pinned, part: clampPart(doc, part), past: [], future: [], lastKey: undefined, imported };
+}
+
+/** Provenance after `action` (see `EditorState.imported`). */
+function importedAfter(state: EditorState, action: EditorAction): boolean {
+  if (action.type === "appendParts") return true;
+  if (action.type === "replaceDocument") return action.imported === true;
+  return state.imported;
 }
 
 /** A valid part index of `doc` (documents always hold at least one part). */
@@ -785,6 +799,7 @@ export function editorReducer(state: EditorState, action: EditorAction): EditorS
       past: state.past.slice(0, -1),
       future: [{ ...previous, doc: state.doc, pinned: state.pinned }, ...state.future],
       lastKey: undefined,
+      imported: state.imported,
     };
   }
   if (action.type === "redo") {
@@ -797,11 +812,12 @@ export function editorReducer(state: EditorState, action: EditorAction): EditorS
       past: [...state.past, { ...next, doc: state.doc, pinned: state.pinned }],
       future: state.future.slice(1),
       lastKey: undefined,
+      imported: state.imported,
     };
   }
   if (action.type === "hydrate") {
     const loaded = withAutoTargets(action.doc, action.pinned ?? []);
-    return initEditorState(loaded.doc, loaded.pinned, action.part ?? 0);
+    return initEditorState(loaded.doc, loaded.pinned, action.part ?? 0, action.imported === true);
   }
   if (action.type === "endTyping") {
     return state.lastKey === undefined ? state : { ...state, lastKey: undefined };
@@ -825,7 +841,7 @@ export function editorReducer(state: EditorState, action: EditorAction): EditorS
   };
   const past = coalesce ? state.past : [...state.past, entry].slice(-HISTORY_LIMIT);
   const part = clampPart(result.doc, result.select ?? state.part);
-  return { doc: result.doc, pinned: result.pinned, part, past, future: [], lastKey: key };
+  return { doc: result.doc, pinned: result.pinned, part, past, future: [], lastKey: key, imported: importedAfter(state, action) };
 }
 
 export const canUndo = (state: EditorState): boolean => state.past.length > 0;

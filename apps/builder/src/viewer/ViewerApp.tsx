@@ -1,6 +1,8 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useState, type KeyboardEvent, type ReactNode } from "react";
-import { buildTmcImportUrl, renderedRows, type BuilderExport, type MeshStyle } from "@crochetbuilder/engine";
+import { renderedRows, type BuilderExport, type MeshStyle } from "@crochetbuilder/engine";
 import { loadModelCanvas, ViewBoundary, ViewError, type ViewLoader } from "../components/PreviewPane.js";
+import { TmcLink } from "../components/TmcLink.js";
+import { tmcLink, type TmcLink as TmcLinkData } from "../export/tmc.js";
 import { estimateNote, gaugeLine, materialLine, partHeading, sizeLine } from "../export/labels.js";
 import { partsTotal, totalText } from "../state/parts.js";
 import { builderBaseUrl } from "../export/share.js";
@@ -52,6 +54,8 @@ export function ViewerApp({ location = globalThis.location, previewOptions, load
     };
   }, [hash]);
 
+  const tmc = useTmcLink(data.status === "ready" ? data.exp : null);
+
   useEffect(() => {
     document.documentElement.classList.toggle("is-embed", embed);
   }, [embed]);
@@ -84,7 +88,6 @@ export function ViewerApp({ location = globalThis.location, previewOptions, load
     );
   }
 
-  const tmcUrl = buildTmcImportUrl(data.payload);
   const editUrl = `${builderUrl}#data=${data.payload}`;
   const title = data.exp.title.trim() || "Häkelanleitung";
   const shown = Math.min(part, data.exp.parts.length - 1);
@@ -111,9 +114,7 @@ export function ViewerApp({ location = globalThis.location, previewOptions, load
           <span className="viewer-embed-title" title={title}>
             {title}
           </span>
-          <a href={tmcUrl} target="_blank" rel="noopener">
-            In TellmeCrochet öffnen
-          </a>
+          <TmcLink href={tmc?.url ?? null} summary={tmc?.summary ?? []} placement="above" />
         </div>
       </div>
     );
@@ -127,9 +128,7 @@ export function ViewerApp({ location = globalThis.location, previewOptions, load
         </a>
         <h1>{title}</h1>
         <div className="viewer-actions">
-          <a className="btn btn-primary" href={tmcUrl} target="_blank" rel="noopener">
-            In TellmeCrochet öffnen
-          </a>
+          <TmcLink className="btn btn-primary" href={tmc?.url ?? null} summary={tmc?.summary ?? []} placement="below" />
           <a className="btn" href={editUrl}>
             Im Builder bearbeiten
           </a>
@@ -151,6 +150,30 @@ export function ViewerApp({ location = globalThis.location, previewOptions, load
 }
 
 // ---------------------------------------------------------------------------
+
+/**
+ * The TellmeCrochet link of a shown export, made in the background (null until ready or when
+ * it cannot be made). A shared link says nothing about who wrote the pattern, so the viewer
+ * reports it as "imported" (E25); TellmeCrochet asks the person.
+ */
+function useTmcLink(exp: BuilderExport | null): TmcLinkData | null {
+  const [link, setLink] = useState<TmcLinkData | null>(null);
+  useEffect(() => {
+    setLink(null);
+    if (!exp) return;
+    let cancelled = false;
+    tmcLink(exp, "imported").then(
+      (next) => {
+        if (!cancelled) setLink(next);
+      },
+      (err: unknown) => console.error(err),
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [exp]);
+  return link;
+}
 
 /** Ids of the part tabs, of the panel they control (the 3D model) and of each part's rows. */
 const VIEWER_PART_TAB = (index: number) => `viewer-part-${index}`;

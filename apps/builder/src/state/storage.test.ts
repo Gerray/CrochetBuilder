@@ -152,3 +152,23 @@ describe("storage — several parts", () => {
     expect((await loadState()).kind).toBe("ok");
   });
 });
+
+describe("storage — provenance (E25)", () => {
+  it("keeps the paste-import flag next to the document, never inside it", async () => {
+    const doc = demoDocument();
+    await saveState({ doc, pinned: [], imported: true });
+    const record = JSON.parse(localStorage.getItem(LS_KEY)!) as { imported?: boolean; doc: Record<string, unknown> };
+    expect(record.imported).toBe(true);
+    expect(record.doc).not.toHaveProperty("imported");
+    localStorage.clear(); // the IndexedDB copy carries it too
+    const result = await loadState();
+    expect(result.kind === "ok" && result.state.imported).toBe(true);
+  });
+
+  it("a document of its own stores no flag; old saves read as not imported", async () => {
+    await saveState({ doc: demoDocument(), pinned: [] });
+    expect(JSON.parse(localStorage.getItem(LS_KEY)!)).not.toHaveProperty("imported");
+    const result = await loadState();
+    expect(result.kind === "ok" && result.state.imported).toBeUndefined();
+  });
+});

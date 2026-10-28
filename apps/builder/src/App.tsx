@@ -355,6 +355,7 @@ export function App({ exportActions, pastePreviewOptions }: AppProps = {}) {
           onPaste={() => openPaste()}
           onDemo={(kind) => dispatch(loadDemo(kind))}
           onReplace={replaceDocument}
+          imported={state.imported}
           {...(exportActions ? { exportActions } : {})}
         />
         <main className="workspace">

@@ -328,5 +328,38 @@ describe("storage", () => {
     expect(parseStored({ doc: { ...doc, parts: [] } })).toBeNull();
     expect(parseStored({ doc: { title: 1 } })).toBeNull();
     expect(parseStored(null)).toBeNull();
+    // Provenance (E25) only when it is really `true`.
+    expect(parseStored({ doc, imported: true })).toEqual({ doc, pinned: [], imported: true, savedAt: 0 });
+    expect(parseStored({ doc, imported: "ja" })).toEqual({ doc, pinned: [], savedAt: 0 });
+  });
+});
+
+describe("provenance of pasted text (E25)", () => {
+  const pastedPart = () => ({
+    name: "Kopf",
+    quantity: 1,
+    content: { schemaVersion: 1 as const, rows: [{ id: "p1", type: "round" as const, ops: [sc(6)], stitchCountTarget: 6 }] },
+  });
+
+  it("starts as the author's own; appending pasted parts marks the document, undo keeps the mark", () => {
+    const start = fresh();
+    expect(start.imported).toBe(false);
+    const pasted = run(start, { type: "appendParts", parts: [pastedPart()], pinned: [] });
+    expect(pasted.imported).toBe(true);
+    expect(pasted.doc).not.toHaveProperty("imported");
+    expect(run(pasted, { type: "undo" }).imported).toBe(true);
+    expect(run(pasted, { type: "setTitle", title: "Eigener Titel" }).imported).toBe(true);
+  });
+
+  it("a pasted new document is marked; „Neu“ and a document from elsewhere clear the mark", () => {
+    const pasted = run(fresh(), { type: "replaceDocument", doc: demoDocument(), imported: true });
+    expect(pasted.imported).toBe(true);
+    expect(run(pasted, newDocument()).imported).toBe(false);
+    expect(run(pasted, { type: "replaceDocument", doc: demoDocument() }).imported).toBe(false);
+  });
+
+  it("hydrate restores the stored mark", () => {
+    expect(run(fresh(), { type: "hydrate", doc: demoDocument(), imported: true }).imported).toBe(true);
+    expect(run(fresh(), { type: "hydrate", doc: demoDocument() }).imported).toBe(false);
   });
 });

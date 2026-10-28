@@ -48,6 +48,8 @@ describe("applyPaste — as a new pattern", () => {
     expect(result).toMatchObject({ ok: true, parts: 3, unread: 2 });
     if (!result.ok || result.action.type !== "replaceDocument") throw new Error("expected replaceDocument");
     const { doc, pinned } = result.action;
+    // Provenance for the TellmeCrochet hand-off (E25).
+    expect(result.action.imported).toBe(true);
     expect(doc.title).toBe("Kleiner Igel");
     expect(doc.overview).toEqual({
       materials: [],

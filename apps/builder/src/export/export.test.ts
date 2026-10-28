@@ -2,9 +2,11 @@ import { describe, expect, it } from "vitest";
 import {
   BuilderExportSchema,
   decodeShare,
+  decodeTmcPayload,
   ShareDecodeError,
   readShareFragment,
   renderedRows,
+  TmcEnvelopeSchema,
   type BuilderExport,
   type PartContent,
 } from "@crochetbuilder/engine";
@@ -19,6 +21,7 @@ import {
 } from "./import.js";
 import { exportFileName, ExportValidationError, isDocumentEmpty, prepareExport, renderedLines } from "./prepare.js";
 import { builderBaseUrl, embedSnippet, shareLinks, viewerBaseUrl } from "./share.js";
+import { tmcFileName, tmcHandoff } from "./tmc.js";
 
 function ids(prefix = "row") {
   let n = 0;
@@ -169,9 +172,29 @@ describe("share links", () => {
     const links = await shareLinks(doc, "https://gerray.github.io/CrochetBuilder/?x=1#data=old");
     expect(links.viewer).toMatch(/^https:\/\/gerray\.github\.io\/CrochetBuilder\/viewer\/#data=v1\.[\w-]+$/);
     expect(links.embed).toMatch(/^https:\/\/gerray\.github\.io\/CrochetBuilder\/viewer\/\?embed=1#data=v1\./);
-    expect(links.tmc).toBe(`https://tellmecrochet.de/import#data=${links.payload}`);
+    expect(links.tmc).toMatch(/^https:\/\/tellmecrochet\.de\/import#data=tmc1\.[\w-]+$/);
+    const env = await decodeTmcPayload(readShareFragment(new URL(links.tmc).hash)!);
+    expect(env.originHint).toBe("self_created");
+    expect(env.draft.title).toBe(prepareExport(doc).title);
+    expect(links.tmcSummary.length).toBeGreaterThan(0);
     const decoded: BuilderExport = await decodeShare(readShareFragment(new URL(links.viewer).hash)!);
     expect(decoded).toEqual(prepareExport(doc));
+  });
+
+  it("the saved hand-off file: envelope of the validated export, named after the title", () => {
+    const exp = prepareExport(ball());
+    const { envelope, summary } = tmcHandoff(exp, "imported");
+    expect(TmcEnvelopeSchema.safeParse(envelope).success).toBe(true);
+    expect(envelope.originHint).toBe("imported");
+    expect(envelope.draft.parts.map((p) => p.name)).toEqual(exp.parts.map((p, i) => p.name.trim() || `Teil ${i + 1}`));
+    expect(summary.every((line) => line.endsWith("."))).toBe(true);
+    expect(tmcFileName("Amigurumi-Ball")).toBe("amigurumi-ball.tellmecrochet.json");
+    expect(tmcFileName("")).toBe("anleitung.tellmecrochet.json");
+  });
+
+  it("the TellmeCrochet link reports the provenance it is given (E25)", async () => {
+    const links = await shareLinks(ball(), "http://localhost:5190/", "imported");
+    expect((await decodeTmcPayload(readShareFragment(new URL(links.tmc).hash)!)).originHint).toBe("imported");
   });
 
   it("the ball demo's link stays far below the length warning", async () => {

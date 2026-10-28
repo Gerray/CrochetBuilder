@@ -1,0 +1,61 @@
+/* "In TellmeCrochet öffnen" and its short notice of what arrives differently.
+ * Uses only tokens from tokens.css. */
+
+.tmc-link {
+  position: relative;
+  display: grid;
+  gap: var(--sp-2);
+}
+
+.tmc-notice {
+  display: grid;
+  gap: var(--sp-2);
+  padding: var(--sp-3);
+  border: var(--bd-default);
+  border-radius: var(--r-input);
+  background: var(--c-surface-2);
+  color: var(--c-text);
+  font-size: var(--fs-xs);
+  line-height: var(--lh-xs);
+  text-align: left;
+  white-space: normal;
+}
+
+.tmc-notice-title {
+  margin: 0;
+  font-weight: var(--fw-semibold);
+}
+
+.tmc-notice-list {
+  margin: 0;
+  padding-left: var(--sp-4);
+  display: grid;
+  gap: var(--sp-1);
+}
+
+.tmc-notice-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+/* Also inside the embed bar, whose links are coloured text. */
+.tmc-notice a.btn-primary {
+  color: var(--c-accent-on);
+}
+
+/* Floating variants (viewer header, embed bar). */
+.tmc-link-below .tmc-notice,
+.tmc-link-above .tmc-notice {
+  position: absolute;
+  right: 0;
+  z-index: 30;
+  width: min(24rem, calc(100vw - var(--sp-6)));
+  background: var(--c-surface);
+  box-shadow: var(--el-popover);
+}
+.tmc-link-below .tmc-notice {
+  top: calc(100% + var(--sp-1));
+}
+.tmc-link-above .tmc-notice {
+  bottom: calc(100% + var(--sp-2));
+}

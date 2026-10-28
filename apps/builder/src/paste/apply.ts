@@ -147,7 +147,8 @@ export function applyPaste(
       overview: notes ? { ...fresh.overview, notes } : fresh.overview,
       parts,
     };
-    return { ok: true, action: { type: "replaceDocument", doc: next, pinned }, mode, parts: parts.length, unread };
+    // `imported`: provenance for the TellmeCrochet hand-off (E25).
+    return { ok: true, action: { type: "replaceDocument", doc: next, pinned, imported: true }, mode, parts: parts.length, unread };
   }
 
   const action: EditorAction = { type: "appendParts", parts, pinned };

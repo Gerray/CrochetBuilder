@@ -1,9 +1,11 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
-import { ShareDecodeError } from "@crochetbuilder/engine";
+import { ShareDecodeError, type TmcOriginHint } from "@crochetbuilder/engine";
 import { importFile, UNSUPPORTED_BROWSER_MESSAGE } from "../export/import.js";
 import { downloadJson, isDocumentEmpty } from "../export/prepare.js";
 import { embedSnippet, LONG_URL_CHARS, shareLinks, type ShareLinks } from "../export/share.js";
+import { downloadTmcJson } from "../export/tmc.js";
 import type { BuilderDoc } from "../state/document.js";
+import { TmcLink } from "./TmcLink.js";
 import "./export.css";
 
 export const TMC_PENDING_NOTE = "Import in TellmeCrochet folgt – du kannst die Anleitung auch als JSON speichern.";
@@ -14,6 +16,8 @@ export const REPLACE_FROM_FILE_QUESTION =
 export interface ExportActions {
   savePdf: (doc: BuilderDoc) => Promise<string>;
   downloadJson: (doc: BuilderDoc) => void;
+  /** "Für TellmeCrochet speichern (.json)": the hand-off envelope as a file. */
+  downloadTmcJson: (doc: BuilderDoc, originHint: TmcOriginHint) => void;
   copy: (text: string) => Promise<void>;
   confirm: (question: string) => boolean;
 }
@@ -22,6 +26,7 @@ const defaultActions: ExportActions = {
   // jsPDF and the snapshot code load only when a PDF is made.
   savePdf: async (doc) => (await import("../export/pdf.js")).savePdf(doc),
   downloadJson,
+  downloadTmcJson,
   copy: async (text) => {
     if (!globalThis.navigator?.clipboard) throw new Error("Keine Zwischenablage");
     await globalThis.navigator.clipboard.writeText(text);
@@ -33,6 +38,8 @@ interface ExportMenuProps {
   doc: BuilderDoc;
   /** Replace the document (undoable) with an imported one. */
   onReplace: (doc: BuilderDoc, pinned: string[]) => void;
+  /** Provenance for TellmeCrochet (E25): "imported" once text was pasted into the document. */
+  originHint?: TmcOriginHint;
   actions?: Partial<ExportActions>;
 }
 
@@ -49,7 +56,7 @@ function packErrorMessage(err: unknown): string {
 }
 
 /** "Exportieren": TellmeCrochet, PDF, JSON (save / open), share link and embed code. */
-export function ExportMenu({ doc, onReplace, actions: overrides }: ExportMenuProps) {
+export function ExportMenu({ doc, onReplace, originHint = "self_created", actions: overrides }: ExportMenuProps) {
   const actions = { ...defaultActions, ...overrides };
   const [open, setOpen] = useState(false);
   const [links, setLinks] = useState<ShareLinks | null>(null);
@@ -68,7 +75,7 @@ export function ExportMenu({ doc, onReplace, actions: overrides }: ExportMenuPro
     if (!open) return;
     let cancelled = false;
     setLinkError(null);
-    shareLinks(doc).then(
+    shareLinks(doc, globalThis.location.href, originHint).then(
       (next) => {
         if (!cancelled) setLinks(next);
       },
@@ -82,7 +89,7 @@ export function ExportMenu({ doc, onReplace, actions: overrides }: ExportMenuPro
     return () => {
       cancelled = true;
     };
-  }, [open, doc]);
+  }, [open, doc, originHint]);
 
   useEffect(() => {
     if (!open) return;
@@ -160,15 +167,7 @@ export function ExportMenu({ doc, onReplace, actions: overrides }: ExportMenuPro
           }}
         >
           <div className="export-primary">
-            {links ? (
-              <a className="btn btn-primary btn-large" href={links.tmc} target="_blank" rel="noopener">
-                In TellmeCrochet öffnen
-              </a>
-            ) : (
-              <button type="button" className="btn btn-primary btn-large" disabled>
-                In TellmeCrochet öffnen
-              </button>
-            )}
+            <TmcLink className="btn btn-primary btn-large" href={links?.tmc ?? null} summary={links?.tmcSummary ?? []} />
             <p className="muted small export-note">{TMC_PENDING_NOTE}</p>
             {tmcLong && <LongUrlWarning length={links.tmc.length} />}
           </div>
@@ -186,6 +185,12 @@ export function ExportMenu({ doc, onReplace, actions: overrides }: ExportMenuPro
               return { kind: "ok", text: "JSON-Datei gespeichert." };
             })}>
               JSON herunterladen
+            </button>
+            <button type="button" className="btn" disabled={busy} onClick={() => run(() => {
+              actions.downloadTmcJson(doc, originHint);
+              return { kind: "ok", text: "Datei für TellmeCrochet gespeichert." };
+            })}>
+              Für TellmeCrochet speichern (.json)
             </button>
             <button type="button" className="btn" disabled={busy} onClick={() => fileInput.current?.click()}>
               JSON öffnen…

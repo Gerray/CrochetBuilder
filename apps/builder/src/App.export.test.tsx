@@ -2,11 +2,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import {
-  BuilderExportSchema,
-  decodeShare,
+  decodeTmcPayload,
   encodeShare,
   readShareFragment,
+  TmcEnvelopeSchema,
   type BuilderExport,
+  type TmcOriginHint,
 } from "@crochetbuilder/engine";
 import { App } from "./App.js";
 import type { ExportActions } from "./components/ExportMenu.js";
@@ -26,13 +27,14 @@ function ids(prefix: string) {
 interface Recorded {
   pdf: BuilderDoc[];
   json: BuilderDoc[];
+  tmc: Array<{ doc: BuilderDoc; originHint: TmcOriginHint }>;
   copied: string[];
   questions: string[];
   answer: boolean;
 }
 
 function fakeActions(): { actions: Partial<ExportActions>; rec: Recorded } {
-  const rec: Recorded = { pdf: [], json: [], copied: [], questions: [], answer: true };
+  const rec: Recorded = { pdf: [], json: [], tmc: [], copied: [], questions: [], answer: true };
   return {
     rec,
     actions: {
@@ -42,6 +44,9 @@ function fakeActions(): { actions: Partial<ExportActions>; rec: Recorded } {
       },
       downloadJson: (doc) => {
         rec.json.push(doc);
+      },
+      downloadTmcJson: (doc, originHint) => {
+        rec.tmc.push({ doc, originHint });
       },
       copy: async (text) => {
         rec.copied.push(text);
@@ -82,19 +87,52 @@ beforeEach(() => {
 afterEach(() => cleanup());
 
 describe("Export menu", () => {
-  it("„In TellmeCrochet öffnen“ is a link carrying the validated export, with the interim note", async () => {
+  it("„In TellmeCrochet öffnen“ is a link carrying a TellmeCrochet draft, with the interim note", async () => {
     await renderApp(fakeActions().actions);
     await loadBall();
     const panel = await openExport();
     const link = within(panel).getByRole("link", { name: "In TellmeCrochet öffnen" }) as HTMLAnchorElement;
     expect(link.target).toBe("_blank");
     expect(link.rel).toContain("noopener");
-    expect(link.href).toMatch(/^https:\/\/tellmecrochet\.de\/import#data=v1\./);
-    const exp = await decodeShare(readShareFragment(new URL(link.href).hash)!);
-    expect(BuilderExportSchema.safeParse(exp).success).toBe(true);
-    expect(exp.title).toBe("Amigurumi-Ball");
-    expect(exp.rendered?.rows).toHaveLength(11);
+    expect(link.href).toMatch(/^https:\/\/tellmecrochet\.de\/import#data=tmc1\./);
+    const env = await decodeTmcPayload(readShareFragment(new URL(link.href).hash)!);
+    expect(TmcEnvelopeSchema.safeParse(env).success).toBe(true);
+    expect(env).toMatchObject({ format: "tmc-draft", version: 1, sourceNotation: "de", originHint: "self_created" });
+    expect(env.draft.title).toBe("Amigurumi-Ball");
+    expect(env.draft.parts[0]!.content.rows.filter((r) => r.ops.length > 0)).toHaveLength(11);
     expect(within(panel).getByText(TMC_PENDING_NOTE)).toBeTruthy();
+  });
+
+  it("what arrives differently is shown before opening; one more click continues", async () => {
+    await renderApp(fakeActions().actions);
+    await loadBall();
+    const panel = await openExport();
+    const link = within(panel).getByRole("link", { name: "In TellmeCrochet öffnen" }) as HTMLAnchorElement;
+    // The ball has notes and a gauge: they become a step at the start of the first part.
+    expect(fireEvent.click(link)).toBe(false); // default prevented: the notice comes first
+    const notice = within(panel).getByRole("note", { name: "Hinweis zu TellmeCrochet" });
+    expect(within(notice).getByText(/stehen als Schritt am Anfang des ersten Teils/)).toBeTruthy();
+    const next = within(notice).getByRole("link", { name: "Weiter zu TellmeCrochet" }) as HTMLAnchorElement;
+    expect(next.href).toBe(link.href);
+    expect(next.target).toBe("_blank");
+    expect(fireEvent.click(next)).toBe(true); // opens
+    expect(within(panel).queryByRole("note", { name: "Hinweis zu TellmeCrochet" })).toBeNull();
+    // "Abbrechen" closes the notice without opening anything.
+    fireEvent.click(link);
+    fireEvent.click(within(panel).getByRole("button", { name: "Abbrechen" }));
+    expect(within(panel).queryByRole("note", { name: "Hinweis zu TellmeCrochet" })).toBeNull();
+  });
+
+  it("„Für TellmeCrochet speichern (.json)“ hands the document and its provenance to the action", async () => {
+    const { actions, rec } = fakeActions();
+    await renderApp(actions);
+    await loadBall();
+    const panel = await openExport();
+    fireEvent.click(within(panel).getByRole("button", { name: "Für TellmeCrochet speichern (.json)" }));
+    await within(panel).findByText("Datei für TellmeCrochet gespeichert.");
+    expect(rec.tmc).toHaveLength(1);
+    expect(rec.tmc[0]!.doc.title).toBe("Amigurumi-Ball");
+    expect(rec.tmc[0]!.originHint).toBe("self_created");
   });
 
   it("PDF and JSON go through their actions with the current document", async () => {
