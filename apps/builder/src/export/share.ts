@@ -1,9 +1,10 @@
 /**
- * Share, embed and TellmeCrochet links of the current document. All of them carry the
- * export in the URL fragment (`#data=v1.…`), which never reaches a server.
+ * Share and embed links of the current document. They carry the export in the URL fragment
+ * (`#data=v1.…`), which never reaches a server. The TellmeCrochet link is made on its own
+ * (`tmc.ts`), so a failing hand-off never takes the share links with it.
  */
 
-import { buildTmcImportUrl, buildViewerUrl, encodeShare } from "@crochetbuilder/engine";
+import { buildViewerUrl, encodeShare } from "@crochetbuilder/engine";
 import type { BuilderDoc } from "../state/document.js";
 import { prepareExport } from "./prepare.js";
 
@@ -16,8 +17,6 @@ export interface ShareLinks {
   viewer: string;
   /** Viewer page in compact embed mode (`?embed=1`). */
   embed: string;
-  /** `https://tellmecrochet.de/import#data=…` */
-  tmc: string;
 }
 
 /** The viewer page next to the builder page: `<builder>/viewer/`. */
@@ -38,7 +37,6 @@ export async function shareLinks(doc: BuilderDoc, pageUrl: string = globalThis.l
     payload,
     viewer: buildViewerUrl(base, payload),
     embed: buildViewerUrl(base, payload, { embed: true }),
-    tmc: buildTmcImportUrl(payload),
   };
 }
 

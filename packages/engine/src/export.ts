@@ -12,7 +12,7 @@ import { instructionText, rowOrdinals } from "./expand.js";
 import { GaugeSchema } from "./gauge.js";
 import { renderRow, rowLabel, type NotationLocale } from "./notation.js";
 import { PlacementSchema } from "./assembly.js";
-import { CURRENT_SCHEMA_VERSION, PartContentSchema, SchemaVersionSchema, type PartContent } from "./schema.js";
+import { CURRENT_SCHEMA_VERSION, PartContentSchema, SchemaVersionSchema, type PartContent, type Row } from "./schema.js";
 import { validate, type Finding, type FindingCode } from "./validate.js";
 
 export const MaterialKindSchema = z.enum(["yarn", "hook", "accessory"]);
@@ -133,23 +133,38 @@ export function renderedRows(
   locale: NotationLocale,
   palette?: readonly { id: string; name?: string }[],
 ): string[] {
-  const opts = palette ? { colors: palette } : {};
   const ordinals = rowOrdinals(content.rows);
   const lines: string[] = [];
   content.rows.forEach((row, i) => {
-    const note = row.note?.trim() ?? "";
-    if (row.ops.length === 0) {
-      const label = row.label?.trim() ?? "";
-      const text = label && note ? `${label}: ${note}` : instructionText(row);
-      const mark = renderRow(row, locale, opts);
-      if (text) lines.push(mark ? `${mark} ${text}` : text);
-      return;
-    }
-    let line = `${rowLabel(row, ordinals[i] ?? 0, locale)}: ${renderRow(row, locale, opts)} (${row.stitchCountTarget})`;
-    if (note) line += ` – ${note}`;
-    lines.push(line);
+    const line = renderedRowLine(row, ordinals[i] ?? 0, locale, palette);
+    if (line) lines.push(line);
   });
   return lines;
+}
+
+/**
+ * The display line of one row as in `renderedRows` (`ordinal` from `rowOrdinals`), or "" for
+ * a row with neither stitches nor text. `target` replaces the shown stitch count.
+ */
+export function renderedRowLine(
+  row: Row,
+  ordinal: number,
+  locale: NotationLocale,
+  palette?: readonly { id: string; name?: string }[],
+  target: number = row.stitchCountTarget,
+): string {
+  const opts = palette ? { colors: palette } : {};
+  const note = row.note?.trim() ?? "";
+  if (row.ops.length === 0) {
+    const label = row.label?.trim() ?? "";
+    const text = label && note ? `${label}: ${note}` : instructionText(row);
+    const mark = renderRow(row, locale, opts);
+    if (!text) return "";
+    return mark ? `${mark} ${text}` : text;
+  }
+  let line = `${rowLabel(row, ordinal, locale)}: ${renderRow(row, locale, opts)} (${target})`;
+  if (note) line += ` – ${note}`;
+  return line;
 }
 
 // ---------------------------------------------------------------------------

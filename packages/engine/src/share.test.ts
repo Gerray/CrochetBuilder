@@ -4,7 +4,6 @@ import type { Gauge } from "./gauge.js";
 import { createRandom } from "./random.js";
 import type { Op, Row, StitchCode } from "./schema.js";
 import {
-  buildTmcImportUrl,
   buildViewerUrl,
   canonicalSharePayload,
   decodeShare,
@@ -260,10 +259,6 @@ describe("share URLs", () => {
     expect(readShareFragment("")).toBeNull();
   });
 
-  it("builds the TellmeCrochet import link", () => {
-    expect(buildTmcImportUrl("v1.abc")).toBe("https://tellmecrochet.de/import#data=v1.abc");
-  });
-
   it("builds viewer links relative to the deployment, embed optional", () => {
     const base = "https://gerray.github.io/CrochetBuilder/viewer/";
     expect(buildViewerUrl(base, "v1.abc")).toBe("https://gerray.github.io/CrochetBuilder/viewer/#data=v1.abc");
@@ -287,8 +282,10 @@ describe("share URLs", () => {
     }
     expect(readShareFragment("#data=v1.abc==")).toBe("v1.abc");
     expect(readShareFragment("#data=%20%20")).toBeNull();
-    // What the viewer forwards into TellmeCrochet / builder links is that canonical form.
-    expect(buildTmcImportUrl(readShareFragment(`#data=%20${payload}%0A`)!)).toBe(`${buildTmcImportUrl(payload)}`);
+    // What the viewer forwards into builder links is that canonical form.
+    expect(buildViewerUrl("https://x.test/viewer/", readShareFragment(`#data=%20${payload}%0A`)!)).toBe(
+      buildViewerUrl("https://x.test/viewer/", payload),
+    );
   });
 });
 

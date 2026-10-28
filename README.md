@@ -23,8 +23,10 @@ nothing is left hanging.
   thickness in mm and hook size.
 - **Validation while you type** — stitch counts per row and whether every stitch of the
   previous row is worked into exactly as often as the pattern says.
-- **Export** — open the pattern in [TellmeCrochet](https://tellmecrochet.de) (the companion
-  app for crocheting stitch by stitch), or save it as PDF or JSON.
+- **Export** — hand the pattern over to [TellmeCrochet](https://tellmecrochet.de) (the
+  companion app for crocheting stitch by stitch) as a draft in its own structure, or save it
+  as PDF or JSON. What TellmeCrochet cannot show as stitches arrives as text steps
+  ([details](docs/FORMAT.md#hand-off-to-tellmecrochet)).
 - **Share links and an embeddable viewer** — send a link that shows the 3D model and the
   pattern.
 - **Private by design** — everything runs in your browser. No account, no server; a share
@@ -153,7 +155,8 @@ Working today:
 
 Next:
 
-- Import from TellmeCrochet
+- TellmeCrochet accepting the hand-off (its import page; until then the builder saves the
+  hand-off as a file)
 - Feedback round with pattern designers
 
 Later:

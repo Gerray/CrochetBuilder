@@ -1,6 +1,8 @@
 /**
- * Canonical crochet-pattern schema — the single source of truth for the engine, the
- * builder app and TellmeCrochet (which re-exports it via @tellmecrochet/shared).
+ * Canonical crochet-pattern schema — the single source of truth for the engine and the
+ * builder app. TellmeCrochet keeps its own copy of format version 1 and receives patterns as
+ * drafts in its own structure (see `tellmecrochet.ts`, docs/FORMAT.md "Hand-off to
+ * TellmeCrochet").
  *
  * See docs/FORMAT.md. Stitches are stored language-neutral as codes; rendering a code to
  * DE/US/UK display strings is a separate, display-side concern that does not live here.

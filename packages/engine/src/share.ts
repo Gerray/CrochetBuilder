@@ -1,6 +1,7 @@
 /**
- * Share payloads — a `BuilderExport` packed into a URL fragment, so share links, embeds and
- * "open in TellmeCrochet" work without any server (the fragment never leaves the browser).
+ * Share payloads — a `BuilderExport` packed into a URL fragment, so share links and embeds
+ * work without any server (the fragment never leaves the browser). The TellmeCrochet hand-off
+ * (`tellmecrochet.ts`) uses the same packing with its own prefix and schema.
  *
  *   payload = "v1." + base64url(deflate-raw(UTF-8(JSON)))
  *
@@ -33,9 +34,6 @@ export const MAX_SHARE_CHARS = 256 * 1024;
  * Deeper documents are refused before schema validation (which recurses per level).
  */
 export const MAX_JSON_DEPTH = 200;
-
-/** Where TellmeCrochet imports a builder export (its fragment carries the payload). */
-export const TMC_IMPORT_URL = "https://tellmecrochet.de/import";
 
 export type ShareDecodeErrorCode =
   /** Not a payload of this format: wrong prefix, bad characters, broken compression or JSON. */
@@ -219,15 +217,23 @@ async function hasTrailingBytes(packed: Uint8Array<ArrayBuffer>): Promise<boolea
  * error for an invalid export.
  */
 export async function encodeShare(exp: BuilderExport): Promise<string> {
-  const valid = BuilderExportSchema.parse(exp);
-  const text = JSON.stringify(valid);
+  return packJson(BuilderExportSchema.parse(exp), SHARE_VERSION, "Export");
+}
+
+/**
+ * `value` as `<prefix>.` + base64url(deflate-raw(JSON)). Shared by the share payload (`v1.`)
+ * and the TellmeCrochet hand-off (`tmc1.`). Throws a `RangeError` beyond the limits and a
+ * `ShareDecodeError` (`unsupported`) when the runtime cannot compress. Internal.
+ */
+export async function packJson(value: unknown, prefix: string, what: string): Promise<string> {
+  const text = JSON.stringify(value);
   const json = new TextEncoder().encode(text);
   if (json.byteLength > MAX_SHARE_JSON_BYTES) {
-    throw new RangeError(`Export is larger than ${MAX_SHARE_JSON_BYTES} bytes.`);
+    throw new RangeError(`${what} is larger than ${MAX_SHARE_JSON_BYTES} bytes.`);
   }
-  if (exceedsJsonDepth(text)) throw new RangeError(`Export is nested deeper than ${MAX_JSON_DEPTH} levels.`);
+  if (exceedsJsonDepth(text)) throw new RangeError(`${what} is nested deeper than ${MAX_JSON_DEPTH} levels.`);
   const packed = await transform(json, deflateStream("CompressionStream"));
-  const payload = `${SHARE_VERSION}.${toBase64Url(packed)}`;
+  const payload = `${prefix}.${toBase64Url(packed)}`;
   if (payload.length > MAX_SHARE_CHARS) {
     throw new RangeError(`Share payload is longer than ${MAX_SHARE_CHARS} characters.`);
   }
@@ -248,15 +254,34 @@ export function canonicalSharePayload(payload: string): string {
  * `invalid` or `unsupported`) — never anything else.
  */
 export async function decodeShare(payload: string): Promise<BuilderExport> {
+  const data = await unpackJson(payload, SHARE_VERSION);
+  let parsed: ReturnType<typeof BuilderExportSchema.safeParse>;
+  try {
+    parsed = BuilderExportSchema.safeParse(data);
+  } catch (err) {
+    // Defensive: validation must never escape as an untyped error (e.g. a stack overflow).
+    throw new ShareDecodeError("invalid", "Payload cannot be validated.", { cause: err });
+  }
+  if (!parsed.success) {
+    throw new ShareDecodeError("invalid", "Payload is not a valid builder export.", { cause: parsed.error });
+  }
+  return parsed.data;
+}
+
+/**
+ * The JSON value of a `<prefix>.` payload (see `packJson`), bounded in size and depth but not
+ * yet validated. Throws `ShareDecodeError` only. Internal.
+ */
+export async function unpackJson(payload: string, prefix: string): Promise<unknown> {
   if (typeof payload !== "string") throw new ShareDecodeError("malformed", "Payload is not a string.");
   const text = canonicalSharePayload(payload);
   if (text.length > MAX_SHARE_CHARS) throw new ShareDecodeError("too-large", "Payload is too large.");
   const dot = text.indexOf(".");
   const version = dot < 0 ? "" : text.slice(0, dot);
-  if (version !== SHARE_VERSION) {
+  if (version !== prefix) {
     throw new ShareDecodeError(
       "malformed",
-      /^v\d+$/.test(version) ? `Unsupported payload version "${version}".` : "Missing payload version.",
+      /^[a-z]*\d+$/.test(version) ? `Unsupported payload version "${version}".` : "Missing payload version.",
     );
   }
   const packed = fromBase64Url(text.slice(dot + 1));
@@ -285,17 +310,7 @@ export async function decodeShare(payload: string): Promise<BuilderExport> {
   if (exceedsJsonDepth(source)) {
     throw new ShareDecodeError("invalid", `Payload is nested deeper than ${MAX_JSON_DEPTH} levels.`);
   }
-  let parsed: ReturnType<typeof BuilderExportSchema.safeParse>;
-  try {
-    parsed = BuilderExportSchema.safeParse(data);
-  } catch (err) {
-    // Defensive: validation must never escape as an untyped error (e.g. a stack overflow).
-    throw new ShareDecodeError("invalid", "Payload cannot be validated.", { cause: err });
-  }
-  if (!parsed.success) {
-    throw new ShareDecodeError("invalid", "Payload is not a valid builder export.", { cause: parsed.error });
-  }
-  return parsed.data;
+  return data;
 }
 
 /**
@@ -313,11 +328,6 @@ export function readShareFragment(hash: string): string | null {
     // keep it raw; decodeShare reports it as malformed
   }
   return canonicalSharePayload(value) || null;
-}
-
-/** "Open in TellmeCrochet": `https://tellmecrochet.de/import#data=<payload>`. */
-export function buildTmcImportUrl(payload: string): string {
-  return `${TMC_IMPORT_URL}#data=${payload}`;
 }
 
 /**
