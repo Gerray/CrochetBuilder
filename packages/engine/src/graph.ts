@@ -325,23 +325,34 @@ export function buildGraph(content: PartContent, gauge?: Gauge, opts: BuildGraph
       const slots = reversed
         ? prevSlots.map((s) => ({ node: s.node, index: s.index, offset: -s.offset })).reverse()
         : prevSlots;
-      // A stitch group takes one slot (at its first stitch), whatever its stitches consume.
+      // A stitch group takes one slot, at its first stitch that is worked into something; a group
+      // of only chains and picots takes none (as `consumesOfGroup` in validation).
       let total = 0;
+      let counted = false;
       for (let id = firstNode; id < firstNode + nodeCount; id++) {
-        total += groupPos[id]! < 0 ? consumes[id]! : groupPos[id] === 0 ? 1 : 0;
+        if (groupPos[id]! < 0) {
+          total += consumes[id]!;
+          continue;
+        }
+        if (groupPos[id] === 0) counted = false;
+        if (consumes[id]! > 0 && !counted) {
+          total++;
+          counted = true;
+        }
       }
       // Working into a foundation chain with fewer stitches than chains: skip from the hook.
       let cursor = prevRow!.kind === "chain" && total < slots.length ? slots.length - total : 0;
       let groupSlot: Slot | null = null;
       for (let id = firstNode; id < firstNode + nodeCount; id++) {
         if (groupPos[id]! >= 0) {
-          if (groupPos[id] === 0) {
-            groupSlot = slots[Math.min(cursor, slots.length - 1)]!;
-            cursor++;
-          }
+          if (groupPos[id] === 0) groupSlot = null;
           // Stitches of the group that are worked into something (not its chains or picots)
           // all go into the group's slot, their legs fanning out like an INC's.
-          if (consumes[id]! > 0 && groupSlot) {
+          if (consumes[id]! > 0) {
+            if (!groupSlot) {
+              groupSlot = slots[Math.min(cursor, slots.length - 1)]!;
+              cursor++;
+            }
             const node = nodes[id]!;
             node.parents.push(groupSlot.node);
             node.parentSlots = [{ node: groupSlot.node, slot: groupSlot.index }];

@@ -47,6 +47,33 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- **Patterns with several parts in the builder** (head, body, arms ×2 …). A parts bar above
+  the rows shows every part with its quantity, stitch count and validation light; parts are
+  added ("+ Teil"), renamed in place, duplicated (fresh row ids, "(Kopie)"), moved and
+  deleted (undoable). Alt+↑/↓ switches parts; the 3D view, stats and findings follow the
+  shown part, and the total over all parts × quantity is shown. Saved documents keep all
+  parts (older saves load unchanged). The PDF starts with a parts overview and has one
+  section per part; the viewer gets part tabs. New demo "Hase (einfach)". The canonical
+  format is unchanged.
+- **Whole-pattern import.** `parsePatternText(text, { locale?, makeId? })` reads a pattern
+  pasted from a PDF or web page into parts (name, quantity) and rows: part headers
+  ("Ears (make 2)", "Kopf", "2 Ohren"), round labels anywhere in a line ("R1:", "Rnd 8 – 9",
+  "6-8.", "R18+R19", "2-3 rnd.", "5.7 sc"), one row per round of a range, instruction rows
+  between rounds, and a separate `preamble` (materials, abbreviations, intro). What the
+  format cannot represent yet becomes an instruction row with an issue (`UNSUPPORTED_GROUP`,
+  `UNSUPPORTED_SPECIAL_STITCH`, `UNSUPPORTED_JOIN`, `UNSUPPORTED_CHAIN_SPACE`,
+  `UNSUPPORTED_FOUNDATION_OVAL`, `UNSUPPORTED_COLOR`, `UNREADABLE`, …). Declared stitch counts
+  are kept, so `validate` reports the author's mistakes. No format change.
+- `detectNotationLocale(text)`: German, US or UK terms, with a confidence.
+- `parseRowText(text, locale, { previousCount })` reads what real patterns write in a
+  lenient second pass: counts after the stitch ("inc x 6", "sc 2"), "repeat 6 times",
+  "*…* 6 times", to the end of the round ("sc around", "(…)*", "Zun in jede M" — with the
+  previous row's count), magic ring starts ("6 sc in MR", "MR 6"), every stitch-count form
+  ("= 18", "[18]", "– 18", "(18 sts)"), row-level "BLO:" / "nur hinteres Maschenglied" and
+  "sl-st". New error codes `needs-context` and `fill-mismatch`; the result may carry
+  `rounds` ("(4 rounds)") and `warnings` where the written count decided between two
+  readings ("sc, inc x6 (18)", "rep from * 5 times"). When in doubt the row fails rather than
+  being misread ("6 inc 12", "2 hdc in next st").
 - **Yarn thickness in mm.** The gauge accepts an optional `yarnDiameterMm` (0 < x ≤ 30).
   Without a swatch it sets the stitch size — interpolated over the yarn weight table and
   scaled by the hook — and wins over the yarn weight. It is always the rendered yarn

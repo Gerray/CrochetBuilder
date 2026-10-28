@@ -237,3 +237,60 @@ describe("PDF model image", () => {
     if (r.kind === "model") expect(r.model.backing?.indices.length).toBeGreaterThan(0);
   });
 });
+
+describe("PDF with several parts", () => {
+  const bunny = () => prepareExport(demoDocument(ids(), "bunny"));
+  const model = { size: { width: 40, height: 40, depth: 40 }, maxDiameter: 37 };
+
+  it("starts with an overview of the parts and the total", () => {
+    const input = pdfInput(bunny(), model, null);
+    expect(input.overview).toEqual({
+      lines: [
+        "Kopf: 14 Runden, 300 Maschen",
+        "Körper: 14 Runden, 264 Maschen",
+        "Ohr ×2: 13 Runden, 138 Maschen je Teil",
+        "Arm ×2: 8 Runden, 69 Maschen je Teil",
+        "Bein ×2: 8 Runden, 81 Maschen je Teil",
+      ],
+      total: "Gesamt: 1.140 Maschen, 8 Teile zu häkeln",
+    });
+    // The image and the finished size are the first part's — the line says which.
+    expect(input.size).toBe("4,0 × 4,0 × 4,0 cm (B × H × T), max. Ø 3,7 cm – Kopf");
+    const lines = texts(layoutPdf(input, mono).commands).map((c) => c.text);
+    const at = (text: string) => lines.indexOf(text);
+    expect(at("Teile")).toBeGreaterThan(at("Hase (einfach)"));
+    expect(at("Teile")).toBeLessThan(at("Material"));
+    expect(at("• Ohr ×2: 13 Runden, 138 Maschen je Teil")).toBeGreaterThan(at("Teile"));
+    expect(at("Gesamt: 1.140 Maschen, 8 Teile zu häkeln")).toBeLessThan(at("Material"));
+  });
+
+  it("gives every part its own section with name and ×n, rows numbered per part", () => {
+    const exp = bunny();
+    const layout = layoutPdf(pdfInput(exp, model, null), mono);
+    const lines = texts(layout.commands).map((c) => c.text);
+    const sections = ["Kopf", "Körper", "Ohr ×2", "Arm ×2", "Bein ×2"].map((h) => lines.lastIndexOf(h));
+    expect(sections.every((i) => i > lines.indexOf("Anleitung"))).toBe(true);
+    expect([...sections].sort((a, b) => a - b)).toEqual(sections);
+    // Each section starts again at "Runde 1"; every row of every part is there.
+    for (const [k, start] of sections.entries()) {
+      expect(lines[start + 1]).toMatch(/^Runde 1: 1 MR, 6 fM \(6\)$/);
+      const end = sections[k + 1] ?? lines.indexOf(FOOTER_TEXT);
+      const rows = lines.slice(start + 1, end).filter((l) => /^Runde \d+:/.test(l));
+      expect(rows).toHaveLength(exp.parts[k]!.content.rows.length);
+    }
+    expect(layout.pages).toBeGreaterThan(1);
+    for (const c of texts(layout.commands)) {
+      if (c.text !== FOOTER_TEXT && !c.text.startsWith("Seite ")) expect(c.y).toBeLessThanOrEqual(PAGE.bottom);
+    }
+  });
+
+  it("a single part has no overview and no part heading; a single part made twice is headed '×2'", () => {
+    const one = prepareExport(demoDocument(ids(), "ball"));
+    const input = pdfInput(one, model, null);
+    expect(input.overview).toBeUndefined();
+    expect(input.parts[0]!.heading).toBeNull();
+    expect(input.size).not.toContain(" – ");
+    one.parts[0]!.quantity = 2;
+    expect(pdfInput(one, model, null).parts[0]!.heading).toBe("Ball ×2");
+  });
+});

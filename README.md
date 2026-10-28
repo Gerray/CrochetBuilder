@@ -146,7 +146,8 @@ Working today:
 - Pattern engine: schema, validation, stitch graph, relaxation, measurements, mesh
 - Format version 2 in the engine: colours, stitch groups, bobble/puff/popcorn/picot, relief
   stitches, finish and stuffing per part, placements for assembly (editor support follows)
-- Editor: structured and free-text row input, German and English stitch notation
+- Editor: structured and free-text row input, German and English stitch notation; patterns
+  with several parts (head, body, arms ×2 …), each with its own rows and quantity
 - Live 3D preview in real size
 - Export to TellmeCrochet, PDF and JSON; share links and embeddable viewer
 
@@ -157,7 +158,7 @@ Next:
 
 Later:
 
-- Pieces made of several parts (head, body, arms…) assembled in 3D
+- Assembling the parts of a piece in 3D
 - Colour changes and the other format-2 features in the editor and the 3D view
 - English user interface
 

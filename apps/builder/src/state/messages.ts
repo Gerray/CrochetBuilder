@@ -26,8 +26,10 @@ export function findingMessage(finding: Finding, row: Row | undefined): string {
         : `${actual} Wiederholungen enthalten keine Maschen.`;
     case "EMPTY_GROUP":
       return actual === 1
-        ? "Eine Gruppe „in dieselbe Masche“ enthält keine Maschen."
-        : `${actual} Gruppen „in dieselbe Masche“ enthalten keine Maschen.`;
+        ? "Eine Gruppe „in dieselbe Masche“ enthält keine Masche, die in die Einstichstelle gearbeitet wird."
+        : `${actual} Gruppen „in dieselbe Masche“ enthalten keine Masche, die in die Einstichstelle gearbeitet wird.`;
+    case "INVALID_GROUP":
+      return "In einer Gruppe „in dieselbe Masche“ dürfen kein Magischer Ring, keine Abnahme und keine zusammen abgemaschten Maschen stehen.";
     case "INVALID_MODIFIER":
       return "Reliefmaschen (vorne/hinten) gehen nur bei fM, hStb, Stb, DStb und DDStb, und nur eine Richtung pro Masche.";
     case "UNKNOWN_COLOR":
@@ -53,6 +55,10 @@ export function parseErrorMessage(result: ParseRowResult): string | null {
         : `Zahl zu groß – höchstens ${n(result.limit ?? MAX_COUNT)}.`;
     case "invalid-modifier":
       return `„${result.term ?? ""}“ passt hier nicht (widerspricht einer anderen Angabe oder gilt nicht für diese Masche).`;
+    case "needs-context":
+      return "„Rundherum“ braucht die Maschenzahl der Vorrunde – bitte die Maschen ausschreiben, z. B. „18 fM“.";
+    case "fill-mismatch":
+      return `„Rundherum“ geht mit ${n(result.limit ?? 0)} Maschen der Vorrunde nicht auf.`;
     case "syntax":
       return result.position !== undefined
         ? `Nicht lesbar ab Zeichen ${result.position + 1}. Beispiel: 6× (1 fM, 1 Zun)`

@@ -5,6 +5,7 @@
 
 import { BuilderExportSchema, renderedRows, type BuilderExport } from "@crochetbuilder/engine";
 import type { BuilderDoc } from "../state/document.js";
+import { partHeading } from "./labels.js";
 
 /** The export failed schema validation — a bug, never a user error. */
 export class ExportValidationError extends Error {
@@ -14,11 +15,14 @@ export class ExportValidationError extends Error {
   }
 }
 
-/** Text lines of all parts; with several parts each starts with a "Name (n×):" line. */
+/**
+ * Text lines of all parts; with several parts each starts with a heading line like the PDF
+ * and the viewer ("Ohr ×2:", an unnamed part "Teil n:").
+ */
 export function renderedLines(doc: BuilderDoc): string[] {
   if (doc.parts.length === 1) return renderedRows(doc.parts[0]!.content, "de");
-  return doc.parts.flatMap((part) => [
-    `${part.name.trim() || "Teil"}${part.quantity > 1 ? ` (${part.quantity}×)` : ""}:`,
+  return doc.parts.flatMap((part, i) => [
+    `${partHeading(part.name, part.quantity, i)}:`,
     ...renderedRows(part.content, "de"),
   ]);
 }

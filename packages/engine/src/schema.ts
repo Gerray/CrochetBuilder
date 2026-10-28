@@ -257,6 +257,24 @@ export function consumesOf(op: StitchOp): number {
   return base;
 }
 
+/**
+ * Stitches of the previous row a stitch group consumes: 1 when at least one of its stitches
+ * is worked into something (consumes > 0), else 0 — an empty group, or one of only chains and
+ * picots, is not worked into any stitch.
+ */
+export function consumesOfGroup(group: StitchGroup): number {
+  const worksInto = (ops: readonly GroupOp[]): boolean =>
+    ops.some((op) => (op.kind === "stitch" ? consumesOf(op) > 0 : worksInto(op.ops)));
+  return worksInto(group.ops) ? 1 : 0;
+}
+
+/**
+ * Codes that cannot stand inside a stitch group: the magic ring and the decreases (they are
+ * worked into two stitches, a group into one). `TOG` is not allowed there for the same reason.
+ * An `INC` may: it adds its two stitches to the group's stitch ("(inc, sc) in one" = 3 sc).
+ */
+export const GROUP_FORBIDDEN_CODES: readonly StitchCode[] = ["MR", "DEC", "INVDEC"];
+
 /** Stitches that can be worked around the post of a stitch below (FP / BP modifiers). */
 export const POST_STITCH_CODES: readonly StitchCode[] = ["SC", "HDC", "DC", "TR", "DTR"];
 

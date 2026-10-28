@@ -27,6 +27,8 @@ import { countOpAtoms, countRowAtoms, isInstructionRow, type RowStitch } from ".
 import {
   STITCH_PROPERTIES,
   consumesOf,
+  consumesOfGroup,
+  GROUP_FORBIDDEN_CODES,
   isPostStitch,
   type Op,
   type PartContent,
@@ -43,6 +45,7 @@ export type FindingCode =
   | "TOO_MANY_STITCHES"
   | "EMPTY_REPEAT"
   | "EMPTY_GROUP"
+  | "INVALID_GROUP"
   | "INVALID_MODIFIER"
   | "UNKNOWN_COLOR";
 
@@ -70,11 +73,12 @@ function onlyChains(op: Op): boolean {
 
 /**
  * Anchors one op consumes. A stitch group is worked into one stitch, whatever its stitches
- * are — an empty group (no stitches at all) is worked into none.
+ * are — a group with no stitch that is worked into anything (empty, or only chains and
+ * picots) into none (`consumesOfGroup`; the graph agrees).
  */
 function consumedByOp(op: Op): number {
   if (op.kind === "stitch") return op.count * consumesOf(op);
-  if (op.kind === "group") return countOpAtoms(op) > 0 ? 1 : 0;
+  if (op.kind === "group") return consumesOfGroup(op);
   return op.times * op.ops.reduce((sum, inner) => sum + consumedByOp(inner), 0);
 }
 
@@ -237,14 +241,15 @@ function stitchOps(ops: readonly Op[], out: StitchOp[] = []): StitchOp[] {
 function countEmptyGroups(ops: readonly Op[]): number {
   return ops.reduce((n, op) => {
     if (op.kind === "stitch") return n;
-    if (op.kind === "group") return n + (countOpAtoms(op) === 0 ? 1 : 0);
+    if (op.kind === "group") return n + (consumesOfGroup(op) === 0 ? 1 : 0);
     return n + countEmptyGroups(op.ops);
   }, 0);
 }
 
 /**
- * Stitch groups without stitches (`()` in one stitch) — legal in the schema, worked into no
- * stitch and producing none; almost always an unfinished edit. One warning per affected row.
+ * Stitch groups with no stitch worked into the group's stitch — empty (`()` in one stitch) or
+ * only chains and picots. Legal in the schema; such a group is worked into no stitch, so it
+ * is almost always an unfinished edit. One warning per affected row.
  */
 export function checkEmptyGroups(content: PartContent): Finding[] {
   return content.rows.flatMap((row) => {
@@ -257,6 +262,38 @@ export function checkEmptyGroups(content: PartContent): Finding[] {
         code: "EMPTY_GROUP" as const,
         message: `Row contains ${empty} stitch group${empty === 1 ? "" : "s"} without stitches.`,
         actual: empty,
+      },
+    ];
+  });
+}
+
+/**
+ * Stitch groups with stitches that cannot be worked into one stitch: the magic ring, a
+ * decrease (`DEC`, `INVDEC`) or a stitch worked together (`TOG`). An `INC` is allowed (two
+ * stitches into the group's stitch). One error per affected row; `actual` counts the ops.
+ */
+export function checkGroups(content: PartContent): Finding[] {
+  const inGroups = (ops: readonly Op[], inside: boolean, out: StitchOp[]): StitchOp[] => {
+    for (const op of ops) {
+      if (op.kind === "stitch") {
+        if (inside) out.push(op);
+      } else inGroups(op.ops, inside || op.kind === "group", out);
+    }
+    return out;
+  };
+  return content.rows.flatMap((row) => {
+    const bad = inGroups(row.ops, false, []).filter(
+      (op) => GROUP_FORBIDDEN_CODES.includes(op.code) || consumesOf(op) > 1,
+    );
+    if (bad.length === 0) return [];
+    const codes = [...new Set(bad.map((op) => (op.modifiers?.includes("TOG") ? `${op.code} TOG` : op.code)))].join(", ");
+    return [
+      {
+        rowId: row.id,
+        severity: "error" as const,
+        code: "INVALID_GROUP" as const,
+        message: `A group "in one stitch" cannot contain a magic ring, a decrease or stitches worked together (found ${codes}).`,
+        actual: bad.length,
       },
     ];
   });
@@ -347,6 +384,7 @@ export function validate(content: PartContent, opts: ValidateOptions = {}): Find
     ...checkStitchCounts(content),
     ...checkConsumes(content),
     ...checkModifiers(content),
+    ...checkGroups(content),
     ...(opts.palette ? checkColors(content, opts.palette) : []),
     ...checkEmptyRepeats(content),
     ...checkEmptyGroups(content),

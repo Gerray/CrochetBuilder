@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { encodeShare, type BuilderExport } from "@crochetbuilder/engine";
 import { prepareExport } from "../export/prepare.js";
 import { demoDocument } from "../state/document.js";
@@ -126,6 +126,82 @@ describe("ViewerApp", () => {
     expect(screen.queryByRole("link", { name: "Im Builder bearbeiten" })).toBeNull();
     expect(fakeViews.last?.style.showGrid).toBe(false);
     expect(document.documentElement.classList.contains("is-embed")).toBe(true);
+  });
+
+  it("several parts: the text lists every part; tabs switch the model and scroll to the part", async () => {
+    const exp = prepareExport(demoDocument(ids(), "bunny"));
+    const payload = await encodeShare(exp);
+    render(<ViewerApp location={at("", `#data=${payload}`)} />);
+    const tablist = await screen.findByRole("tablist", { name: "Teile" });
+    const tabs = within(tablist).getAllByRole("tab");
+    expect(tabs.map((t) => t.textContent)).toEqual(["Kopf", "Körper", "Ohr ×2", "Arm ×2", "Bein ×2"]);
+    expect(tabs[0]!.getAttribute("aria-selected")).toBe("true");
+    expect(screen.getByText("Gesamt: 1.140 Maschen, 8 Teile zu häkeln")).toBeTruthy();
+    // Every part's rows are in the text (and in print), each under its own heading.
+    expect(screen.getAllByRole("heading", { level: 3 }).map((h) => h.textContent)).toEqual([
+      "Kopf",
+      "Körper",
+      "Ohr ×2",
+      "Arm ×2",
+      "Bein ×2",
+    ]);
+    for (const [i, part] of exp.parts.entries()) {
+      const heading = tabs[i]!.textContent!;
+      const list = screen.getByRole("list", { name: `Reihen von ${heading}` });
+      expect(within(list).getAllByRole("listitem")).toHaveLength(part.content.rows.length);
+    }
+    // The tabs control the 3D model, which starts with the first part.
+    const panel = screen.getByRole("tabpanel");
+    expect(tabs.every((t) => t.getAttribute("aria-controls") === panel.id)).toBe(true);
+    expect(panel.getAttribute("aria-labelledby")).toBe(tabs[0]!.id);
+    await waitFor(() => expect(fakeViews.last?.mesh?.rowIds).toHaveLength(14));
+
+    const scrolled: string[] = [];
+    const original = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = function (this: Element) {
+      scrolled.push(this.id);
+    };
+    vi.useFakeTimers({ toFake: ["setTimeout"] });
+    try {
+      fireEvent.click(tabs[2]!);
+      vi.runAllTimers();
+    } finally {
+      vi.useRealTimers();
+      Element.prototype.scrollIntoView = original;
+    }
+    expect(within(tablist).getByRole("tab", { name: "Ohr ×2" }).getAttribute("aria-selected")).toBe("true");
+    expect(screen.getByRole("tabpanel").getAttribute("aria-labelledby")).toBe(tabs[2]!.id);
+    // Scrolled to the ear's rows, which are marked as the part in view.
+    const earSection = screen.getByRole("list", { name: "Reihen von Ohr ×2" }).parentElement!;
+    expect(scrolled).toEqual([earSection.id]);
+    expect(earSection.className).toContain("is-current");
+    expect(screen.getByRole("list", { name: "Reihen von Kopf" }).parentElement!.className).not.toContain("is-current");
+    expect(screen.getAllByRole("heading", { level: 3 })).toHaveLength(5);
+    await waitFor(() => expect(fakeViews.last?.mesh?.rowIds).toEqual(exp.parts[2]!.content.rows.map((r) => r.id)));
+
+    // Arrow keys move between the tabs.
+    fireEvent.keyDown(within(tablist).getByRole("tab", { name: "Ohr ×2" }), { key: "ArrowRight" });
+    expect(within(tablist).getByRole("tab", { name: "Arm ×2" }).getAttribute("aria-selected")).toBe("true");
+
+    const tmc = screen.getByRole("link", { name: "In TellmeCrochet öffnen" }) as HTMLAnchorElement;
+    expect(tmc.href).toBe(`https://tellmecrochet.de/import#data=${payload}`);
+  });
+
+  it("a single part has no part tabs; an embed of several parts gets compact tabs", async () => {
+    render(<ViewerApp location={at("", `#data=${await encodeShare(ballExport())}`)} />);
+    await screen.findByRole("heading", { level: 1 });
+    expect(screen.queryByRole("tablist")).toBeNull();
+    cleanup();
+
+    const payload = await encodeShare(prepareExport(demoDocument(ids(), "bunny")));
+    render(<ViewerApp location={at("?embed=1", `#data=${payload}`)} />);
+    const tablist = await screen.findByRole("tablist", { name: "Teile" });
+    // Compact: floating over the model, without the total and without any rows.
+    expect(tablist.parentElement!.className).toBe("viewer-parts viewer-parts-compact");
+    expect(screen.queryByText(/^Gesamt:/)).toBeNull();
+    expect(screen.queryAllByRole("list")).toHaveLength(0);
+    fireEvent.click(within(tablist).getByRole("tab", { name: "Bein ×2" }));
+    await waitFor(() => expect(fakeViews.last?.mesh?.rowIds).toHaveLength(8));
   });
 
   it("without WebGL the page still shows the pattern", async () => {
