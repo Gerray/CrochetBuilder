@@ -94,13 +94,13 @@ describe("Parts bar", () => {
     const less = screen.getByRole("button", { name: "Anzahl verringern" });
     expect(less).toHaveProperty("disabled", true);
     fireEvent.click(screen.getByRole("button", { name: "Anzahl erhöhen" }));
-    expect(screen.getByRole("textbox", { name: "Anzahl" })).toHaveProperty("value", "2");
+    expect(screen.getByRole("textbox", { name: "Anzahl des Teils" })).toHaveProperty("value", "2");
     expect(selectedTab().textContent).toBe("Teil 1×26");
     expect(total()).toBe("Gesamt: 12 Maschen in 2 Teilen");
-    fireEvent.change(screen.getByRole("textbox", { name: "Anzahl" }), { target: { value: "4" } });
+    fireEvent.change(screen.getByRole("textbox", { name: "Anzahl des Teils" }), { target: { value: "4" } });
     expect(total()).toBe("Gesamt: 24 Maschen in 4 Teilen");
     // 0 is no quantity: refused.
-    fireEvent.change(screen.getByRole("textbox", { name: "Anzahl" }), { target: { value: "0" } });
+    fireEvent.change(screen.getByRole("textbox", { name: "Anzahl des Teils" }), { target: { value: "0" } });
     expect(total()).toBe("Gesamt: 24 Maschen in 4 Teilen");
     fireEvent.click(less);
     expect(total()).toBe("Gesamt: 18 Maschen in 3 Teilen");
@@ -110,7 +110,7 @@ describe("Parts bar", () => {
     await renderApp();
     await loadBunny();
     fireEvent.click(screen.getByRole("tab", { name: /^Bein/ }));
-    fireEvent.click(screen.getByRole("button", { name: "Duplizieren" }));
+    fireEvent.click(screen.getByRole("button", { name: "Teil duplizieren" }));
     expect(tabNames()).toEqual(["Kopf", "Körper", "Ohr", "Arm", "Bein", "Bein (Kopie)"]);
     expect(nameField().value).toBe("Bein (Kopie)");
 

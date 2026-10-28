@@ -165,7 +165,7 @@ export function PartsBar(props: PartsBarProps) {
           </button>
           <NumberField
             className="part-quantity-input"
-            aria-label="Anzahl"
+            aria-label="Anzahl des Teils"
             title={`Wie oft dieses Teil gehäkelt wird (1 bis ${MAX_PART_QUANTITY})`}
             value={part.quantity}
             min={1}
@@ -212,6 +212,7 @@ export function PartsBar(props: PartsBarProps) {
             type="button"
             className="btn btn-small btn-quiet"
             disabled={parts.length >= MAX_PARTS}
+            aria-label="Teil duplizieren"
             title="Kopie mit allen Runden anlegen, z. B. für linkes und rechtes Bein"
             onClick={() => onDuplicate(selected)}
           >
