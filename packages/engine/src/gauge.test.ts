@@ -62,7 +62,7 @@ describe("yarnDefaultsForDiameter", () => {
     // Halfway between DK (2,5 mm) and worsted (3,0 mm).
     const r = yarnDefaultsForDiameter(2.75);
     expect(r.stitchWidthMm).toBeCloseTo((100 / 20 + 100 / 16) / 2, 10);
-    expect(r.stitchHeightMm).toBeCloseTo((100 / 21 + 100 / 17) / 2, 10);
+    expect(r.stitchHeightMm).toBeCloseTo((100 / 20 + 100 / 16) / 2, 10);
     expect(r.hookMm).toBeCloseTo(4.5, 10);
   });
 
@@ -105,7 +105,7 @@ describe("resolveGauge with yarnDiameterMm", () => {
   it("derives an estimated size from the thickness alone", () => {
     const g = resolveGauge({ yarnDiameterMm: 2.5 });
     expect(g.stitchWidthMm).toBeCloseTo(5, 10);
-    expect(g.stitchHeightMm).toBeCloseTo(100 / 21, 10);
+    expect(g.stitchHeightMm).toBeCloseTo(5, 10);
     expect(g.yarnDiameterMm).toBe(2.5);
     expect(g.estimated).toBe(true);
     expect(g.source).toBe("yarn-weight");
@@ -232,10 +232,10 @@ describe("STITCH_HEIGHT_FACTOR", () => {
 });
 
 describe("flatIncreasesPerRound", () => {
-  it("gives the crocheter's rules: about 6 for sc, 9 for hdc and 12 for dc by default", () => {
-    expect(flatIncreasesPerRound()).toBeCloseTo(6, 0);
-    expect(flatIncreasesPerRound(undefined, "HDC")).toBeCloseTo(9, 0);
-    expect(flatIncreasesPerRound({}, "DC")).toBeCloseTo(12, 0);
+  it("is 2π (about 6) for the default square single crochet, 1.5× for hdc and 2× for dc", () => {
+    expect(flatIncreasesPerRound()).toBeCloseTo(2 * Math.PI, 10);
+    expect(flatIncreasesPerRound(undefined, "HDC")).toBeCloseTo(3 * Math.PI, 10);
+    expect(flatIncreasesPerRound({}, "DC")).toBeCloseTo(4 * Math.PI, 10);
     for (const weight of YarnWeightSchema.options) {
       expect(Math.round(flatIncreasesPerRound({ yarnWeight: weight }))).toBe(6);
     }

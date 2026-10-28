@@ -94,14 +94,18 @@ is given — also with a swatch — and otherwise the table value of the yarn we
 
 | `yarnWeight` | thickness | stitches / 10 cm | rows / 10 cm | standard hook |
 | ------------ | --------: | ---------------: | -----------: | ------------: |
-| `lace`       |    1.0 mm |               32 |           34 |        2.0 mm |
-| `fingering`  |    1.5 mm |               28 |           29 |        2.5 mm |
-| `sport`      |    2.0 mm |               24 |           25 |        3.0 mm |
-| `dk`         |    2.5 mm |               20 |           21 |        4.0 mm |
-| `worsted`    |    3.0 mm |               16 |           17 |        5.0 mm |
-| `aran`       |    3.5 mm |               14 |           15 |        5.5 mm |
-| `bulky`      |    5.0 mm |               11 |           12 |        7.0 mm |
+| `lace`       |    1.0 mm |               32 |           32 |        2.0 mm |
+| `fingering`  |    1.5 mm |               28 |           28 |        2.5 mm |
+| `sport`      |    2.0 mm |               24 |           24 |        3.0 mm |
+| `dk`         |    2.5 mm |               20 |           20 |        4.0 mm |
+| `worsted`    |    3.0 mm |               16 |           16 |        5.0 mm |
+| `aran`       |    3.5 mm |               14 |           14 |        5.5 mm |
+| `bulky`      |    5.0 mm |               11 |           11 |        7.0 mm |
 | `jumbo`      |    8.0 mm |                7 |            7 |       10.0 mm |
+
+Single crochet is taken as square, as with a swatch that gives only stitches. A circle then
+lies flat at 2π ≈ 6.3 increases per round, so six increases lie flat or cup very slightly
+(see `flatIncreasesPerRound`).
 
 Parsers older than engine 0.2.0 reject a gauge with `yarnDiameterMm` (the gauge object is
 strict).

@@ -117,7 +117,7 @@ export function GaugeEditor({ gauge = {}, dispatch }: { gauge: Gauge | undefined
               min={1}
               value={gauge.rowsPer10cm}
               onValue={(rowsPer10cm) => set({ rowsPer10cm })}
-              placeholder="24"
+              placeholder="20"
             />
           </label>
           <span className="unit">pro 10 cm</span>

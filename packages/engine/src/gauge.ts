@@ -46,10 +46,11 @@ export type Gauge = z.infer<typeof GaugeSchema>;
 
 /**
  * Typical single-crochet gauge at the weight's standard hook, plus yarn diameter.
- * Values are approximate midpoints for amigurumi-style, fairly tight crochet. Rows are set
- * to about 1.05 × stitches (stitch height ≈ 0.95 × width): that is what makes the
- * crocheter's rule "six increases per round lie flat" hold (2π·h ≈ 6·w), so rounds without
- * a swatch relax into the shapes people expect.
+ * Values are approximate midpoints for amigurumi-style, fairly tight crochet. Single crochet
+ * is taken as square (rows = stitches), as a swatch without rows is: the crocheter's rule
+ * "six increases per round lie flat" then holds with a small margin (2π·h/w ≈ 6.3), so a
+ * six-increase disc lies flat or cups very slightly. Stitches any lower than wide would put
+ * it past the ruffling point (2π·h/w < 6) and warp the start of every ball.
  */
 interface WeightDefaults {
   stitchesPer10cm: number;
@@ -59,13 +60,13 @@ interface WeightDefaults {
 }
 
 export const YARN_WEIGHT_DEFAULTS: Record<YarnWeight, WeightDefaults> = {
-  lace: { stitchesPer10cm: 32, rowsPer10cm: 34, hookMm: 2.0, yarnDiameterMm: 1.0 },
-  fingering: { stitchesPer10cm: 28, rowsPer10cm: 29, hookMm: 2.5, yarnDiameterMm: 1.5 },
-  sport: { stitchesPer10cm: 24, rowsPer10cm: 25, hookMm: 3.0, yarnDiameterMm: 2.0 },
-  dk: { stitchesPer10cm: 20, rowsPer10cm: 21, hookMm: 4.0, yarnDiameterMm: 2.5 },
-  worsted: { stitchesPer10cm: 16, rowsPer10cm: 17, hookMm: 5.0, yarnDiameterMm: 3.0 },
-  aran: { stitchesPer10cm: 14, rowsPer10cm: 15, hookMm: 5.5, yarnDiameterMm: 3.5 },
-  bulky: { stitchesPer10cm: 11, rowsPer10cm: 12, hookMm: 7.0, yarnDiameterMm: 5.0 },
+  lace: { stitchesPer10cm: 32, rowsPer10cm: 32, hookMm: 2.0, yarnDiameterMm: 1.0 },
+  fingering: { stitchesPer10cm: 28, rowsPer10cm: 28, hookMm: 2.5, yarnDiameterMm: 1.5 },
+  sport: { stitchesPer10cm: 24, rowsPer10cm: 24, hookMm: 3.0, yarnDiameterMm: 2.0 },
+  dk: { stitchesPer10cm: 20, rowsPer10cm: 20, hookMm: 4.0, yarnDiameterMm: 2.5 },
+  worsted: { stitchesPer10cm: 16, rowsPer10cm: 16, hookMm: 5.0, yarnDiameterMm: 3.0 },
+  aran: { stitchesPer10cm: 14, rowsPer10cm: 14, hookMm: 5.5, yarnDiameterMm: 3.5 },
+  bulky: { stitchesPer10cm: 11, rowsPer10cm: 11, hookMm: 7.0, yarnDiameterMm: 5.0 },
   jumbo: { stitchesPer10cm: 7, rowsPer10cm: 7, hookMm: 10.0, yarnDiameterMm: 8.0 },
 };
 
@@ -157,7 +158,7 @@ function scaled(p: TablePoint, factor: number): YarnSizeDefaults {
  * and hook, each between the two neighbouring weights. Exact at the table's thicknesses,
  * monotonic, proportional outside the table and clamped as `YARN_DIAMETER_EXTRAPOLATION`
  * says. Interpolating width and height separately keeps their ratio between the
- * neighbours' ratios, so the E15 calibration (h ≈ 0.95 · w) carries over.
+ * neighbours' ratios, so the square default stitch carries over.
  */
 export function yarnDefaultsForDiameter(diameterMm: number): YarnSizeDefaults {
   const first = TABLE_BY_DIAMETER[0]!;

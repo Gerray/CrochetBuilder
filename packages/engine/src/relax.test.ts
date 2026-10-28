@@ -291,3 +291,40 @@ describe("geometry helpers", () => {
     expect(y).toBeCloseTo(4); // twice the area (2) — Newell's sum
   });
 });
+
+describe("relax: flat increase discs", () => {
+  /**
+   * Largest height difference within one round (rounds grow along +Y). A cone or a cup keeps
+   * every round level; a saddle lifts two sides of a round and lowers the other two.
+   */
+  const warp = (g: StitchGraph) => {
+    let worst = 0;
+    for (const r of g.rows) {
+      let lo = Infinity;
+      let hi = -Infinity;
+      for (let id = r.firstNode; id < r.firstNode + r.nodeCount; id++) {
+        if (g.nodes[id]!.code === "MR") continue;
+        lo = Math.min(lo, g.positions[3 * id + 1]!);
+        hi = Math.max(hi, g.positions[3 * id + 1]!);
+      }
+      worst = Math.max(worst, hi - lo);
+    }
+    return worst;
+  };
+
+  // Six increases per round with square stitches make a flat or very slightly cupped disc,
+  // never a saddle. The step from one round into the next, a magic ring pulled tighter than
+  // the first round's own polygon and stitches slightly lower than wide (2π·h/w just under 6)
+  // used to warp it into a "potato chip" of one to one and a half stitch widths.
+  it.each([
+    ["three rounds, 2 mm yarn and hook", 3, { yarnWeight: "jumbo" as const, yarnDiameterMm: 2, hookMm: 2 }],
+    ["three rounds, default gauge", 3, {}],
+    ["six rounds, default gauge", 6, {}],
+    ["ten rounds, default gauge", 10, {}],
+  ])("keeps %s flat", (_label, rounds, gauge) => {
+    const rows = [row("r1", [st("MR"), st("SC", 6)], 6), row("r2", [st("INC", 6)], 12)];
+    for (let k = 3; k <= rounds; k++) rows.push(row(`r${k}`, [rep(6, [st("SC", k - 2), st("INC")])], 6 * k));
+    const g = relax(buildGraph(part(rows), gauge));
+    expect(warp(g)).toBeLessThan(0.35 * g.gauge.stitchWidthMm);
+  });
+});

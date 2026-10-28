@@ -344,8 +344,14 @@ describe("toMesh — surface smoothing", () => {
     for (const key of coarseEdges) {
       longest = Math.max(longest, dist(at(coarse.positions, Math.floor(key / V)), at(coarse.positions, key % V)));
     }
+    // Measured to the stitch's own vertices: the closing pole is a vertex of the last stitch
+    // too, so a point next to the pole belongs to that stitch without being near its vertex.
     for (let v = V; v < fine.positions.length / 3; v++) {
-      expect(dist(at(fine.positions, v), at(coarse.positions, fine.nodeIndex[v]!))).toBeLessThan(0.75 * longest);
+      let nearest = Infinity;
+      for (let u = 0; u < V; u++) {
+        if (coarse.nodeIndex[u] === fine.nodeIndex[v]) nearest = Math.min(nearest, dist(at(fine.positions, v), at(coarse.positions, u)));
+      }
+      expect(nearest).toBeLessThan(0.75 * longest);
     }
   });
 

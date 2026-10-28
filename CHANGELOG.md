@@ -29,6 +29,9 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- Flat increase discs (and the start of every ball) no longer warp into a saddle ("potato
+  chip"): the yarn's step from one round into the next no longer acts as a stiff spring, and
+  the first round is never pulled tighter than its own polygon.
 - Closed pieces are closed at the top in every mesh style: the surface fans the last round
   to a closing pole (watertight, like the magic ring at the start), the stitch lattice
   gathers the last round's front loops into a cinched ring, the tube runs on to the pole.
@@ -42,6 +45,9 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
+- Default stitches without a swatch are square (rows per 10 cm = stitches per 10 cm, was
+  about 1.05 ×). Six increases per round now lie flat with a small margin instead of right
+  at the ruffling point. Pieces without a swatch come out about 5 % taller.
 - Engine version 0.2.0. Parsers older than 0.2.0 reject a gauge that contains
   `yarnDiameterMm`, because the gauge object is strict.
 

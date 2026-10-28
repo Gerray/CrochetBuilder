@@ -97,17 +97,19 @@ describe("increases per round and cone angle", () => {
   // per row of height h, so it rises out of the plane by arccos(n / n₀) with
   // n₀ = 2π·h/w, the increase count that lies flat.
   const cases: [string, Gauge, number[]][] = [
-    ["default gauge (h ≈ 0.95 w, flat at 6)", {}, [4, 5, 6]],
+    ["default gauge (square stitches, flat at 2π ≈ 6.3)", {}, [4, 5, 6]],
     ["tall stitches (h = 1.25 w, flat at 8)", { stitchesPer10cm: 20, rowsPer10cm: 16 }, [5, 6, 8]],
   ];
   for (const [label, gauge, counts] of cases) {
     it(`follows arccos(n / n₀) for ${label}`, () => {
       const stitches = gauge.stitchesPer10cm ?? 20;
-      const rows = gauge.rowsPer10cm ?? 21;
+      const rows = gauge.rowsPer10cm ?? 20;
       const flat = (2 * Math.PI * stitches) / rows;
       for (const n of counts) {
-        const expected = (Math.acos(Math.min(1, n / flat)) * 180) / Math.PI;
-        expect(Math.abs(edgeRise(disc(n, 10), gauge) - expected)).toBeLessThan(5);
+        // Compared as cos(rise) = n / n₀: near flat the angle itself is very sensitive
+        // (arccos is steep at 1), the ratio of circumference to slant growth is not.
+        const rise = (edgeRise(disc(n, 10), gauge) * Math.PI) / 180;
+        expect(Math.abs(Math.cos(rise) - Math.min(1, n / flat))).toBeLessThan(0.035);
       }
     });
   }

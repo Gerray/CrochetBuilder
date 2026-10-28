@@ -45,7 +45,8 @@
  *
  * What the shape depends on: the gauge's stitch height relative to its width. The classic
  * flat-circle rule (6 increases per round lie flat) holds for 2π·h ≈ 6·w; the engine's
- * default yarn table has h ≈ 0.95·w for exactly that reason. The 8-round sphere of
+ * default yarn table has square stitches (2π·h/w ≈ 6.3), so six increases lie flat or cup
+ * very slightly, never ruffle. The 8-round sphere of
  * docs/FORMAT.md (one even round) still comes out as a flattened ball — its pole-to-pole path
  * is barely longer than its equator radius. That is the fabric's geometry, not a solver
  * artefact; the classic ball with four even rounds is round.
@@ -449,7 +450,11 @@ function buildParticles(graph: StitchGraph, closed: boolean, bendingK: number): 
         slots.forEach((s, j) => {
           const q = part(s.node, s.slot);
           const dx = LEG_LEAN * (i - (mine.length - 1) / 2 - (j - (m - 1) / 2)) * w;
-          spring(q, c, Math.sqrt(hc * hc + dx * dx), 1);
+          // Into the magic ring: the first round needs at least its own polygon's radius,
+          // else the ring pulls it in and its stitches buckle out of the plane.
+          const ringRadius =
+            nodes[s.node]!.code === "MR" ? w / (2 * Math.sin(Math.PI / Math.max(3, fabric[node.rowIndex]!.length))) : 0;
+          spring(q, c, Math.max(ringRadius, Math.sqrt(hc * hc + dx * dx)), 1);
           if (!list.includes(q)) list.push(q);
         });
         parentsOfPart.set(c, list);
@@ -470,6 +475,12 @@ function buildParticles(graph: StitchGraph, closed: boolean, bendingK: number): 
     if (e.kind !== "prev") continue;
     const A = nodes[e.a]!;
     const B = nodes[e.b]!;
+    // The step from one round into the next: in the piece the yarn there only carries
+    // tension, and the stitch is held by its parent and the round's seam. As a spring at the
+    // procedural layout's distance it shears the seam and warps flat discs into a saddle.
+    if (A.rowIndex !== B.rowIndex && !A.lift && !B.lift && graph.rows[A.rowIndex]!.closed && graph.rows[B.rowIndex]!.closed) {
+      continue;
+    }
     let rest = e.restLength;
     if (!A.lift && !B.lift && A.rowIndex === B.rowIndex) {
       // Span-based rest length: each of A's and B's particles is one stitch wide.
