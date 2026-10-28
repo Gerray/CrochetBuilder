@@ -93,13 +93,14 @@ describe("palette helpers", () => {
       row("e", [sc(6)]),
     ];
     expect(rowStartColors(rows, PALETTE)).toEqual([
-      { id: "weiss", changed: false, unknown: false },
-      { id: "rosa", changed: true, unknown: false },
-      { id: "rosa", changed: false, unknown: false },
-      { id: "weiss", changed: true, unknown: true },
-      { id: "weiss", changed: false, unknown: false },
+      { id: "weiss", changed: false, unknown: false, before: "weiss" },
+      { id: "rosa", changed: true, unknown: false, before: "weiss" },
+      { id: "rosa", changed: false, unknown: false, before: "rosa" },
+      // Row c ended in Weiß (mid-row change); d's own colour is unknown and ignored.
+      { id: "weiss", changed: true, unknown: true, before: "weiss" },
+      { id: "weiss", changed: false, unknown: false, before: "weiss" },
     ]);
-    expect(rowStartColors(rows, [])[0]).toEqual({ id: undefined, changed: false, unknown: false });
+    expect(rowStartColors(rows, [])[0]).toEqual({ id: undefined, changed: false, unknown: false, before: undefined });
   });
 
   it("adopts colours written in a row's text into the palette", () => {

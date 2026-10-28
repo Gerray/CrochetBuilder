@@ -191,6 +191,8 @@ export interface RowColor {
   changed: boolean;
   /** The row's own colour is not in the palette (shown as such, ignored for colouring, E22). */
   unknown: boolean;
+  /** The colour the work is in just before the row (what "no change" continues with). */
+  before: string | undefined;
 }
 
 /**
@@ -201,10 +203,11 @@ export function rowStartColors(rows: readonly Row[], palette: readonly Pick<Pale
   const known = new Set(palette.map((c) => c.id));
   let current = palette[0]?.id;
   return rows.map((row) => {
+    const before = current;
     const own = row.color;
     const unknown = own !== undefined && !known.has(own);
     if (own !== undefined && !unknown) current = own;
-    const start: RowColor = { id: current, changed: own !== undefined, unknown };
+    const start: RowColor = { id: current, changed: own !== undefined, unknown, before };
     for (const atom of expandRow(row)) {
       if (atom.color !== undefined && known.has(atom.color)) current = atom.color;
     }

@@ -1,7 +1,11 @@
 import { useEffect, useRef, useState, type Dispatch, type KeyboardEvent } from "react";
+import type { Finish, PartContent, Stuffing } from "@crochetbuilder/engine";
 import type { BuilderDoc } from "../state/document.js";
 import { MAX_PART_QUANTITY, MAX_PARTS, type EditorAction } from "../state/editor.js";
 import {
+  automaticFinish,
+  automaticStuffing,
+  largeGatheredRound,
   findingsSummary,
   partFindings,
   partName,
@@ -12,6 +16,7 @@ import {
 } from "../state/parts.js";
 import { NumberField } from "./fields.js";
 import { focusLater } from "./focus.js";
+import { PaletteStrip } from "./palette.js";
 import { registerPendingEdit } from "./pendingEdits.js";
 
 /** Id of the element the tabs control (the row editor of the shown part). */
@@ -233,6 +238,12 @@ export function PartsBar(props: PartsBarProps) {
         </span>
       </div>
 
+      <div className="part-settings" role="group" aria-label={`Einstellungen von „${partName(part.name, selected)}“`}>
+        <PartFinishFields content={part.content} index={selected} dispatch={dispatch} />
+        <PaletteStrip doc={doc} dispatch={dispatch} />
+      </div>
+      <FinishHint content={part.content} index={selected} dispatch={dispatch} />
+
       {props.deletedName !== null && (
         <div className="parts-notice" role="status">
           <span>„{props.deletedName}“ gelöscht.</span>
@@ -248,6 +259,94 @@ export function PartsBar(props: PartsBarProps) {
         </div>
       )}
     </section>
+  );
+}
+
+export const FINISH_LABELS: Record<Finish, string> = {
+  open: "Offen",
+  gather: "Zusammengezogen",
+  flat: "Flach zusammengehäkelt",
+};
+export const STUFFING_LABELS: Record<Stuffing, string> = { none: "Keine", light: "Leicht", firm: "Fest" };
+const FINISH_TITLES: Record<Finish, string> = {
+  open: "Die letzte Runde bleibt offen (z. B. Arme, die angenäht werden)",
+  gather: "Die letzte Runde wird zusammengezogen (Kugel, Kopf)",
+  flat: "Die letzte Runde wird flach zusammengehäkelt (Ohren, Füße)",
+};
+
+/**
+ * How the shown part is finished and stuffed (format v2). "Automatisch" leaves it to the
+ * engine and says what it decides: a closed piece is gathered and stuffed firmly, anything
+ * else stays open and empty.
+ */
+function PartFinishFields({ content, index, dispatch }: { content: PartContent; index: number; dispatch: Dispatch<EditorAction> }) {
+  const autoFinish = automaticFinish(content);
+  const autoStuffing = automaticStuffing(content);
+  return (
+    <>
+      <label className="part-setting">
+        <span className="part-tools-label">Abschluss</span>
+        <select
+          aria-label="Abschluss des Teils"
+          title={content.finish ? FINISH_TITLES[content.finish] : `Automatisch: ${FINISH_TITLES[autoFinish]}`}
+          className={content.finish ? "" : "is-auto"}
+          value={content.finish ?? ""}
+          onChange={(e) =>
+            dispatch({ type: "setPartFinish", index, finish: e.target.value === "" ? null : (e.target.value as Finish) })
+          }
+        >
+          <option value="">Automatisch ({FINISH_LABELS[autoFinish]})</option>
+          {FINISHES.map((f) => (
+            <option key={f} value={f}>
+              {FINISH_LABELS[f]}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label className="part-setting">
+        <span className="part-tools-label">Füllung</span>
+        <select
+          aria-label="Füllung des Teils"
+          title="Wie fest das Teil gefüllt wird – das 3D-Modell wölbt sich entsprechend"
+          className={content.stuffing ? "" : "is-auto"}
+          value={content.stuffing ?? ""}
+          onChange={(e) =>
+            dispatch({ type: "setPartStuffing", index, stuffing: e.target.value === "" ? null : (e.target.value as Stuffing) })
+          }
+        >
+          <option value="">Automatisch ({STUFFING_LABELS[autoStuffing]})</option>
+          {STUFFINGS.map((s) => (
+            <option key={s} value={s}>
+              {STUFFING_LABELS[s]}
+            </option>
+          ))}
+        </select>
+      </label>
+    </>
+  );
+}
+
+const FINISHES: Finish[] = ["open", "gather", "flat"];
+const STUFFINGS: Stuffing[] = ["none", "light", "firm"];
+
+/** A large last round that is gathered automatically: offer to crochet it flat instead. */
+function FinishHint({ content, index, dispatch }: { content: PartContent; index: number; dispatch: Dispatch<EditorAction> }) {
+  // Only while the engine decides: a finish chosen on purpose is not questioned.
+  const count = content.finish === undefined ? largeGatheredRound(content) : null;
+  if (count === null) return null;
+  return (
+    <p className="part-hint" role="status">
+      <span>
+        Zum Zusammenziehen ist die letzte Runde groß ({count} M) – flach zusammenhäkeln?
+      </span>
+      <button
+        type="button"
+        className="btn btn-small"
+        onClick={() => dispatch({ type: "setPartFinish", index, finish: "flat" })}
+      >
+        Flach zusammenhäkeln
+      </button>
+    </p>
   );
 }
 

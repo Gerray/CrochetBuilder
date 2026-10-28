@@ -5,12 +5,14 @@ import { fanOut, isAutoTarget, MAX_RUN_LENGTH, type EditorAction } from "../stat
 import { countLabel, rangeLabel } from "../state/grouping.js";
 import { isInstructionLike } from "../state/labels.js";
 import { findingMessage } from "../state/messages.js";
+import { adoptWrittenColors, type RowColor } from "../state/palette.js";
 import { quickFixes, type QuickFix } from "../state/quickfix.js";
 import type { RowSuggestion } from "../state/suggest.js";
 import { NumberField } from "./fields.js";
 import { FindingFixes } from "./FindingFixes.js";
 import { focusLater } from "./focus.js";
 import { OpEditor } from "./OpEditor.js";
+import { RowColorChip, usePalette } from "./palette.js";
 import { RowTextField, type RowTextExtras } from "./RowTextField.js";
 
 export interface RowCardProps {
@@ -54,6 +56,8 @@ export interface RowCardProps {
   /** Rows just created from this card ("×N", "(4 Runden)") stay with it while it is edited. */
   onExtendHold: (rowIds: readonly string[]) => void;
   onFocusRow: (rowId: string) => void;
+  /** The colour at the start of the card's first row (format v2); absent without colours. */
+  startColor?: RowColor | undefined;
 }
 
 /** A finding as the card shows it: once for the whole group, or for one row of it. */
@@ -88,6 +92,7 @@ function shownFindings(findings: readonly Finding[], rows: readonly Row[], label
 
 function RowCardImpl(props: RowCardProps) {
   const { rows, autoLabels, findings, selected, focusToken, dispatch, onSelect } = props;
+  const palette = usePalette();
   const row = rows[0]!;
   const group = rows.length > 1;
   const rowIds = useMemo(() => rows.map((r) => r.id), [rows]);
@@ -133,19 +138,35 @@ function RowCardImpl(props: RowCardProps) {
 
   // The run's last row after a commit (for Enter after "(4 Runden)").
   const runEnd = useRef<string | null>(null);
-  const commitText = (ops: Op[], target: number | undefined, extras: RowTextExtras) => {
-    const edit: EditorAction =
-      target === undefined ? { type: "setRowOps", rowId: row.id, ops } : { type: "setRowOps", rowId: row.id, ops, target };
+  const commitText = (written: Op[], target: number | undefined, extras: RowTextExtras) => {
+    // Colours written in the text that the palette does not have yet join it (one undo step).
+    let ops = written;
+    let color = extras.color;
+    const before: EditorAction[] = [];
+    if (color !== undefined) {
+      const adopted = adoptWrittenColors(written, color ?? undefined, palette.getDoc());
+      ops = adopted.ops;
+      color = adopted.color ?? null;
+      for (const c of adopted.added) before.push({ type: "addColor", color: c });
+    }
+    const edit: EditorAction = {
+      type: "setRowOps",
+      rowId: row.id,
+      ops,
+      ...(target === undefined ? {} : { target }),
+      ...(color === undefined ? {} : { color }),
+    };
     const rounds = extras.rounds;
     if (rounds === undefined || rounds === rowIds.length) {
       runEnd.current = null;
-      rowDispatch(edit);
+      if (before.length === 0) rowDispatch(edit);
+      else dispatch({ type: "batch", actions: [...before, fanOut(edit, rowIds)] });
       return;
     }
     const length = setRunLength(rowIds, Math.min(rounds, MAX_RUN_LENGTH));
     runEnd.current = length.newIds[length.newIds.length - 1] ?? rowIds[length.length - 1] ?? null;
     props.onExtendHold(length.newIds);
-    dispatch({ type: "batch", actions: [fanOut(edit, rowIds), length] });
+    dispatch({ type: "batch", actions: [...before, fanOut(edit, rowIds), length] });
   };
 
   const applyFix = (fix: QuickFix, ids: readonly string[]) => {
@@ -194,6 +215,16 @@ function RowCardImpl(props: RowCardProps) {
               </button>
             ))}
           </div>
+        )}
+        {!instruction && props.startColor && (
+          <RowColorChip
+            title={title}
+            word={row.type === "row" ? "Reihe" : "Runde"}
+            start={props.startColor}
+            inherited={props.startColor.before}
+            own={row.color}
+            onSet={(color) => rowDispatch({ type: "setRowColor", rowId: row.id, color })}
+          />
         )}
         {!instruction && (
           <StitchCount

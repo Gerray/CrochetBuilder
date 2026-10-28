@@ -3,6 +3,8 @@ import type { Finding, Row } from "@crochetbuilder/engine";
 import type { EditorAction } from "../state/editor.js";
 import type { RowItem } from "../state/grouping.js";
 import { autoRowLabels, isInstructionLike } from "../state/labels.js";
+import { rowStartColors } from "../state/palette.js";
+import { usePalette } from "./palette.js";
 import { previousCountAt, previousCounts, previousStitchRow, type RoundSpec } from "../state/rounds.js";
 import { suggestNextRow } from "../state/suggest.js";
 import { RowCard } from "./RowCard.js";
@@ -46,6 +48,12 @@ export function RowList(props: RowListProps) {
   const { items, byRow } = groups;
   const autoLabels = useMemo(() => autoRowLabels(rows), [rows]);
   const previous = useMemo(() => previousCounts(rows), [rows]);
+  // Colour at the start of every row: only with a palette, or where a row names a colour.
+  const palette = usePalette();
+  const rowColors = useMemo(
+    () => (palette.colors.length > 0 || rows.some((r) => r.color !== undefined) ? rowStartColors(rows, palette.colors) : null),
+    [rows, palette.colors],
+  );
 
   // A focused card keeps its rows together until the focus leaves it (`useRowGroups`).
   const select = useCallback(
@@ -129,6 +137,7 @@ export function RowList(props: RowListProps) {
             onSplit={() => groups.split(ids)}
             onMerge={item.splitRun ? () => groups.merge(item.splitRun!) : undefined}
             onFocusRow={onFocusRow}
+            startColor={rowColors?.[item.start]}
           />
         );
       })}
