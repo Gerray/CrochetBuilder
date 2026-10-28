@@ -182,7 +182,7 @@ describe("composeAssembly: attaching", () => {
   it("turns the whole scene to face +Z on request, keeping it rigid", () => {
     const turned = composeAssembly(doc, [HEAD, EAR], { faceFront: true });
     const h = find(turned.instances, 0);
-    const front = rotate(h.transform.rotation, frame(HEAD.graph, "r1").front);
+    const front = rotate(h.transform.rotation, frame(HEAD.graph, "e1").front); // the widest round
     expect(front[2]).toBeCloseTo(1, 6);
     // Distances between the parts do not change.
     const d0 = len(sub(base(EAR, ear0), base(EAR, ear1)));
@@ -475,3 +475,79 @@ describe("anchorOfNode", () => {
     }
   });
 });
+
+describe("composeAssembly: review fixes", () => {
+  // A body with a flat base (6 → 36), legs (open, 18 stitches at the end) on rounds 1 and 2.
+  const FLAT_BODY = buildModel(
+    part(
+      [
+        row("f1", [st("MR"), st("SC", 6)], 6),
+        row("f2", [st("INC", 6)], 12),
+        row("f3", [rep(6, [st("SC"), st("INC")])], 18),
+        row("f4", [rep(6, [st("SC", 2), st("INC")])], 24),
+        row("f5", [rep(6, [st("SC", 3), st("INC")])], 30),
+        row("f6", [rep(6, [st("SC", 4), st("INC")])], 36),
+        ...["w1", "w2", "w3", "w4"].map((id) => row(id, [st("SC", 36)], 36)),
+      ],
+      "open",
+    ),
+  );
+  const LEG = buildModel(
+    part([row("l1", [st("MR"), st("SC", 6)], 6), row("l2", [st("INC", 6)], 12), row("l3", [rep(6, [st("SC"), st("INC")])], 18), ...["l4", "l5", "l6"].map((id) => row(id, [st("SC", 18)], 18))], "open"),
+  );
+  const yarn = FLAT_BODY.graph.gauge.yarnDiameterMm;
+
+  it("sinks a part on a flat bottom by at most about a yarn diameter", () => {
+    for (const rowId of ["f1", "f2"]) {
+      const scene = composeAssembly(
+        { parts: [{ id: "body", quantity: 1 }, { id: "leg", quantity: 2 }], assembly: [placement({ id: "legs", part: "leg", target: "body", row: rowId, angle: 40 })] },
+        [FLAT_BODY, LEG],
+      );
+      for (const copy of [0, 1]) {
+        const inst = find(scene.instances, 1, copy);
+        const anchor = placementAnchor(FLAT_BODY.graph, rowId, copy === 0 ? 40 : -40)!;
+        expect(len(sub(base(LEG, inst), anchor.point))).toBeLessThanOrEqual(1.05 * yarn);
+      }
+    }
+  });
+
+  it("still sinks on the curved side of a ball (the rim closes up)", () => {
+    const scene = composeAssembly(
+      { parts: [{ id: "head", quantity: 1 }, { id: "leg", quantity: 1 }], assembly: [placement({ id: "x", part: "leg", target: "head", row: "e3", angle: 90 })] },
+      [HEAD, LEG],
+    );
+    const anchor = placementAnchor(HEAD.graph, "e3", 90)!;
+    expect(len(sub(base(LEG, find(scene.instances, 1)), anchor.point))).toBeGreaterThan(0.3 * yarn);
+  });
+
+  it("faces the viewer with the eyes when there are eyes, else with the widest round", () => {
+    const eyesAt = 70;
+    const scene = composeAssembly(
+      { parts: [{ id: "head", quantity: 1 }], assembly: [{ id: "eyes", kind: "eyes", target: "head", row: "e3", angle: eyesAt, spacing: 4 }] },
+      [HEAD],
+      { faceFront: true },
+    );
+    const mid = scale3(add3(scene.eyes[0]!.position, scene.eyes[1]!.position), 0.5);
+    const h = unit([mid[0], 0, mid[2]]);
+    expect(h[2]).toBeGreaterThan(0.95);
+    const plain = composeAssembly({ parts: [{ id: "head", quantity: 1 }] }, [HEAD], { faceFront: true });
+    const front = rotate(find(plain.instances, 0).transform.rotation, frame(HEAD.graph, "e1").front);
+    expect(front[2]).toBeGreaterThan(0.99);
+  });
+
+  it("warns when a mirrored pair would land on itself", () => {
+    const at = (angle: number, rowId = "e2") =>
+      composeAssembly(
+        { parts: [{ id: "body", quantity: 1 }, { id: "ear", quantity: 2 }], assembly: [placement({ id: "p", part: "ear", target: "body", row: rowId, angle })] },
+        [BODY, EAR],
+      ).findings.map((f) => f.code);
+    expect(at(0, "b6")).toEqual(["MIRROR_OVERLAP"]);
+    expect(at(180, "b6")).toEqual(["MIRROR_OVERLAP"]);
+    expect(at(-180, "b6")).toEqual(["MIRROR_OVERLAP"]);
+    expect(at(30, "b10")).toEqual(["MIRROR_OVERLAP"]); // centred on the open top
+    expect(at(30, "b6")).toEqual([]);
+  });
+});
+
+const add3 = (a: V3, b: V3): V3 => [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
+const scale3 = (a: V3, s: number): V3 => [a[0] * s, a[1] * s, a[2] * s];

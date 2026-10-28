@@ -115,6 +115,20 @@ export {
   DEFAULT_EYE_MM,
   DEFAULT_MARK_MM,
 } from "./assembly-scene.js";
+export {
+  placementText,
+  assemblyLines,
+  rowPositionText,
+  rowWord,
+  angleText,
+  degreesText,
+  isMirroredPair,
+  isUsableAttach,
+  partIndexById,
+  partNameById,
+  placementPartName,
+} from "./assembly-text.js";
+export type { PlacementTextDoc } from "./assembly-text.js";
 export type {
   AssemblyScene,
   AssemblyDocument,

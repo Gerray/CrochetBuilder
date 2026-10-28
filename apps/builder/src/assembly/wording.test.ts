@@ -24,7 +24,7 @@ describe("placement wording", () => {
       "Auge 12 mm an Kopf, zwischen Runde 8 und 9, −20°",
     );
     expect(placementText(doc, { id: "x", kind: "attach", part: "nix", target: "kopf", row: "zz", angle: 30 })).toBe(
-      "? an Kopf, Zeile fehlt, 30°",
+      "? an Kopf, Runde fehlt, 30°",
     );
     expect(angleText(180, false)).toBe("hinten");
     expect(angleText(-45.5, false)).toBe("−45,5°");

@@ -15,7 +15,8 @@
  *     group, left to right, so nothing disappears.
  *   - Attaching: an attached part is sewn on with its LAST row (the open end, flat seam or
  *     gathered end). The centre of that row goes to the placement's anchor on the target,
- *     sunk in by the sagitta of the target's curvature over the end's radius so the rim
+ *     sunk in (at most a yarn diameter) by the sagitta of the target's curvature across the round,
+ *     or the measured gap under the rim where that is smaller, so the rim
  *     closes up with the surface; the part's growth axis (+Y in its pose, first row → last
  *     row) points into the target, so the part sticks out along the outward normal.
  *   - Roll around that axis: a part with an open or gathered end turns its own front
@@ -118,7 +119,9 @@ export type AssemblyFindingCode =
   | "SELF_ATTACH"
   | "CYCLE"
   | "NO_MODEL"
-  | "EXTRA_PLACEMENT";
+  | "EXTRA_PLACEMENT"
+  /** A part ×2 with one placement at 0°/180° (or on the target's end): both copies coincide. */
+  | "MIRROR_OVERLAP";
 
 export interface AssemblyFinding {
   code: AssemblyFindingCode;
@@ -143,8 +146,9 @@ export interface ComposeOptions {
   /** Gap between the main group and parts set beside it (mm). Default 15. */
   gapMm?: number;
   /**
-   * Turn the whole scene about the vertical axis so that the main part's front (angle 0)
-   * faces +Z (the default view direction). Default false: the main part keeps its own pose.
+   * Turn the whole scene about the vertical axis so that it faces +Z (the default view
+   * direction): where the eyes look when the main group has eyes, else the front (angle 0)
+   * of the main part's widest round. Default false: the main part keeps its own pose.
    */
   faceFront?: boolean;
 }
@@ -343,7 +347,16 @@ function localAnchor(model: AssemblyPartModel, rowId: string, angleDeg: number, 
   const a = placementAnchor(graph, rowId, angleDeg);
   if (!a) return null;
   const axis = isRound(rows[index]!) ? centroid(graph, rows[index]!.ids) : null;
-  const radius = axis ? Math.hypot(a.point[0] - axis[0], a.point[2] - axis[2]) : Infinity;
+  let radius = Infinity;
+  if (axis) {
+    // The round bends the surface across the axis by cos/R (Meusnier): R over the normal's
+    // radial part. Near a pole or on a flat bottom the normal is almost axial, the surface
+    // there is nearly flat and nothing needs sinking.
+    const radial: Vec3 = [a.point[0] - axis[0], 0, a.point[2] - axis[2]];
+    const R = length(radial);
+    const cos = R > 1e-9 ? Math.abs(dot(a.normal, scale(radial, 1 / R))) : 0;
+    radius = R / Math.max(cos, MIN_RADIAL_COS);
+  }
   return { point: a.point, normal: a.normal, radius, end: false };
 }
 
@@ -352,6 +365,30 @@ function rowStitches(graph: StitchGraph, rowId: string): number {
   const row = graph.rows.find((r) => r.rowId === rowId);
   if (!row) return 1;
   return Math.max(1, fabricIds(graph, row).length);
+}
+
+/** Below this |cos| between normal and radial direction the surface counts as flat. */
+const MIN_RADIAL_COS = 0.05;
+
+/**
+ * How far the target's real surface falls away below the tangent plane at `a` (normal `n`)
+ * under the rim of an end of radius `r`: the mean depth of the target's stitches whose foot
+ * on the plane lies on the rim (0.6 r … r from `a`), counting only the near side of the part.
+ */
+function rimGap(graph: StitchGraph, a: Vec3, n: Vec3, r: number): number {
+  let sum = 0;
+  let count = 0;
+  for (let i = 0; i < graph.nodes.length; i++) {
+    if (!isFabricNode(graph.nodes[i]!)) continue;
+    const d = sub(P(graph, i), a);
+    const along = dot(d, n);
+    if (along > 0 || along < -r) continue;
+    const across = length(reject(d, n));
+    if (across < 0.6 * r || across > r) continue;
+    sum += -along;
+    count++;
+  }
+  return count > 0 ? sum / count : 0;
 }
 
 /** Sagitta of a chord of half-width `r` on a circle of radius `R` (0 when flat). */
@@ -474,6 +511,14 @@ export function composeAssembly(
     attaches.set(part, list);
   }
 
+  /** Mirroring (angle → −angle) does not move it: 0°, 180°, or centred on the target's end. */
+  const mirrorOverlaps = (pl: Placement) => {
+    if (Math.abs(pl.angle) % 180 === 0) return true;
+    const t = byId.get(pl.target);
+    const anchor = t === undefined ? null : localAnchor(models[t]!, pl.row, pl.angle, true);
+    return anchor?.end ?? false;
+  };
+
   // 2. Instances: copy k of a part takes its k-th placement; one placement and quantity ≥ 2
   // mirrors the second copy. Copy 0 is always drawn (placed or beside).
   const drawn: Array<{ part: number; copy: number; assignment?: Assignment }> = [];
@@ -485,6 +530,14 @@ export function composeAssembly(
       findings.push({ code: "EXTRA_PLACEMENT", placementId: extra.id, part, message: `Placement "${extra.id}": part has only ${q} ${q === 1 ? "copy" : "copies"}.` });
     }
     const count = list.length === 0 ? 1 : list.length === 1 ? Math.min(q, 2) : Math.min(q, list.length);
+    if (list.length === 1 && q >= 2 && mirrorOverlaps(list[0]!)) {
+      findings.push({
+        code: "MIRROR_OVERLAP",
+        placementId: list[0]!.id,
+        part,
+        message: `Placement "${list[0]!.id}": the mirrored second copy lands on the first (angle 0 or 180, or centred on the target's end).`,
+      });
+    }
     for (let copy = 0; copy < count; copy++) {
       const placement = list.length === 1 ? list[0] : list[copy];
       const target = placement ? byId.get(placement.target)! : -1;
@@ -535,7 +588,16 @@ export function composeAssembly(
     const n = normalize(rotate(T.rotation, anchor.normal));
     const front = normalize(rotate(T.rotation, frontAt(targetModel.graph, placement.row)));
     const up = rotate(T.rotation, [0, 1, 0]);
-    const sink = anchor.end ? 0 : sagitta(anchor.radius, end.radius);
+    // Sink the end so its rim meets the surface: the curvature across the round (sagitta)
+    // and the measured gap under the rim, whichever is smaller (flat bottoms, poles) — and
+    // never more than a yarn diameter (a seam sits on the fabric, not inside the piece).
+    const sink = anchor.end
+      ? 0
+      : Math.min(
+          sagitta(anchor.radius, end.radius),
+          rimGap(targetModel.graph, anchor.point, anchor.normal, end.radius),
+          targetModel.graph.gauge.yarnDiameterMm,
+        );
     const out = { transform: attachTransform(end, p, n, front, up, sink), root: parent.root };
     local.set(key, out);
     return out;
@@ -575,9 +637,37 @@ export function composeAssembly(
   });
   const main = ranked[0] !== undefined && isRealRoot(ranked[0]) ? ranked[0] : undefined;
 
+  /**
+   * Which way the toy looks, horizontal: where its eyes look (the first eyes on the main
+   * group), else the front of the main part's widest round.
+   */
+  const viewFront = (g: string): Vec3 => {
+    for (const { placement, target } of decorations) {
+      if (placement.kind !== "eyes") continue;
+      const key = instanceKey(target, 0);
+      const at = local.get(key);
+      if (!at || groupOf.get(key) !== g) continue;
+      const a = placementAnchor(models[target]!.graph, placement.row, placement.angle);
+      if (!a) continue;
+      const n = rotate(at.transform.rotation, a.normal);
+      const h: Vec3 = [n[0], 0, n[2]];
+      if (length(h) > 0.2) return normalize(h);
+    }
+    const graph = models[rootPart(g)]!.graph;
+    let widest: string | undefined;
+    let most = -1;
+    for (const r of fabricRows(graph)) {
+      if (isRound(r) && r.ids.length > most) {
+        most = r.ids.length;
+        widest = r.row.rowId;
+      }
+    }
+    return frontAt(graph, widest);
+  };
+
   // Optionally turn everything so the main part faces the viewer (+Z).
   if (opts.faceFront && main !== undefined) {
-    const f = frontAt(models[rootPart(main)]!.graph, undefined);
+    const f = viewFront(main);
     // Rotation about Y taking (fx, 0, fz) to (0, 0, 1).
     const spin: RigidTransform = { rotation: [f[2], 0, -f[0], 0, 1, 0, f[0], 0, f[2]], translation: [0, 0, 0] };
     for (const [key, value] of local) if (value) local.set(key, { ...value, transform: composeTransforms(spin, value.transform) });
