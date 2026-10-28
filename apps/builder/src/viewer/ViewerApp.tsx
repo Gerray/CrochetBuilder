@@ -1,7 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useState, type KeyboardEvent, type ReactNode } from "react";
-import { buildTmcImportUrl, renderedRows, type BuilderExport, type MeshStyle } from "@crochetbuilder/engine";
-import { loadModelCanvas, ViewBoundary, ViewError, type ViewLoader } from "../components/PreviewPane.js";
-import { estimateNote, gaugeLine, materialLine, partHeading, sizeLine } from "../export/labels.js";
+import { buildTmcImportUrl, renderedRows, type BuilderExport, type MeshStyle, type PaletteColor } from "@crochetbuilder/engine";
+import { loadModelCanvas, usePaletteColors, ViewBoundary, ViewError, type ViewLoader } from "../components/PreviewPane.js";
+import { estimateNote, gaugeLine, materialLine, paletteEntries, partHeading, sizeLine } from "../export/labels.js";
 import { partsTotal, totalText } from "../state/parts.js";
 import { builderBaseUrl } from "../export/share.js";
 import { usePreviewModel, type PreviewOptions } from "../preview/usePreviewModel.js";
@@ -13,6 +13,8 @@ export interface ViewerAppProps {
   previewOptions?: PreviewOptions;
   loadView?: ViewLoader;
 }
+
+const NO_COLORS: readonly PaletteColor[] = [];
 
 const STYLES: Array<[MeshStyle, string]> = [
   ["stitches", "Maschen"],
@@ -228,7 +230,8 @@ function ViewerModel({
   const onUnavailable = useCallback(() => setWebgl(false), []);
   const ignorePick = useCallback(() => {}, []);
   const part = exp.parts[index]!;
-  const preview = usePreviewModel(part.content, exp.overview.gauge, style, previewOptions);
+  const palette = usePaletteColors(exp.overview.colors ?? NO_COLORS);
+  const preview = usePreviewModel(part.content, exp.overview.gauge, style, previewOptions, palette.ids);
   const size = preview.model;
 
   let overlay: ReactNode = null;
@@ -277,6 +280,7 @@ function ViewerModel({
                 highlightRowId={null}
                 dimmed={false}
                 showGrid={!embed}
+                colors={palette.colors}
                 resetToken={resetToken}
                 onPickRow={ignorePick}
                 onUnavailable={onUnavailable}
@@ -309,21 +313,35 @@ function Message({ title, children }: { title?: string; children: ReactNode }) {
 
 function PatternText({ exp, part: index }: { exp: BuilderExport; part: number }) {
   const materials = (exp.overview.materials ?? []).map(materialLine).filter(Boolean);
+  const colors = paletteEntries(exp.overview.colors ?? []);
   const estimate = estimateNote(exp.overview.gauge);
   const notes = exp.overview.notes?.trim();
   const several = exp.parts.length > 1;
   return (
     <div className="viewer-text">
-      {materials.length > 0 && (
+      {(materials.length > 0 || colors.length > 0) && (
         <section aria-labelledby="viewer-materials">
           <h2 id="viewer-materials" className="section-title">
             Material
           </h2>
-          <ul className="viewer-list">
-            {materials.map((m, i) => (
-              <li key={i}>{m}</li>
-            ))}
-          </ul>
+          {materials.length > 0 && (
+            <ul className="viewer-list">
+              {materials.map((m, i) => (
+                <li key={i}>{m}</li>
+              ))}
+            </ul>
+          )}
+          {colors.length > 0 && (
+            <ul className="viewer-colors" aria-label="Farben">
+              {colors.map((c, i) => (
+                <li key={i}>
+                  <span className="swatch swatch-md" style={{ background: c.css }} aria-hidden="true" />
+                  {c.name}
+                  {i === 0 && colors.length > 1 && <span className="muted small"> (Anfangsfarbe)</span>}
+                </li>
+              ))}
+            </ul>
+          )}
         </section>
       )}
       <section aria-labelledby="viewer-gauge">

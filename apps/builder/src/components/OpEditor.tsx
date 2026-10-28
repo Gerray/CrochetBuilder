@@ -18,6 +18,7 @@ import type { EditorAction } from "../state/editor.js";
 import type { OpPath } from "../state/op-tree.js";
 import { NumberField } from "./fields.js";
 import { focusLater } from "./focus.js";
+import { OpColorButton } from "./palette.js";
 
 /** Picker order: the MVP stitches first, then the rest, then the special stitches (format v2). */
 const PICKER_CODES: StitchCode[] = [
@@ -265,6 +266,11 @@ function StitchEditor({ rowId, rowTitle, op, path, first, last, dispatch, inGrou
           );
         })}
       </span>
+      <OpColorButton
+        name={name}
+        color={op.color}
+        onSet={(color) => dispatch({ type: "setOpColor", rowId, path, color })}
+      />
       <button
         type="button"
         className="btn btn-small btn-quiet"

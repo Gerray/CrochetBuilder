@@ -101,6 +101,42 @@ describe("colour changes in the notation", () => {
     expect(parseRowText("[Farbe: Weiß]", "de").ok).toBe(false); // a colour change needs a stitch
   });
 
+  it("reads a leading colour change as the row colour with rowColor", () => {
+    const row = { id: "r", type: "round" as const, color: "c2", ops, stitchCountTarget: 12 };
+    for (const locale of NOTATION_LOCALES) {
+      const text = renderRow(row, locale, { colors: PALETTE });
+      expect(parseRowText(text, locale, { colors: PALETTE, rowColor: true }), text).toEqual({ ok: true, ops, color: "c2" });
+    }
+    const ctx = { colors: PALETTE, rowColor: true };
+    // Only the mark: a row colour without stitches; leading spaces are fine.
+    expect(parseRowText("  [Farbe: weiß]", "de", ctx)).toEqual({ ok: true, ops: [], color: "c1" });
+    // Unknown names stay as written; without a leading mark there is no row colour.
+    expect(parseRowText("[Farbe: Mint] 6 fM (6)", "de", ctx)).toEqual({ ok: true, ops: [st("SC", 6)], stitchCountTarget: 6, color: "Mint" });
+    expect(parseRowText("6 fM, [Farbe: Weiß] 1 fM", "de", ctx)).toEqual({ ok: true, ops: [st("SC", 6), st("SC", 1, { color: "c1" })] });
+    // Lenient forms and context still apply after the mark; error positions count from the start.
+    expect(parseRowText("[Farbe: Weiß] fM rundherum", "de", { ...ctx, previousCount: 12 })).toMatchObject({ ok: true, color: "c1", ops: [st("SC", 12)] });
+    expect(parseRowText("[Farbe: Weiß] 6 xyz", "de", ctx)).toMatchObject({ ok: false, code: "unknown-term", position: 16 });
+  });
+
+  it("reads names before ids (a colour renamed away from its id, another took the name)", () => {
+    const palette = [
+      { id: "rosa", name: "Pink" },
+      { id: "rosa-2", name: "Rosa" },
+      { id: "weiss", name: "Weiß" },
+    ];
+    const ctx = { colors: palette, rowColor: true };
+    expect(parseRowText("[Farbe: Rosa] 6 fM", "de", ctx)).toMatchObject({ color: "rosa-2" });
+    expect(parseRowText("[Farbe: rosa] 6 fM", "de", ctx)).toMatchObject({ color: "rosa-2" });
+    expect(parseRowText("[Farbe: Pink] 6 fM", "de", ctx)).toMatchObject({ color: "rosa" });
+    // An id that is no name still resolves.
+    expect(parseRowText("[Farbe: weiss] 6 fM", "de", ctx)).toMatchObject({ color: "weiss" });
+    // Round trip of rendered text.
+    const row = { id: "r", type: "round" as const, color: "rosa", ops: [st("SC", 6, { color: "rosa-2" })], stitchCountTarget: 6 };
+    const text = renderRow(row, "de", { colors: palette });
+    expect(text).toBe("[Farbe: Pink] [Farbe: Rosa] 6 fM");
+    expect(parseRowText(text, "de", ctx)).toEqual({ ok: true, ops: row.ops, color: "rosa" });
+  });
+
   it("shows colour changes in the rendered rows of an export", () => {
     const content: PartContent = {
       schemaVersion: 2,
