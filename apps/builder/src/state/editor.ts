@@ -215,9 +215,39 @@ export function followsActual(row: Row, pinned: readonly string[]): boolean {
   return !pinned.includes(row.id) && row.stitchCountTarget === computeRowStitches(row);
 }
 
-/** The Soll is shown as automatic (muted): not set explicitly and equal to the Ist. */
+/**
+ * The Soll is shown as automatic (muted): not set explicitly and equal to the Ist — or 0 on a
+ * row with stitches, which means "no count declared" (E23).
+ */
 export function isAutoTarget(row: Row, pinned: readonly string[]): boolean {
+  if (row.stitchCountTarget === 0 && row.ops.length > 0) return true;
   return !pinned.includes(row.id) && row.stitchCountTarget === computeRowStitches(row);
+}
+
+/**
+ * A document as the editor holds it (E23): a row with stitches and Soll 0 declares no count,
+ * so its Soll takes the Ist and follows it (not pinned). Returns the inputs unchanged when
+ * there is no such row. Applied to every document that comes in (loaded, imported, opened).
+ */
+export function withAutoTargets(doc: BuilderDoc, pinned: readonly string[]): { doc: BuilderDoc; pinned: readonly string[] } {
+  const filled: string[] = [];
+  const parts = doc.parts.map((part) => {
+    let changed = false;
+    const rows = part.content.rows.map((row) => {
+      if (row.stitchCountTarget !== 0 || row.ops.length === 0) return row;
+      filled.push(row.id);
+      const actual = computeRowStitches(row);
+      if (actual === 0) return row;
+      changed = true;
+      return { ...row, stitchCountTarget: actual };
+    });
+    return changed ? { ...part, content: { ...part.content, rows } } : part;
+  });
+  const unpinned = pinned.filter((id) => !filled.includes(id));
+  return {
+    doc: parts.some((p, i) => p !== doc.parts[i]) ? { ...doc, parts } : doc,
+    pinned: unpinned.length === pinned.length ? pinned : unpinned,
+  };
 }
 
 /**
@@ -384,6 +414,8 @@ function applyEdit(state: EditorState, action: EditorAction): DocResult {
       const target = action.target;
       if (!Number.isInteger(target) || target < 0 || target > MAX_STITCH_COUNT_TARGET) return same;
       const row = doc.parts[rowScope]?.content.rows.find((r) => r.id === action.rowId);
+      // A Soll of 0 on a row with stitches declares no count: back to automatic (E23).
+      if (row && target === 0 && row.ops.length > 0) return applyAssist(state, { type: "unpinTarget", rowId: row.id });
       // An unchanged value is a no-op: no pin, no history entry.
       if (!row || row.stitchCountTarget === target) return same;
       const next = withRow(doc, action.rowId, (r) => ({ ...r, stitchCountTarget: target }));
@@ -523,10 +555,10 @@ function applyEdit(state: EditorState, action: EditorAction): DocResult {
     }
 
     case "replaceDocument":
-      return { doc: action.doc, pinned: action.pinned ?? [], scope: state.part, select: 0 };
+      return { ...withAutoTargets(action.doc, action.pinned ?? []), scope: state.part, select: 0 };
 
     case "hydrate":
-      return { doc: action.doc, pinned: action.pinned ?? [] };
+      return withAutoTargets(action.doc, action.pinned ?? []);
 
     case "selectPart":
     case "undo":
@@ -714,7 +746,8 @@ export function editorReducer(state: EditorState, action: EditorAction): EditorS
     };
   }
   if (action.type === "hydrate") {
-    return initEditorState(action.doc, action.pinned ?? [], action.part ?? 0);
+    const loaded = withAutoTargets(action.doc, action.pinned ?? []);
+    return initEditorState(loaded.doc, loaded.pinned, action.part ?? 0);
   }
   if (action.type === "endTyping") {
     return state.lastKey === undefined ? state : { ...state, lastKey: undefined };

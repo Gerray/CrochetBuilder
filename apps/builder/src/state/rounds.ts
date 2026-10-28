@@ -62,6 +62,16 @@ export function decreaseRound(count: number, sections = 6): RoundSpec | null {
   return { ops, count: count - sections };
 }
 
+/**
+ * The ops of a row worked flat: "1 Lm" (turning chain, makes and uses no stitch) in front,
+ * unless the row already starts with a chain — the potholder demo's convention.
+ */
+export function withTurningChain(ops: readonly Op[]): Op[] {
+  const first = ops[0];
+  if (first?.kind === "stitch" && first.code === "CH") return structuredClone([...ops]);
+  return [stitch("CH", 1), ...structuredClone([...ops])];
+}
+
 /** A line that takes part in the stitch chain: it has stitches and is no free instruction. */
 export function isStitchRow(row: Row): boolean {
   return row.ops.length > 0 && !isInstructionRow(row);

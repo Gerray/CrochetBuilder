@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { Op, Row } from "@crochetbuilder/engine";
+import type { Finding, Op, Row } from "@crochetbuilder/engine";
 import { insertRounds, setRunLength } from "./actions.js";
 import { emptyDocument } from "./document.js";
 import {
@@ -10,10 +10,11 @@ import {
   followsActual,
   initEditorState,
   isAutoTarget,
+  withAutoTargets,
   type EditorAction,
   type EditorState,
 } from "./editor.js";
-import { countLabel, groupRows, rangeLabel } from "./grouping.js";
+import { activeSplits, cardFindings, countLabel, groupRows, rangeLabel } from "./grouping.js";
 import { ballStart } from "./snippets.js";
 
 const sc = (count: number): Op => ({ kind: "stitch", code: "SC", count });
@@ -59,6 +60,32 @@ describe("Soll follows Ist", () => {
     const zero = withRows([stitchRow("a", [sc(5)], 0)], ["a"]);
     expect(followsActual(row(zero, "a"), zero.pinned)).toBe(true);
     expect(row(run(zero, { type: "setRowOps", rowId: "a", ops: [sc(6)] }), "a").stitchCountTarget).toBe(6);
+  });
+
+  it("a Soll of 0 on a row with stitches means automatic (E23)", () => {
+    // Shown as automatic even when pinned (an import declared no count).
+    const zero = stitchRow("a", [sc(5)], 0);
+    expect(isAutoTarget(zero, ["a"])).toBe(true);
+    expect(isAutoTarget(stitchRow("b", [sc(5)], 5), ["b"])).toBe(false);
+    // Typing 0 hands the Soll back to the Ist.
+    let s = run(withRows([stitchRow("a", [sc(5)], 7)], ["a"]), { type: "setTarget", rowId: "a", target: 0 });
+    expect(row(s, "a").stitchCountTarget).toBe(5);
+    expect(s.pinned).toEqual([]);
+    // Every document that comes in gets its undeclared counts filled in, unpinned.
+    const doc = emptyDocument("x");
+    doc.parts[0]!.content.rows = [stitchRow("a", [sc(5)], 0), stitchRow("c", [{ kind: "stitch", code: "CH", count: 9 }], 0), stitchRow("d", [sc(5)], 5)];
+    const plain = withAutoTargets(doc, ["a", "c", "d"]);
+    expect(plain.doc.parts[0]!.content.rows.map((r) => r.stitchCountTarget)).toEqual([5, 0, 5]);
+    expect(plain.pinned).toEqual(["d"]);
+    s = run(fresh(), { type: "replaceDocument", doc, pinned: ["a", "c", "d"] });
+    expect(rows(s).map((r) => r.stitchCountTarget)).toEqual([5, 0, 5]);
+    s = run(fresh(), { type: "hydrate", doc, pinned: ["a"] });
+    expect(s.pinned).toEqual([]);
+    expect(row(s, "a").stitchCountTarget).toBe(5);
+    // Nothing to fill: the very same objects.
+    const clean = emptyDocument("y");
+    const same = withAutoTargets(clean, ["y"]);
+    expect(same.doc).toBe(clean);
   });
 
   it("goes back to automatic when unpinned", () => {
@@ -198,14 +225,42 @@ describe("grouping", () => {
     expect(items.map((i) => i.start)).toEqual([0, 1, 4, 5, 6, 7, 8, 9, 10]);
   });
 
-  it("split rows stay single", () => {
-    expect(groupRows(list, new Set(["3"])).map((i) => i.rows.length).slice(0, 4)).toEqual([1, 1, 1, 1]);
-    expect(groupRows(list, new Set(["4"])).map((i) => i.rows.length).slice(0, 3)).toEqual([1, 2, 1]);
+  it("a split run shows single cards while it is unchanged; the first one can merge it again", () => {
+    const items = groupRows(list, { split: [["2", "3", "4"]] });
+    expect(items.map((i) => i.rows.length).slice(0, 4)).toEqual([1, 1, 1, 1]);
+    expect(items[1]!.splitRun).toEqual(["2", "3", "4"]);
+    expect(items[2]!.splitRun).toBeUndefined();
+    expect(activeSplits(list, [["2", "3", "4"], ["2", "3"]])).toEqual([["2", "3", "4"]]);
+    // The run changed (a copy of row 3 was added, e.g. by "×N"): the split is stale, the run
+    // groups again — the copy with the original.
+    const copied = [...list.slice(0, 3), { ...list[2]!, id: "3b" }, ...list.slice(3)];
+    expect(activeSplits(copied, [["2", "3", "4"]])).toEqual([]);
+    expect(groupRows(copied, { split: [["2", "3", "4"]] })[1]!.rows.map((r) => r.id)).toEqual(["2", "3", "3b", "4"]);
+  });
+
+  it("the card being edited neither joins nor takes in its neighbours", () => {
+    const shape = (held: string[]) =>
+      groupRows(list, { held: new Set(held) })
+        .slice(0, 4)
+        .map((i) => i.rows.map((r) => r.id).join(","));
+    expect(shape(["4"])).toEqual(["1", "2,3", "4", "n"]);
+    expect(shape(["2", "3", "4"])).toEqual(["1", "2,3,4", "n", "5"]);
+    expect(shape(["3"])).toEqual(["1", "2", "3", "4"]);
   });
 
   it("rows with different findings never share a card", () => {
     const findings = new Map([["3", [{ rowId: "3", severity: "warning", code: "CONSUMES_UNDERFLOW", message: "", expected: 9, actual: 6 } as const]]]);
-    expect(groupRows(list, new Set(), findings).map((i) => i.rows.length).slice(0, 4)).toEqual([1, 1, 1, 1]);
+    expect(groupRows(list, { findings }).map((i) => i.rows.length).slice(0, 4)).toEqual([1, 1, 1, 1]);
+  });
+
+  it("lists a group's finding once, for all its rows", () => {
+    const rows3 = [stitchRow("a", [sc(6)], 6), stitchRow("b", [sc(6)], 7), stitchRow("c", [sc(6)], 7)];
+    const f = (rowId: string): Finding => ({ rowId, severity: "error", code: "STITCH_COUNT_MISMATCH", message: "", expected: 7, actual: 6 });
+    const findings = [f("b"), f("c")];
+    const items = groupRows(rows3, { findings: new Map([["b", [f("b")]], ["c", [f("c")]]]) });
+    const labels = new Map([["a", "Runde 1"], ["b", "Runde 2"], ["c", "Runde 3"]]);
+    expect(cardFindings(findings, items, labels)).toEqual([{ finding: f("b"), rowIds: ["b", "c"], label: "Runde 2–3" }]);
+    expect(cardFindings([f("a")], items, labels)).toEqual([{ finding: f("a"), rowIds: ["a"], label: "Runde 1" }]);
   });
 
   it("labels ranges and counts", () => {

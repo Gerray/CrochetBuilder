@@ -34,13 +34,14 @@ const n = (value: number) => value.toLocaleString("de-DE");
 /** A guess of the tolerant parser (`ParseRowResult.warnings`). */
 export type ParseWarning = NonNullable<Extract<ParseRowResult, { ok: true }>["warnings"]>[number];
 
-/** German hint for a parser guess, shown under the row's text field. */
-export function parseWarningMessage(warning: ParseWarning): string {
+/** German hint for a parser guess, shown under the text field of a round or row. */
+export function parseWarningMessage(warning: ParseWarning, type: Row["type"] = "round"): string {
+  const whole = type === "row" ? "die ganze Reihe" : "die ganze Runde";
   switch (warning) {
     case "repeat-scope-guessed":
-      return "„×n“ gilt hier für die ganze Runde – nur so passt die angegebene Maschenzahl. Bitte prüfen.";
+      return `„×n“ gilt hier für ${whole} – nur so passt die angegebene Maschenzahl. Bitte prüfen.`;
     case "repeat-scope-ambiguous":
-      return "„×n“ ist mehrdeutig: gelesen als Anzahl der letzten Masche. Falls die ganze Runde gemeint war, bitte Klammern setzen.";
+      return `„×n“ ist mehrdeutig: gelesen als Anzahl der letzten Masche. Falls ${whole} gemeint war, bitte Klammern setzen.`;
     case "repeat-count-guessed":
       return "Die Zahl der Wiederholungen wurde aus der angegebenen Maschenzahl bestimmt. Bitte prüfen.";
     case "repeat-count-ambiguous":

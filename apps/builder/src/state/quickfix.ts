@@ -6,8 +6,13 @@
  *                           produce the Soll — consuming exactly what the previous row offers
  *                           ("(2 fM, 1 Abn) ×6" declared 27 after 36 → "×9")
  *   CONSUMES_UNDERFLOW    → "Rest mit n fM auffüllen"; a repeat count that uses every stitch
- *   CONSUMES_OVERFLOW     → the nearest (largest) repeat count that fits into the previous
- *                           row; else, when the last stitch can absorb the excess, shortening it
+ *   CONSUMES_OVERFLOW     → a repeat count that uses exactly the previous row's stitches; else
+ *                           the nearest one that fits plus the rest in fM (never stitches left
+ *                           free); else the last stitch shortened
+ *
+ * A consumption fix changes the row's stitch count. With an automatic Soll that is fine (it
+ * follows). With an explicit Soll, fixes that keep the Soll come first; the others say so in
+ * their label ("… (Soll 32)") and set the Soll along with the stitches.
  *
  * Repeat counts are solved arithmetically: a row's stitch count and consumption are linear in
  * the times of any one repeat group (count = rest + times · per).
@@ -25,8 +30,8 @@ import {
 } from "@crochetbuilder/engine";
 import type { EditorAction } from "./editor.js";
 import * as tree from "./op-tree.js";
-import { previousCountAt } from "./rounds.js";
 import type { OpPath } from "./op-tree.js";
+import { previousCountAt } from "./rounds.js";
 
 export interface QuickFix {
   /** Button text ("Soll auf Ist setzen"). */
@@ -35,6 +40,16 @@ export interface QuickFix {
   title: string;
   action: EditorAction;
 }
+
+/** A new op list for the row, before the Soll is taken into account. */
+interface Candidate {
+  label: string;
+  title: string;
+  ops: Op[];
+}
+
+/** Most repeat-count fixes offered for one finding. */
+const MAX_REPEAT_FIXES = 2;
 
 /** Paths of all repeat groups in the op tree, outermost first. */
 export function repeatPaths(ops: readonly Op[], prefix: OpPath = []): OpPath[] {
@@ -75,29 +90,27 @@ function timesAt(row: Row, path: OpPath): number {
   return op?.kind === "repeat" ? op.times : 0;
 }
 
-function repeatFix(row: Row, path: OpPath, times: number): QuickFix {
+function repeatCandidate(row: Row, path: OpPath, times: number): Candidate {
   return {
     label: `Wiederholung auf ×${times} ändern`,
-    title: `Die Wiederholung ${timesAt(row, path)}× statt dessen ${times}× arbeiten`,
-    action: { type: "setRowOps", rowId: row.id, ops: withTimes(row, path, times).ops },
+    title: `Die Wiederholung ${times}× statt ${timesAt(row, path)}× arbeiten`,
+    ops: withTimes(row, path, times).ops,
   };
 }
 
-/** Different repeat counts, at most `limit`, that satisfy `pick` (one per repeat group). */
-function repeatFixes(row: Row, pick: (path: OpPath) => number | null, limit = 2): QuickFix[] {
-  const fixes: QuickFix[] = [];
+/** One candidate per repeat group whose new times `pick` returns (unchanged times skipped). */
+function repeatCandidates(row: Row, pick: (path: OpPath) => Candidate | null): Candidate[] {
+  const out: Candidate[] = [];
   const seen = new Set<string>();
   for (const path of repeatPaths(row.ops)) {
-    const times = pick(path);
-    if (times === null || times === timesAt(row, path)) continue;
-    const fix = repeatFix(row, path, times);
-    const key = JSON.stringify(fix.action);
-    if (seen.has(key)) continue;
+    const candidate = pick(path);
+    if (!candidate) continue;
+    const key = JSON.stringify(candidate.ops);
+    if (seen.has(key) || key === JSON.stringify(row.ops)) continue;
     seen.add(key);
-    fixes.push(fix);
-    if (fixes.length >= limit) break;
+    out.push(candidate);
   }
-  return fixes;
+  return out;
 }
 
 /** `ops` plus `n` single crochets at the end (merged into a trailing plain "fM"). */
@@ -109,11 +122,45 @@ function appendSingleCrochets(ops: readonly Op[], n: number): Op[] {
   return [...ops, { kind: "stitch", code: "SC", count: n }];
 }
 
-/** Fixes for `finding`; `rows` are the rows of the finding's part. */
-export function quickFixes(finding: Finding, rows: readonly Row[]): QuickFix[] {
+/** The row's Soll was declared (typed or imported, > 0) rather than following the Ist. */
+export function hasExplicitTarget(row: Row, pinned: readonly string[]): boolean {
+  if (row.stitchCountTarget === 0) return false;
+  return pinned.includes(row.id) || row.stitchCountTarget !== computeRowStitches(row);
+}
+
+/**
+ * Candidates → fixes. With an explicit Soll, the ones that keep it come first; the others set
+ * the Soll too and say so.
+ */
+function finish(row: Row, candidates: readonly Candidate[], explicit: boolean, limit: number): QuickFix[] {
+  const target = row.stitchCountTarget;
+  const fixes = candidates.map((c) => {
+    const count = computeRowStitches({ ...row, ops: c.ops });
+    const keepsTarget = !explicit || count === target;
+    const fix: QuickFix = keepsTarget
+      ? { label: c.label, title: c.title, action: { type: "setRowOps", rowId: row.id, ops: c.ops } }
+      : {
+          label: `${c.label} (Soll ${count})`,
+          title: `${c.title}; das Soll ändert sich dabei von ${target} auf ${count}`,
+          action: { type: "setRowOps", rowId: row.id, ops: c.ops, target: count },
+        };
+    return { fix, keepsTarget };
+  });
+  // Stable: fixes that keep the Soll first.
+  return [...fixes.filter((f) => f.keepsTarget), ...fixes.filter((f) => !f.keepsTarget)]
+    .slice(0, limit)
+    .map((f) => f.fix);
+}
+
+/**
+ * Fixes for `finding`; `rows` are the rows of the finding's part, `pinned` the rows whose
+ * Soll was set explicitly.
+ */
+export function quickFixes(finding: Finding, rows: readonly Row[], pinned: readonly string[] = []): QuickFix[] {
   const row = rows.find((r) => r.id === finding.rowId);
   if (!row) return [];
   const offered = finding.expected;
+  const explicit = hasExplicitTarget(row, pinned);
   switch (finding.code) {
     case "STITCH_COUNT_MISMATCH": {
       const target = row.stitchCountTarget;
@@ -123,37 +170,55 @@ export function quickFixes(finding: Finding, rows: readonly Row[]): QuickFix[] {
         action: { type: "adoptTarget", rowId: row.id },
       };
       // The previous row's offer, if the row is worked into one (not a ring start).
-      const index = rows.indexOf(row);
-      const anchor = isRingRow(row) ? undefined : previousCountAt(rows, index);
-      const fixes = repeatFixes(row, (path) => {
+      const anchor = isRingRow(row) ? undefined : previousCountAt(rows, rows.indexOf(row));
+      const candidates = repeatCandidates(row, (path) => {
         const times = solve(linear(row, path, computeRowStitches), target);
-        if (times === null || anchor === undefined) return times;
-        return anchorsConsumed(withTimes(row, path, times)) === anchor ? times : null;
+        if (times === null) return null;
+        if (anchor !== undefined && anchorsConsumed(withTimes(row, path, times)) !== anchor) return null;
+        return repeatCandidate(row, path, times);
       });
-      return [adopt, ...fixes];
+      // Every candidate makes exactly the Soll.
+      return [adopt, ...finish(row, candidates, false, MAX_REPEAT_FIXES)];
     }
     case "CONSUMES_UNDERFLOW": {
       if (offered === undefined || finding.actual === undefined) return [];
       const left = offered - finding.actual;
-      const fill: QuickFix = {
+      const fill: Candidate = {
         label: `Rest mit ${left} fM auffüllen`,
-        title: `${left} feste ${left === 1 ? "Masche" : "Maschen"} ans Ende der Runde setzen`,
-        action: { type: "setRowOps", rowId: row.id, ops: appendSingleCrochets(row.ops, left) },
+        title: `${left} feste ${left === 1 ? "Masche" : "Maschen"} ans Ende setzen`,
+        ops: appendSingleCrochets(row.ops, left),
       };
-      const fixes = repeatFixes(row, (path) => solve(linear(row, path, anchorsConsumed), offered));
-      return [fill, ...fixes];
+      const repeats = repeatCandidates(row, (path) => {
+        const times = solve(linear(row, path, anchorsConsumed), offered);
+        return times === null ? null : repeatCandidate(row, path, times);
+      });
+      return finish(row, [fill, ...repeats], explicit, 1 + MAX_REPEAT_FIXES);
     }
     case "CONSUMES_OVERFLOW": {
       if (offered === undefined || finding.actual === undefined) return [];
-      const fixes = repeatFixes(row, (path) => {
+      const exact = repeatCandidates(row, (path) => {
+        const times = solve(linear(row, path, anchorsConsumed), offered);
+        return times === null ? null : repeatCandidate(row, path, times);
+      });
+      if (exact.length > 0) return finish(row, exact, explicit, MAX_REPEAT_FIXES);
+      // No repeat count fits exactly: the nearest smaller one, the rest in single crochets.
+      const nearest = repeatCandidates(row, (path) => {
         const { rest, per } = linear(row, path, anchorsConsumed);
         if (per <= 0) return null;
-        const times = Math.floor((offered - rest) / per);
-        return times >= 1 ? times : null;
+        const times = Math.min(MAX_TIMES, Math.floor((offered - rest) / per));
+        if (times < 1) return null;
+        const fitted = withTimes(row, path, times);
+        const left = offered - anchorsConsumed(fitted);
+        if (left === 0) return repeatCandidate(row, path, times);
+        return {
+          label: `Wiederholung auf ×${times}, Rest mit ${left} fM`,
+          title: `Die Wiederholung ${times}× statt ${timesAt(row, path)}× arbeiten und ${left} fM ans Ende setzen`,
+          ops: appendSingleCrochets(fitted.ops, left),
+        };
       });
-      if (fixes.length > 0) return fixes;
+      if (nearest.length > 0) return finish(row, nearest, explicit, MAX_REPEAT_FIXES);
       const shorten = shortenLast(row, finding.actual - offered);
-      return shorten ? [shorten] : [];
+      return shorten ? finish(row, [shorten], explicit, 1) : [];
     }
     default:
       return [];
@@ -161,7 +226,7 @@ export function quickFixes(finding: Finding, rows: readonly Row[]): QuickFix[] {
 }
 
 /** The last top-level stitch made shorter by `excess` consumed stitches, if it divides. */
-function shortenLast(row: Row, excess: number): QuickFix | null {
+function shortenLast(row: Row, excess: number): Candidate | null {
   const index = row.ops.length - 1;
   const last = row.ops[index];
   if (last?.kind !== "stitch") return null;
@@ -173,7 +238,7 @@ function shortenLast(row: Row, excess: number): QuickFix | null {
   ops[index] = { ...last, count };
   return {
     label: `Auf ${count} statt ${last.count} kürzen`,
-    title: `Die letzte Angabe so kürzen, dass die Runde in die Maschen der Vorrunde passt`,
-    action: { type: "setRowOps", rowId: row.id, ops },
+    title: "Die letzte Angabe so kürzen, dass sie genau in die Maschen davor passt",
+    ops,
   };
 }

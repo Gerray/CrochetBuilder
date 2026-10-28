@@ -233,9 +233,79 @@ describe("quick fixes", () => {
     const panel = screen.getByRole("region", { name: /^Prüfung/ });
     fireEvent.click(within(panel).getByRole("button", { name: "Soll auf Ist setzen" }));
     expect(soll("Runde 9").value).toBe("21");
-    // Now round 10 works into 18 of 21: fill the rest.
-    fireEvent.click(within(panel).getByRole("button", { name: "Rest mit 3 fM auffüllen" }));
+    // Now round 10 works into 18 of 21: fill the rest. Its Soll 12 was declared by the
+    // pattern, so the fix says that it changes it.
+    fireEvent.click(within(panel).getByRole("button", { name: "Rest mit 3 fM auffüllen (Soll 15)" }));
     expect(field("Runde 10").value).toBe("6× (1 fM, 1 Abn), 3 fM");
+    expect(soll("Runde 10").value).toBe("15");
+  });
+
+  it("a group's finding shows once in the panel and its fix goes to every round", async () => {
+    await renderApp();
+    await loadBall();
+    fireEvent.change(soll("Runde 5–8"), { target: { value: "30" } });
+    const panel = screen.getByRole("region", { name: /^Prüfung/ });
+    const entries = within(panel).getAllByRole("button", { name: /Maschenzahl stimmt nicht/ });
+    expect(entries.map((e) => e.textContent)).toEqual(["Runde 5–8: Maschenzahl stimmt nicht: Soll 30, Ist 24."]);
+    fireEvent.click(within(panel).getByRole("button", { name: "Soll auf Ist setzen" }));
+    expect(soll("Runde 5–8").value).toBe("24");
+    expect(screen.getByText(/Keine Befunde/)).toBeTruthy();
+  });
+});
+
+describe("cards stay put while they are edited", () => {
+  it("a round that becomes equal to its neighbours joins them only when the focus leaves", async () => {
+    await renderApp();
+    await loadBall();
+    // Round 9 becomes "24 fM"; its declared Soll 18 makes it a mismatch, so it stays apart.
+    const r9 = field("Runde 9");
+    type(r9, "24 fM");
+    fireEvent.blur(r9);
+    expect(cardNames()).toContain("Runde 9");
+    // Working in the card: "Soll übernehmen" makes it equal to rounds 5–8.
+    act(() => soll("Runde 9").focus());
+    fireEvent.click(within(card("Runde 9")).getByRole("button", { name: "Soll übernehmen" }));
+    // Identical to rounds 5–8 now, but still its own card, with the focus kept in it.
+    expect(cardNames()).toContain("Runde 9");
+    await waitFor(() => expect(document.activeElement).toBe(field("Runde 9")));
+    act(() => field("Runde 1").focus());
+    await waitFor(() => expect(cardNames()).toContain("Runde 5–9"));
+  });
+
+  it("aufteilen, zusammenfassen, and ×N on a split round groups the copies with it", async () => {
+    await renderApp();
+    await loadBall();
+    fireEvent.click(screen.getByRole("button", { name: "Runde 5–8 aufteilen" }));
+    expect(cardNames()).toEqual(expect.arrayContaining(["Runde 5", "Runde 6", "Runde 7", "Runde 8"]));
+    fireEvent.click(screen.getByRole("button", { name: "Runde 5 zusammenfassen" }));
+    act(() => field("Runde 1").focus());
+    await waitFor(() => expect(cardNames()).toContain("Runde 5–8"));
+
+    fireEvent.click(screen.getByRole("button", { name: "Runde 5–8 aufteilen" }));
+    fireEvent.click(screen.getByRole("button", { name: "Runde 6 wiederholen" }));
+    const dialog = screen.getByRole("dialog", { name: "Runde 6 wiederholen" });
+    fireEvent.change(within(dialog).getByLabelText("Wie oft Runde 6 insgesamt"), { target: { value: "3" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Übernehmen" }));
+    act(() => field("Runde 1").focus());
+    await waitFor(() => expect(cardNames()).toContain("Runde 5–10"));
+  });
+});
+
+describe("suggestions on blur", () => {
+  it("an untouched suggestion is dropped, a pasted one is kept", async () => {
+    await renderApp();
+    const first = field("Runde 1");
+    act(() => first.focus());
+    expect(first.value).toBe("1 MR, 6 fM");
+    fireEvent.blur(first);
+    expect(ist("Runde 1")).toBe("0");
+
+    act(() => field("Runde 1").focus());
+    // Pasting (or autofilling) exactly the suggested text makes it the user's text.
+    fireEvent.paste(field("Runde 1"));
+    fireEvent.input(field("Runde 1"), { target: { value: "1 MR, 6 fM" } });
+    fireEvent.blur(field("Runde 1"));
+    expect(ist("Runde 1")).toBe("6");
   });
 });
 
@@ -262,6 +332,24 @@ describe("snippets", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Rückgängig" }));
     expect(screen.queryByLabelText("Maschen von Runde 5 als Text")).toBeNull();
+  });
+
+  it("in a piece worked in rows: rows with turning chains, no magic ring", async () => {
+    await renderApp();
+    fireEvent.click(screen.getByRole("button", { name: "Weitere Demos" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: /^Topflappen/ }));
+    await findField("Reihe 2–21");
+    fireEvent.click(screen.getByRole("button", { name: "+ Baustein" }));
+    const dialog = screen.getByRole("dialog", { name: "Baustein einfügen" });
+    expect(within(dialog).getByRole("radio", { name: "Gerade Runden" }).getAttribute("aria-checked")).toBe("true");
+    expect(within(dialog).getByRole("status").textContent).toBe("4 Reihen mit 20 M · am Ende");
+    fireEvent.click(within(dialog).getByRole("radio", { name: "Kugelanfang" }));
+    expect(within(dialog).getByRole("status").textContent).toMatch(/in Reihen gehäkelt/);
+    expect((within(dialog).getByRole("button", { name: "Einfügen" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(within(dialog).getByRole("radio", { name: "Gerade Runden" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Einfügen" }));
+    expect(await findField("Reihe 2–25")).toBeTruthy();
+    expect(field("Reihe 2–25").value).toBe("1 Lm, 20 fM");
   });
 
   it("explains why a snippet does not fit", async () => {

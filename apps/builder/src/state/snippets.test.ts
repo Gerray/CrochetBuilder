@@ -72,6 +72,20 @@ describe("snippets", () => {
     expect(ok(snippetRounds("tube", params({ max: 12, rounds: 1 }), 99))).toEqual([6, 12, 12]);
   });
 
+  it("in a piece worked in rows: turning chains, and no snippet with a magic ring", () => {
+    const even = snippetRounds("even", params({ rounds: 2 }), 20, "row");
+    expect(even.ok && texts(even.rounds)).toEqual(["1 Lm, 20 fM", "1 Lm, 20 fM"]);
+    const down = snippetRounds("decreaseTo", params({ min: 12 }), 24, "row");
+    expect(down.ok && texts(down.rounds)).toEqual(["1 Lm, 6× (2 fM, 1 Abn)", "1 Lm, 6× (1 fM, 1 Abn)"]);
+    for (const kind of ["ballStart", "sphere", "tube"] as const) {
+      expect(snippetRounds(kind, params({}), 20, "row")).toEqual({
+        ok: false,
+        message: "Beginnt mit einem Magischen Ring – das Teil wird hier in Reihen gehäkelt und beginnt mit einer Luftmaschenkette.",
+      });
+    }
+    expect(snippetSummary(evenRounds(20, 2), "row")).toBe("2 Reihen mit 20 M");
+  });
+
   it("summarises what a snippet adds", () => {
     expect(snippetSummary(ballStart(36))).toBe("6 Runden: 6 → 36 M");
     expect(snippetSummary(evenRounds(24, 1))).toBe("1 Runde mit 24 M");

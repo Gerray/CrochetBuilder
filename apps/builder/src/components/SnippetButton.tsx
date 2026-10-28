@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import type { Row } from "@crochetbuilder/engine";
 import type { RoundSpec } from "../state/rounds.js";
 import {
   MAX_SNIPPET_ROUNDS,
   MAX_SNIPPET_STITCHES,
+  RING_SNIPPETS,
   SNIPPETS,
   snippetRounds,
   snippetSummary,
@@ -16,6 +18,8 @@ interface SnippetButtonProps {
   currentCount: number | undefined;
   /** Where it goes, for the popover text ("nach Runde 4", "am Ende"). */
   placeText: string;
+  /** How the piece is worked at the insertion point (rows get a turning chain, no ring). */
+  type: Row["type"];
   onInsert: (rounds: RoundSpec[]) => void;
 }
 
@@ -26,7 +30,7 @@ const KINDS_WITH_MAX: readonly SnippetKind[] = ["ballStart", "sphere", "tube"];
  * "+ Baustein": a small popover with typical runs of rounds (ball start, even rounds,
  * decreases, sphere, tube) inserted after the current row as one undo step.
  */
-export function SnippetButton({ currentCount, placeText, onInsert }: SnippetButtonProps) {
+export function SnippetButton({ currentCount, placeText, type, onInsert }: SnippetButtonProps) {
   const [open, setOpen] = useState(false);
   const [kind, setKind] = useState<SnippetKind>("ballStart");
   const [params, setParams] = useState<SnippetParams>({ max: 36, rounds: 4, min: 6 });
@@ -46,7 +50,7 @@ export function SnippetButton({ currentCount, placeText, onInsert }: SnippetButt
     return () => document.removeEventListener("mousedown", onDown);
   }, [open]);
 
-  const result = useMemo(() => snippetRounds(kind, params, currentCount), [kind, params, currentCount]);
+  const result = useMemo(() => snippetRounds(kind, params, currentCount, type), [kind, params, currentCount, type]);
   const set = (patch: Partial<SnippetParams>) => setParams((p) => ({ ...p, ...patch }));
   const close = () => {
     setOpen(false);
@@ -67,7 +71,11 @@ export function SnippetButton({ currentCount, placeText, onInsert }: SnippetButt
         aria-expanded={open}
         aria-haspopup="dialog"
         title="Typische Rundenfolgen einfügen: Kugelanfang, gerade Runden, Abnahmen, Kugel, Röhre"
-        onClick={() => setOpen((o) => !o)}
+        onClick={() => {
+          // In a piece worked in rows the ring snippets do not apply: start with even rows.
+          if (!open && type === "row" && RING_SNIPPETS.includes(kind)) setKind("even");
+          setOpen((o) => !o);
+        }}
       >
         + Baustein
       </button>
@@ -95,7 +103,11 @@ export function SnippetButton({ currentCount, placeText, onInsert }: SnippetButt
                 role="radio"
                 aria-checked={kind === s.kind}
                 className="snippet-kind"
-                title={s.description}
+                title={
+                  type === "row" && RING_SNIPPETS.includes(s.kind)
+                    ? `${s.description} – nicht für Teile in Reihen (beginnt mit einem Magischen Ring)`
+                    : s.description
+                }
                 onClick={() => setKind(s.kind)}
               >
                 {s.label}
@@ -170,14 +182,17 @@ export function SnippetButton({ currentCount, placeText, onInsert }: SnippetButt
                   value={params.rounds}
                   onValue={(rounds) => rounds !== undefined && set({ rounds })}
                 />
-                <span className="unit">gerade Runden{kind === "even" && currentCount ? ` mit ${currentCount} M` : ""}</span>
+                <span className="unit">
+                  {type === "row" ? "gerade Reihen" : "gerade Runden"}
+                  {kind === "even" && currentCount ? ` mit ${currentCount} M` : ""}
+                </span>
               </label>
             )}
           </div>
 
           <div className="snippet-footer">
             <span className={result.ok ? "snippet-summary" : "snippet-problem"} role="status">
-              {result.ok ? `${snippetSummary(result.rounds)} · ${placeText}` : result.message}
+              {result.ok ? `${snippetSummary(result.rounds, type)} · ${placeText}` : result.message}
             </span>
             <button type="button" className="btn btn-small btn-primary" disabled={!result.ok} onClick={insert}>
               Einfügen

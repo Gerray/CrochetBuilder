@@ -5,9 +5,14 @@
  *
  * Everything works with six sections (six increases / decreases per round), the amigurumi
  * standard, so sizes are multiples of 6.
+ *
+ * In a piece worked in rows ("Reihe") every row starts with its turning chain ("1 Lm, …"),
+ * and the snippets that start with a magic ring are not offered (a flat piece starts with
+ * a chain).
  */
 
-import { decreaseRound, increaseRound, plainRound, ringStart, type RoundSpec } from "./rounds.js";
+import type { Row } from "@crochetbuilder/engine";
+import { decreaseRound, increaseRound, plainRound, ringStart, withTurningChain, type RoundSpec } from "./rounds.js";
 
 export type SnippetKind = "ballStart" | "even" | "decreaseTo" | "sphere" | "tube";
 
@@ -93,11 +98,30 @@ export function tube(max: number, rounds: number): RoundSpec[] {
   return [...ballStart(max), ...evenRounds(max, rounds)];
 }
 
+/** Snippets that begin with a magic ring (not for pieces worked in rows). */
+export const RING_SNIPPETS: readonly SnippetKind[] = ["ballStart", "sphere", "tube"];
+
 /**
  * The rounds of snippet `kind`, or a German reason why it does not fit. `current` is the
- * stitch count of the row it is inserted after (needed by "Gerade Runden" and "Abnehmen bis").
+ * stitch count of the row it is inserted after (needed by "Gerade Runden" and "Abnehmen bis"),
+ * `type` how the piece is worked there.
  */
-export function snippetRounds(kind: SnippetKind, params: SnippetParams, current: number | undefined): SnippetResult {
+export function snippetRounds(
+  kind: SnippetKind,
+  params: SnippetParams,
+  current: number | undefined,
+  type: Row["type"] = "round",
+): SnippetResult {
+  if (type !== "row") return roundSnippet(kind, params, current);
+  if (RING_SNIPPETS.includes(kind)) {
+    return fail("Beginnt mit einem Magischen Ring – das Teil wird hier in Reihen gehäkelt und beginnt mit einer Luftmaschenkette.");
+  }
+  const result = roundSnippet(kind, params, current);
+  if (!result.ok) return result;
+  return { ok: true, rounds: result.rounds.map((r) => ({ ops: withTurningChain(r.ops), count: r.count })) };
+}
+
+function roundSnippet(kind: SnippetKind, params: SnippetParams, current: number | undefined): SnippetResult {
   switch (kind) {
     case "ballStart":
     case "sphere": {
@@ -128,13 +152,13 @@ export function snippetRounds(kind: SnippetKind, params: SnippetParams, current:
 }
 
 /** "6 Runden: 6 → 36 M" — what a snippet adds, for the preview line. */
-export function snippetSummary(rounds: readonly RoundSpec[]): string {
+export function snippetSummary(rounds: readonly RoundSpec[], type: Row["type"] = "round"): string {
   if (rounds.length === 0) return "";
   const first = rounds[0]!.count;
   const last = rounds[rounds.length - 1]!.count;
   const most = Math.max(...rounds.map((r) => r.count));
   const n = rounds.length;
-  const word = n === 1 ? "Runde" : "Runden";
+  const word = type === "row" ? (n === 1 ? "Reihe" : "Reihen") : n === 1 ? "Runde" : "Runden";
   if (first === last && most === first) return `${n} ${word} mit ${first} M`;
   const path = most > first && most > last ? [first, most, last] : [first, last];
   return `${n} ${word}: ${path.join(" → ")} M`;

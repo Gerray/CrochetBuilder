@@ -3,7 +3,7 @@ import { MAX_COUNT, MAX_STITCH_COUNT_TARGET, type Mod, type Op, type Row } from 
 import { demoDocument, emptyDocument } from "./document.js";
 import { currentPart, editorReducer, initEditorState, type EditorAction, type EditorState } from "./editor.js";
 import { autoRowLabels, displayRowLabels, isInstructionLike } from "./labels.js";
-import { findingMessage, parseErrorMessage } from "./messages.js";
+import { findingMessage, parseErrorMessage, parseWarningMessage } from "./messages.js";
 import { shortcutFor, type KeyInfo } from "./shortcuts.js";
 import { parseStored } from "./storage.js";
 import { parseRowText } from "@crochetbuilder/engine";
@@ -14,6 +14,15 @@ const rep = (times: number, ops: Op[]): Op => ({ kind: "repeat", times, ops });
 const run = (s: EditorState, ...actions: EditorAction[]) => actions.reduce(editorReducer, s);
 const fresh = () => initEditorState(emptyDocument("r1"));
 const row = (s: EditorState, id = "r1"): Row => currentPart(s.doc).rows.find((r) => r.id === id)!;
+
+describe("parser hints", () => {
+  it("name a row a row", () => {
+    expect(parseWarningMessage("repeat-scope-guessed")).toContain("die ganze Runde");
+    expect(parseWarningMessage("repeat-scope-guessed", "row")).toContain("die ganze Reihe");
+    expect(parseWarningMessage("repeat-scope-ambiguous", "row")).toContain("die ganze Reihe");
+    expect(parseWarningMessage("repeat-count-ambiguous", "row")).not.toContain("Runde");
+  });
+});
 
 describe("reducer limits", () => {
   it("refuses counts, repeats and rows over the limits", () => {

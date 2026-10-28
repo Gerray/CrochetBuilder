@@ -47,6 +47,12 @@ export interface RowCardProps {
   onMove: (delta: -1 | 1) => void;
   /** Show a group as single cards. */
   onSplit: () => void;
+  /** On the first card of a split run: show the run as one card again. */
+  onMerge?: (() => void) | undefined;
+  /** The focus left the card (it may group with its neighbours again). */
+  onRelease: (rowIds: readonly string[]) => void;
+  /** Rows just created from this card ("×N", "(4 Runden)") stay with it while it is edited. */
+  onExtendHold: (rowIds: readonly string[]) => void;
   onFocusRow: (rowId: string) => void;
 }
 
@@ -138,6 +144,7 @@ function RowCardImpl(props: RowCardProps) {
     }
     const length = setRunLength(rowIds, Math.min(rounds, MAX_RUN_LENGTH));
     runEnd.current = length.newIds[length.newIds.length - 1] ?? rowIds[length.length - 1] ?? null;
+    props.onExtendHold(length.newIds);
     dispatch({ type: "batch", actions: [fanOut(edit, rowIds), length] });
   };
 
@@ -153,6 +160,9 @@ function RowCardImpl(props: RowCardProps) {
       className={className}
       aria-labelledby={titleId}
       onFocusCapture={() => onSelect(row.id, rowIds)}
+      onBlurCapture={(e) => {
+        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) props.onRelease(rowIds);
+      }}
     >
       <header className="row-head">
         <h3 id={titleId} className="row-title">
@@ -186,7 +196,13 @@ function RowCardImpl(props: RowCardProps) {
           </div>
         )}
         {!instruction && (
-          <StitchCount row={row} title={title} auto={rows.every((r) => isAutoTarget(r, props.pinned))} dispatch={rowDispatch} />
+          <StitchCount
+            row={row}
+            title={title}
+            auto={rows.every((r) => isAutoTarget(r, props.pinned))}
+            dispatch={rowDispatch}
+            onAdopted={() => props.onFocusRow(row.id)}
+          />
         )}
         <RowActions {...props} title={title} rowIds={rowIds} group={group} instruction={instruction} />
       </header>
@@ -243,7 +259,10 @@ function RowCardImpl(props: RowCardProps) {
                 {rowLabel && <strong>{rowLabel}: </strong>}
                 {findingMessage(finding, row)}
               </span>
-              <FindingFixes fixes={quickFixes(finding, props.partRows)} onApply={(fix) => applyFix(fix, ids)} />
+              <FindingFixes
+                fixes={quickFixes(finding, props.partRows, props.pinned)}
+                onApply={(fix) => applyFix(fix, ids)}
+              />
             </li>
           ))}
         </ul>
@@ -259,11 +278,14 @@ function StitchCount({
   title,
   auto,
   dispatch,
+  onAdopted,
 }: {
   row: Row;
   title: string;
   auto: boolean;
   dispatch: Dispatch<EditorAction>;
+  /** "Soll übernehmen" disappears once used: the card takes the focus back. */
+  onAdopted: () => void;
 }) {
   const actual = computeRowStitches(row);
   const mismatch = actual !== row.stitchCountTarget;
@@ -305,7 +327,10 @@ function StitchCount({
           type="button"
           className="btn btn-small"
           title="Ist-Maschenzahl als Soll übernehmen"
-          onClick={() => dispatch({ type: "adoptTarget", rowId: row.id })}
+          onClick={() => {
+            dispatch({ type: "adoptTarget", rowId: row.id });
+            onAdopted();
+          }}
         >
           Soll übernehmen
         </button>
@@ -330,6 +355,8 @@ function RowNote({ row, title, dispatch }: { row: Row; title: string; dispatch: 
       placeholder="Notiz zur Runde, z. B. „Markierer setzen“"
       autoFocus={open && row.note === undefined}
       value={row.note ?? ""}
+      // While it has the focus the field stays, even when the note is emptied.
+      onFocus={() => setOpen(true)}
       onChange={(e) => dispatch({ type: "updateRow", rowId: row.id, patch: { note: e.target.value } })}
       onBlur={() => setOpen(false)}
     />
@@ -350,6 +377,8 @@ function RowActions({
   onDelete,
   onMove,
   onSplit,
+  onMerge,
+  onExtendHold,
   onFocusRow,
 }: RowCardProps & { title: string; rowIds: readonly string[]; group: boolean; instruction: boolean }) {
   const first = rowIds[0]!;
@@ -393,7 +422,9 @@ function RowActions({
           word={word}
           count={rowIds.length}
           onApply={(n) => {
-            dispatch(setRunLength(rowIds, n));
+            const action = setRunLength(rowIds, n);
+            onExtendHold(action.newIds);
+            dispatch(action);
             onFocusRow(first);
           }}
         />
@@ -412,15 +443,31 @@ function RowActions({
           aufteilen
         </button>
       ) : (
-        <button
-          type="button"
-          className="btn btn-icon btn-quiet"
-          aria-label={`${title} duplizieren`}
-          title="Duplizieren"
-          onClick={() => onDuplicate(first)}
-        >
-          ⧉
-        </button>
+        <>
+          {onMerge && (
+            <button
+              type="button"
+              className="btn btn-small btn-quiet row-split"
+              aria-label={`${title} zusammenfassen`}
+              title={`Die gleichen ${word === "Reihe" ? "Reihen" : "Runden"} ab hier wieder als eine Karte zeigen`}
+              onClick={() => {
+                onMerge();
+                onFocusRow(first);
+              }}
+            >
+              zusammenfassen
+            </button>
+          )}
+          <button
+            type="button"
+            className="btn btn-icon btn-quiet"
+            aria-label={`${title} duplizieren`}
+            title="Duplizieren"
+            onClick={() => onDuplicate(first)}
+          >
+            ⧉
+          </button>
+        </>
       )}
       <button
         type="button"

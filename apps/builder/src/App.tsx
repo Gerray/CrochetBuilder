@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
+import type { Row } from "@crochetbuilder/engine";
 import type { ExportActions } from "./components/ExportMenu.js";
 import { focusLater } from "./components/focus.js";
 import { PART_PANEL_ID, PartsBar, partTabId } from "./components/PartsBar.js";
 import { commitPendingEdits } from "./components/pendingEdits.js";
 import { PreviewPane } from "./components/PreviewPane.js";
 import { RowList, type FocusRequest } from "./components/RowList.js";
+import { useRowGroups } from "./components/useRowGroups.js";
 import { SplitPane } from "./components/SplitPane.js";
 import { StorageNotice } from "./components/StorageNotice.js";
 import { TopBar } from "./components/TopBar.js";
@@ -92,6 +94,8 @@ export function App({ exportActions }: AppProps = {}) {
   // The stitch budget of the 3D preview is reported like any other finding.
   const findings = partFindings(part);
   const rows = part.rows;
+  // Cards of the row list (groups of identical rounds), shared with the findings panel.
+  const groups = useRowGroups(rows, findings);
 
   // Everything that swaps the rows in view first commits typed text; an unreadable text stops
   // it (the field keeps its error and the focus).
@@ -182,8 +186,8 @@ export function App({ exportActions }: AppProps = {}) {
 
   // Snippet rounds: one undo step, the last inserted row is selected afterwards.
   const insertSnippet = useCallback(
-    (afterId: string | null, rounds: RoundSpec[]) => {
-      const action = insertRounds(afterId, rounds);
+    (afterId: string | null, rounds: RoundSpec[], type: Row["type"]) => {
+      const action = insertRounds(afterId, rounds, type);
       dispatch(action);
       const last = action.rows[action.rows.length - 1];
       if (last) focusRow(last.id);
@@ -292,7 +296,7 @@ export function App({ exportActions }: AppProps = {}) {
               <div id={PART_PANEL_ID} role="tabpanel" aria-labelledby={partTabId(state.part)}>
                 <RowList
                   rows={rows}
-                  findings={findings}
+                  groups={groups}
                   pinned={state.pinned}
                   selectedRowId={selectedRowId}
                   focusRequest={focusRequest}
@@ -316,6 +320,8 @@ export function App({ exportActions }: AppProps = {}) {
               selectedRowId={selectedRowId}
               highlightRowIds={selectedRows}
               onSelectRow={focusRow}
+              pinned={state.pinned}
+              groups={groups.items}
               onApplyFix={(action) => dispatch(action)}
             />
           }

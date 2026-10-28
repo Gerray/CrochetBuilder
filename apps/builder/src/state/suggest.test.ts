@@ -10,7 +10,7 @@ import {
   previousStitchRow,
   ringStart,
 } from "./rounds.js";
-import { suggestNextRow } from "./suggest.js";
+import { evenSpread, suggestNextRow } from "./suggest.js";
 
 /** Rows from German row texts ("" = empty row being written, "!…" = instruction). */
 function rowsOf(...texts: string[]): Row[] {
@@ -119,11 +119,63 @@ describe("next-round suggestion", () => {
     expect(suggestNextRow(rows, 4)).toMatchObject({ text: "6× (2 fM, 1 Zun)" });
   });
 
+  it("copies only plain rounds: modifiers give a plain N fM", () => {
+    expect(next("1 MR, 6 fM", "6 Zun", "6× (1 fM, 1 Zun)", "18 fM hMg")).toMatchObject({ text: "18 fM", count: 18 });
+  });
+
+  it("continues only evenly spread decreases, and never below 6", () => {
+    // 8 → 6 with two decreases: 2× (1 fM, 1 Abn) would make 4.
+    expect(next("1 MR, 8 fM", "2× (2 fM, 1 Abn)")).toMatchObject({ text: "6 fM", kind: "even" });
+    // An uneven decrease ("2 Abn, 16 fM") is not continued.
+    expect(next("20 fM", "2 Abn, 16 fM")).toMatchObject({ text: "18 fM", kind: "even" });
+    // Evenly spread with twelve sections goes on.
+    expect(next("48 fM", "12× (2 fM, 1 Abn)")).toMatchObject({ text: "12× (1 fM, 1 Abn)", count: 24 });
+    // An uneven increase is not continued either.
+    expect(next("1 MR, 6 fM", "6 Zun", "3 Zun, 3 fM, 3 Zun, 3 fM")).toMatchObject({ kind: "even" });
+  });
+
+  it("in a piece worked in rows: turning chain, no magic ring", () => {
+    const flat = (...texts: string[]) => {
+      const list = rowsOf(...texts, "").map((r) => ({ ...r, type: "row" as const }));
+      return suggestNextRow(list, list.length - 1);
+    };
+    expect(flat()).toBeNull();
+    expect(flat("20 Lm")).toMatchObject({ text: "1 Lm, 20 fM", count: 20 });
+    expect(flat("20 Lm", "1 Lm, 20 fM")).toMatchObject({ text: "1 Lm, 20 fM" });
+    expect(flat("20 Lm", "1 Lm, 20 fM hMg")).toMatchObject({ text: "1 Lm, 20 fM" });
+    expect(flat("24 Lm", "1 Lm, 24 fM", "1 Lm, 6× (2 fM, 1 Abn)")).toMatchObject({ text: "1 Lm, 6× (1 fM, 1 Abn)", count: 12 });
+  });
+
+  it("knows evenly spread shaping", () => {
+    const ops = (t: string) => {
+      const r = parseRowText(t, "de");
+      if (!r.ok) throw new Error(t);
+      return r.ops;
+    };
+    expect(evenSpread(ops("6 Zun"), "INC")).toBe(6);
+    expect(evenSpread(ops("6× (2 fM, 1 Zun)"), "INC")).toBe(6);
+    expect(evenSpread(ops("1 Lm, 6× (2 fM, 1 Abn)"), "DEC")).toBe(6);
+    expect(evenSpread(ops("6× (2 fM, 1 Abn)"), "INC")).toBeNull();
+    expect(evenSpread(ops("6× (1 fM, 2 Zun)"), "INC")).toBeNull();
+    expect(evenSpread(ops("2 Abn, 16 fM"), "DEC")).toBeNull();
+    const blo: Op[] = [
+      {
+        kind: "repeat",
+        times: 6,
+        ops: [
+          { kind: "stitch", code: "SC", count: 2, modifiers: ["BLO"] },
+          { kind: "stitch", code: "DEC", count: 1 },
+        ],
+      },
+    ];
+    expect(evenSpread(blo, "DEC")).toBeNull();
+  });
+
   it("every suggestion parses back to its own ops", () => {
     const cases = [next(), next("1 MR, 6 fM"), next("24 fM", "6× (2 fM, 1 Abn)"), next("20 Lm", "1 Lm, 20 fM")];
     for (const s of cases) {
-      const parsed = parseRowText(s.text, "de");
-      expect(parsed.ok && parsed.ops).toEqual(s.ops);
+      const parsed = parseRowText(s!.text, "de");
+      expect(parsed.ok && parsed.ops).toEqual(s!.ops);
     }
   });
 });

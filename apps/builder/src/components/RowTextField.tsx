@@ -33,7 +33,10 @@ interface RowTextFieldProps {
  *
  * An empty row offers a suggestion for the next round: focusing the field fills it in,
  * selected, so typing replaces it and Enter (commit and go on) or Tab (commit, stay) takes
- * it. Leaving the field without touching the suggestion leaves the row empty.
+ * it. Leaving the field without touching the suggestion leaves the row empty: a suggestion
+ * is only kept by an explicit Enter or Tab. Text that arrives by input — typed, pasted or
+ * autofilled — is the user's own, even when it equals the suggestion, and is committed on
+ * blur like any typed text.
  */
 export function RowTextField(props: RowTextFieldProps) {
   const { row, inputRef, previousCount, suggestion, onCommit, onEnter, label } = props;
@@ -179,6 +182,14 @@ export function RowTextField(props: RowTextFieldProps) {
           const el = e.currentTarget;
           if (suggestedRef.current && el.selectionStart === el.selectionEnd) el.select();
         }}
+        // Any input (typing, paste, autofill) makes the text the user's own — even when it is
+        // exactly the suggested text, which then counts like typed text on blur.
+        onInput={() => {
+          if (suggestedRef.current) setSuggested(false);
+        }}
+        onPaste={() => {
+          if (suggestedRef.current) setSuggested(false);
+        }}
         onChange={(e) => {
           setDraft(e.target.value);
           if (suggestedRef.current) setSuggested(false);
@@ -218,7 +229,7 @@ export function RowTextField(props: RowTextFieldProps) {
       {!suggested && warnings.length > 0 && (
         <ul id={hintId} className="field-warnings" aria-label="Hinweise zum Text">
           {warnings.map((w) => (
-            <li key={w}>{parseWarningMessage(w)}</li>
+            <li key={w}>{parseWarningMessage(w, row.type)}</li>
           ))}
         </ul>
       )}

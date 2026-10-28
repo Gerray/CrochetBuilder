@@ -1,12 +1,13 @@
-import { useCallback, useMemo, useState, type Dispatch } from "react";
+import { useCallback, useMemo, type Dispatch } from "react";
 import type { Finding, Row } from "@crochetbuilder/engine";
 import type { EditorAction } from "../state/editor.js";
-import { groupRows, type RowItem } from "../state/grouping.js";
+import type { RowItem } from "../state/grouping.js";
 import { autoRowLabels, isInstructionLike } from "../state/labels.js";
-import { previousCountAt, previousCounts, type RoundSpec } from "../state/rounds.js";
+import { previousCountAt, previousCounts, previousStitchRow, type RoundSpec } from "../state/rounds.js";
 import { suggestNextRow } from "../state/suggest.js";
 import { RowCard } from "./RowCard.js";
 import { SnippetButton } from "./SnippetButton.js";
+import type { RowGroups } from "./useRowGroups.js";
 
 export interface FocusRequest {
   rowId: string;
@@ -15,7 +16,8 @@ export interface FocusRequest {
 
 interface RowListProps {
   rows: readonly Row[];
-  findings: readonly Finding[];
+  /** Cards and grouping state (`useRowGroups`, shared with the findings panel). */
+  groups: RowGroups;
   /** Rows whose Soll was set explicitly. */
   pinned: readonly string[];
   selectedRowId: string | null;
@@ -27,8 +29,8 @@ interface RowListProps {
   onAddRow: (afterId: string | null, instruction: boolean) => void;
   onDuplicate: (rowId: string) => void;
   onDelete: (rowIds: readonly string[]) => void;
-  /** Insert snippet rounds after `afterId` (null: at the end). */
-  onInsertRounds: (afterId: string | null, rounds: RoundSpec[]) => void;
+  /** Insert snippet rounds of `type` after `afterId` (null: at the end). */
+  onInsertRounds: (afterId: string | null, rounds: RoundSpec[], type: Row["type"]) => void;
   /** The pattern has more than one part (the tip mentions switching). */
   severalParts?: boolean;
 }
@@ -40,17 +42,19 @@ const NO_FINDINGS: readonly Finding[] = [];
  * rows show as one card ("Runde 7–12", see `grouping.ts`); "aufteilen" shows them singly.
  */
 export function RowList(props: RowListProps) {
-  const { rows, findings, pinned, selectedRowId, focusRequest, dispatch, onSelect, onFocusRow, onAddRow } = props;
+  const { rows, groups, pinned, selectedRowId, focusRequest, dispatch, onSelect, onFocusRow, onAddRow } = props;
+  const { items, byRow } = groups;
   const autoLabels = useMemo(() => autoRowLabels(rows), [rows]);
   const previous = useMemo(() => previousCounts(rows), [rows]);
-  // Rows the user split off a group; they stay single.
-  const [split, setSplit] = useState<ReadonlySet<string>>(() => new Set());
-  const byRow = useMemo(() => {
-    const map = new Map<string, Finding[]>();
-    for (const f of findings) map.set(f.rowId, [...(map.get(f.rowId) ?? []), f]);
-    return map;
-  }, [findings]);
-  const items = useMemo(() => groupRows(rows, split, byRow), [rows, split, byRow]);
+
+  // A focused card keeps its rows together until the focus leaves it (`useRowGroups`).
+  const select = useCallback(
+    (rowId: string, rowIds: readonly string[]) => {
+      groups.hold(rowIds);
+      onSelect(rowId, rowIds);
+    },
+    [groups, onSelect],
+  );
 
   const itemOf = useCallback(
     (rowId: string | null | undefined) => (rowId ? items.find((item) => item.rows.some((r) => r.id === rowId)) : undefined),
@@ -85,6 +89,8 @@ export function RowList(props: RowListProps) {
   const lastRow = rows[rows.length - 1];
   const placeText =
     anchorId && anchorId !== lastRow?.id ? `nach ${autoLabels[anchorIndex] ?? "der Runde"}` : "am Ende";
+  // Rounds or rows: as the piece is worked at the insertion point.
+  const snippetType = rows[anchorIndex]?.type ?? previousStitchRow(rows, anchorIndex + 1)?.type ?? "round";
 
   const lastType = lastRow?.type ?? "round";
 
@@ -112,13 +118,16 @@ export function RowList(props: RowListProps) {
             previousCount={previous[item.start]}
             suggestion={empty ? suggestNextRow(rows, item.start) : null}
             dispatch={dispatch}
-            onSelect={onSelect}
+            onSelect={select}
+            onRelease={groups.release}
+            onExtendHold={groups.extendHold}
             onEnter={onEnter}
             onAddAfter={onAddRow}
             onDuplicate={props.onDuplicate}
             onDelete={props.onDelete}
             onMove={(delta) => move(item, position, delta)}
-            onSplit={() => setSplit((s) => new Set([...s, ...ids]))}
+            onSplit={() => groups.split(ids)}
+            onMerge={item.splitRun ? () => groups.merge(item.splitRun!) : undefined}
             onFocusRow={onFocusRow}
           />
         );
@@ -130,7 +139,8 @@ export function RowList(props: RowListProps) {
         <SnippetButton
           currentCount={currentCount}
           placeText={placeText}
-          onInsert={(rounds) => props.onInsertRounds(anchorId, rounds)}
+          type={snippetType}
+          onInsert={(rounds) => props.onInsertRounds(anchorId, rounds, snippetType)}
         />
         <button type="button" className="btn" onClick={() => onAddRow(null, true)}>
           + Hinweis

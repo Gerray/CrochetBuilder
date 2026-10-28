@@ -76,11 +76,12 @@ describe("quick fixes", () => {
     const over = part(["18 fM (18)"], ["7× (2 fM, 1 Zun)"]);
     const overFix = quickFixes(findingsOf(over).find((f) => f.code === "CONSUMES_OVERFLOW")!, over);
     expect(overFix.map((f) => f.label)).toEqual(["Wiederholung auf ×6 ändern"]);
-    // Nearest fitting, not necessarily exact: 20 stitches take 6 × 3 = 18.
+    // No exact fit: the nearest one, and the rest in fM — no stitches are left free.
     const near = part(["20 fM (20)"], ["7× (2 fM, 1 Zun)"]);
-    expect(quickFixes(findingsOf(near).find((f) => f.code === "CONSUMES_OVERFLOW")!, near).map((f) => f.label)).toEqual([
-      "Wiederholung auf ×6 ändern",
-    ]);
+    const nearFix = quickFixes(findingsOf(near).find((f) => f.code === "CONSUMES_OVERFLOW")!, near);
+    expect(nearFix.map((f) => f.label)).toEqual(["Wiederholung auf ×6, Rest mit 2 fM"]);
+    expect(text(apply(near, nearFix[0]!.action)[1]!)).toBe("6× (2 fM, 1 Zun), 2 fM");
+    expect(findingsOf(apply(near, nearFix[0]!.action))).toEqual([]);
     const long = part(["36 fM (36)"], ["40 fM"]);
     const shorten = quickFixes(findingsOf(long).find((f) => f.code === "CONSUMES_OVERFLOW")!, long);
     expect(shorten.map((f) => f.label)).toEqual(["Auf 36 statt 40 kürzen"]);
@@ -88,6 +89,37 @@ describe("quick fixes", () => {
     // Nothing sensible: an odd excess on decreases.
     const odd = part(["35 fM (35)"], ["18 Abn"]);
     expect(quickFixes(findingsOf(odd).find((f) => f.code === "CONSUMES_OVERFLOW")!, odd)).toEqual([]);
+  });
+
+  it("says which repeat count replaces which", () => {
+    const rows = part(["36 fM (36)"], ["6× (2 fM, 1 Abn)", 27]);
+    const fix = quickFixes(findingsOf(rows).find((f) => f.code === "STITCH_COUNT_MISMATCH")!, rows)[1]!;
+    expect(fix.title).toBe("Die Wiederholung 9× statt 6× arbeiten");
+  });
+
+  it("with an explicit Soll, fixes that keep it come first; the others set it and say so", () => {
+    // Declared 24 (pinned) after 24, but written to work into 18 only.
+    const rows = part(["24 fM (24)"], ["6× (2 fM, 1 Zun) (24)"]);
+    const pinned = rows.map((r) => r.id);
+    const finding = findingsOf(rows).find((f) => f.code === "CONSUMES_UNDERFLOW")!;
+    const fixes = quickFixes(finding, rows, pinned);
+    // ×8 uses all 24 stitches but makes 32; filling makes 30 — neither keeps the 24.
+    expect(fixes.map((f) => f.label)).toEqual(["Rest mit 6 fM auffüllen (Soll 30)", "Wiederholung auf ×8 ändern (Soll 32)"]);
+    expect(fixes[0]!.title).toContain("das Soll ändert sich dabei von 24 auf 30");
+    const fixed = apply(rows, fixes[0]!.action);
+    expect(fixed[1]!.stitchCountTarget).toBe(30);
+    expect(findingsOf(fixed)).toEqual([]);
+
+    // A fix that keeps the declared count is listed first and plain.
+    const keep = part(["24 fM (24)"], ["5× (2 fM, 1 Zun), 6 fM (30)"]);
+    const keepFixes = quickFixes(findingsOf(keep).find((f) => f.code === "CONSUMES_UNDERFLOW")!, keep, keep.map((r) => r.id));
+    expect(keepFixes.map((f) => f.label)).toEqual(["Wiederholung auf ×6 ändern", "Rest mit 3 fM auffüllen (Soll 29)"]);
+    expect(findingsOf(apply(keep, keepFixes[0]!.action))).toEqual([]);
+
+    // Without an explicit Soll (automatic) nothing is labelled: the Soll follows.
+    const auto = part(["24 fM (24)"], ["6× (2 fM, 1 Zun)"]);
+    const autoFixes = quickFixes(findingsOf(auto).find((f) => f.code === "CONSUMES_UNDERFLOW")!, auto);
+    expect(autoFixes.map((f) => f.label)).toEqual(["Rest mit 6 fM auffüllen", "Wiederholung auf ×8 ändern"]);
   });
 
   it("other findings and unknown rows have no fixes", () => {
