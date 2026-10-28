@@ -8,6 +8,14 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- **Patterns with several parts in the builder** (head, body, arms ×2 …). A parts bar above
+  the rows shows every part with its quantity, stitch count and validation light; parts are
+  added ("+ Teil"), renamed in place, duplicated (fresh row ids, "(Kopie)"), moved and
+  deleted (undoable). Alt+↑/↓ switches parts; the 3D view, stats and findings follow the
+  shown part, and the total over all parts × quantity is shown. Saved documents keep all
+  parts (older saves load unchanged). The PDF starts with a parts overview and has one
+  section per part; the viewer gets part tabs. New demo "Hase (einfach)". The canonical
+  format is unchanged.
 - **Yarn thickness in mm.** The gauge accepts an optional `yarnDiameterMm` (0 < x ≤ 30).
   Without a swatch it sets the stitch size — interpolated over the yarn weight table and
   scaled by the hook — and wins over the yarn weight. It is always the rendered yarn
