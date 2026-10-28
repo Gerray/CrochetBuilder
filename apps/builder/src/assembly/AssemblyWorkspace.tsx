@@ -19,6 +19,7 @@ import { NumberField } from "../components/fields.js";
 import { nextPlacementId, type AssemblyAction } from "../state/assembly.js";
 import type { BuilderDoc } from "../state/document.js";
 import type { EditorAction } from "../state/editor.js";
+import { paletteColors } from "../state/palette.js";
 import { partName } from "../state/parts.js";
 import type { PickResult } from "../three/mapping.js";
 import type { AssemblyCanvasProps } from "./AssemblyCanvas.js";
@@ -223,6 +224,9 @@ export function AssemblyWorkspace({
   const Canvas = useMemo(() => lazy(loadCanvas), [loadCanvas, attempt]);
   const combined = scene.combined;
   const placing = placingState ? modeOf(doc, placingState) : null;
+  // Yarn colours by palette id, as in the part preview.
+  const palette = doc.overview.colors;
+  const colors = useMemo(() => paletteColors(palette ?? []), [palette]);
 
   const cancel = useCallback(() => {
     setPlacingState(null);
@@ -307,6 +311,7 @@ export function AssemblyWorkspace({
                 onHover={onHover}
                 onPick={onPick}
                 onUnavailable={() => setWebgl(false)}
+                colors={colors}
               />
             </Suspense>
           </ViewBoundary>

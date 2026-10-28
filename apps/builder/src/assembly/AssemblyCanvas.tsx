@@ -25,6 +25,8 @@ export interface AssemblyCanvasProps {
   onUnavailable: (error: WebGLUnavailableError) => void;
   /** The view, once created (and null on unmount). */
   onView?: (view: ModelView | null) => void;
+  /** Palette colours: id → CSS (`paletteColors`), for the parts' yarn colours. */
+  colors?: Readonly<Record<string, string>>;
 }
 
 const CLICK_SLOP = 5;
@@ -46,7 +48,7 @@ export default function AssemblyCanvas(props: AssemblyCanvasProps) {
     host.prepend(canvas);
     let view: ModelView;
     try {
-      view = createModelView(canvas, { style: { ...themeColors(host), showGrid, backing } });
+      view = createModelView(canvas, { style: { ...themeColors(host), showGrid, backing, colors: props.colors ?? {} } });
     } catch (err) {
       canvas.remove();
       if (err instanceof WebGLUnavailableError) {
@@ -79,6 +81,8 @@ export default function AssemblyCanvas(props: AssemblyCanvasProps) {
     [highlightKey, combined],
   );
   useEffect(() => viewRef.current?.setStyle({ showGrid, backing }), [showGrid, backing]);
+  const colorsKey = JSON.stringify(props.colors ?? {});
+  useEffect(() => viewRef.current?.setStyle({ colors: JSON.parse(colorsKey) as Record<string, string> }), [colorsKey]);
   useEffect(() => {
     if (resetToken > 0) viewRef.current?.resetView();
   }, [resetToken]);

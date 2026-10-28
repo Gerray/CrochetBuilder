@@ -176,3 +176,26 @@ describe("review fixes: budget, shared meshes, watchdog, imported ids", () => {
     expect(result.doc.assembly).toEqual(exp.assembly);
   });
 });
+describe("colours in the Montage", () => {
+  it("carries every part's yarn colours through to the assembled mesh", () => {
+    const coloured = structuredClone(doc);
+    coloured.overview.colors = [
+      { id: "grau", name: "Grau", hex: "#999999" },
+      { id: "rosa", name: "Rosa", hex: "#e8a0b4" },
+    ];
+    coloured.parts[2]!.content.rows[0]!.color = "rosa"; // the ears are pink
+    const r = scene(new AssemblyComputer().compute({ id: 1, doc: coloured, style: STYLE, have: [] }));
+    const combined = combineScene(r.scene, meshesByPart(r))!;
+    const mesh = combined.mesh as typeof combined.mesh & { nodeColor?: Uint16Array; paletteIds?: string[] };
+    expect(mesh.paletteIds).toEqual(["grau", "rosa"]);
+    expect(mesh.nodeColor!.length).toBe(mesh.nodeRow.length);
+    for (const range of combined.ranges) {
+      const colours = new Set(mesh.nodeColor!.slice(range.nodeStart, range.nodeStart + range.nodeCount));
+      expect([...colours]).toEqual([range.part === 2 ? 1 : 0]);
+    }
+    // Recolouring (hex) needs no new mesh; another colour id in a row does.
+    const recoloured = { ...coloured, overview: { ...coloured.overview, colors: [{ id: "grau", name: "Grau", hex: "#000000" }, coloured.overview.colors[1]!] } };
+    expect(partMeshKey(recoloured, 2, STYLE, 20_000)).toBe(partMeshKey(coloured, 2, STYLE, 20_000));
+    expect(partMeshKey(coloured, 2, STYLE, 20_000)).not.toBe(partMeshKey(doc, 2, STYLE, 20_000));
+  });
+});

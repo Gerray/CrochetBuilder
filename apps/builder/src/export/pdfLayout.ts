@@ -88,6 +88,8 @@ export interface PdfInput {
   title: string;
   /** Material lines, already formatted ("Garn: …"). */
   materials: string[];
+  /** The palette (format v2): a swatch and the name per colour, listed under the material. */
+  colors?: Array<{ name: string; rgb: [number, number, number] }>;
   /** Size basis ("Garn: DK (leicht) · Nadel: 3 mm"). */
   gauge: string;
   /** Finished size line, or null without a model. */
@@ -106,7 +108,9 @@ export interface PdfInput {
 export type PdfCommand =
   | { kind: "text"; page: number; x: number; y: number; text: string; size: number; bold: boolean; gray: number; align: "left" | "right" }
   | { kind: "image"; page: number; x: number; y: number; w: number; h: number; dataUrl: string; format: "JPEG" | "PNG" }
-  | { kind: "line"; page: number; x1: number; y1: number; x2: number; y2: number; gray: number };
+  | { kind: "line"; page: number; x1: number; y1: number; x2: number; y2: number; gray: number }
+  /** A filled colour square with a grey outline (palette swatch). */
+  | { kind: "swatch"; page: number; x: number; y: number; w: number; h: number; fill: [number, number, number]; stroke: number };
 
 export interface PdfLayout {
   pages: number;
@@ -265,9 +269,33 @@ export function layoutPdf(input: PdfInput, measure: TextMeasure): PdfLayout {
   }
 
   const materials = input.materials.filter((m) => m.trim() !== "");
-  if (materials.length > 0) {
+  const colors = input.colors ?? [];
+  if (materials.length > 0 || colors.length > 0) {
     heading("Material");
     for (const m of materials) paragraph(`• ${m}`, 10.5, { hang: 3 });
+    if (colors.length > 0) {
+      if (materials.length > 0) y += 1;
+      paragraph("Farben:", 10.5, { bold: true });
+      const lh = lineHeight(10.5);
+      const side = 3.2;
+      for (const c of colors) {
+        ensure(lh);
+        y += lh;
+        const baseline = y - lh * 0.25;
+        commands.push({ kind: "swatch", page, x: PAGE.margin + 1, y: baseline - side + 0.4, w: side, h: side, fill: c.rgb, stroke: 0.55 });
+        commands.push({
+          kind: "text",
+          page,
+          x: PAGE.margin + 1 + side + 2,
+          y: baseline,
+          text: toWinAnsi(c.name),
+          size: 10.5,
+          bold: false,
+          gray: 0,
+          align: "left",
+        });
+      }
+    }
   }
 
   heading("Größe");

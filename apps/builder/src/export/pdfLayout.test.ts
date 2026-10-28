@@ -333,7 +333,7 @@ describe("PDF with an assembly", () => {
       },
     });
     expect(partModel).toBe(false);
-    expect(shots).toEqual([[assembled.mesh, assembled.spheres]]);
+    expect(shots).toEqual([[assembled.mesh, expect.any(Object), assembled.spheres]]);
     expect(pdfSize).toBeGreaterThan(1000);
     expect(pdfInput(exp(), { size: assembled.size, maxDiameter: 0 }, null, true).size).toBe("8,4 × 11,5 × 5,1 cm (B × H × T) – zusammengesetzt");
   });

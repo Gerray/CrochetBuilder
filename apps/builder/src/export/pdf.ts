@@ -11,8 +11,9 @@ import type { jsPDF as JsPdf } from "jspdf";
 import { createPreviewClient } from "../preview/client.js";
 import type { PreviewModel, PreviewResult } from "../preview/protocol.js";
 import type { BuilderDoc } from "../state/document.js";
+import { paletteColors } from "../state/palette.js";
 import { partName, partStitches, partsTotal, totalText } from "../state/parts.js";
-import { estimateNote, gaugeLine, materialLine, partHeading, sizeLine } from "./labels.js";
+import { estimateNote, gaugeLine, materialLine, paletteEntries, partHeading, sizeLine } from "./labels.js";
 import { layoutPdf, type PdfImage, type PdfInput, type PdfLayout, type TextMeasure } from "./pdfLayout.js";
 import { exportFileName, downloadBlob, prepareExport } from "./prepare.js";
 import { assemblyLines } from "../assembly/wording.js";
@@ -143,6 +144,10 @@ export function pdfInput(exp: BuilderExport, model: PdfModel | null, image: PdfI
   const input: PdfInput = {
     title: exp.title,
     materials: (exp.overview.materials ?? []).map(materialLine).filter(Boolean),
+    colors: paletteEntries(exp.overview.colors ?? []).map((c, i, all) => ({
+      name: i === 0 && all.length > 1 ? `${c.name} (Anfangsfarbe)` : c.name,
+      rgb: hexRgb(c.css),
+    })),
     gauge: gaugeLine(gauge),
     // The model is the first part's (or the assembled toy); with several parts the line says so.
     size: size && several ? `${size} – ${assembled ? "zusammengesetzt" : partName(exp.parts[0]!.name, 0)}` : size,
@@ -160,6 +165,13 @@ export function pdfInput(exp: BuilderExport, model: PdfModel | null, image: PdfI
   const assembly = assemblyLines(exp);
   if (assembly.length > 0) input.assembly = assembly;
   return input;
+}
+
+/** `#rrggbb` → [r, g, b] (0–255); grey for anything else. */
+export function hexRgb(hex: string): [number, number, number] {
+  const m = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex.trim());
+  if (!m) return [136, 136, 136];
+  return [parseInt(m[1]!, 16), parseInt(m[2]!, 16), parseInt(m[3]!, 16)];
 }
 
 /** Text widths from jsPDF's font metrics (mm). */
@@ -190,6 +202,12 @@ export function renderPdf(JsPdfCtor: typeof JsPdf, input: PdfInput, opts: { comp
       pdf.setDrawColor(v, v, v);
       pdf.setLineWidth(0.2);
       pdf.line(cmd.x1, cmd.y1, cmd.x2, cmd.y2);
+    } else if (cmd.kind === "swatch") {
+      const v = Math.round(cmd.stroke * 255);
+      pdf.setFillColor(...cmd.fill);
+      pdf.setDrawColor(v, v, v);
+      pdf.setLineWidth(0.2);
+      pdf.roundedRect(cmd.x, cmd.y, cmd.w, cmd.h, 0.6, 0.6, "FD");
     } else {
       try {
         pdf.addImage(cmd.dataUrl, cmd.format, cmd.x, cmd.y, cmd.w, cmd.h);
@@ -205,13 +223,19 @@ export function renderPdf(JsPdfCtor: typeof JsPdf, input: PdfInput, opts: { comp
 // Browser side: model, snapshot, download
 // ---------------------------------------------------------------------------
 
-/** Build the model of the first part once (Worker when available). */
+/** Build the model of the first part once (Worker when available), with its colours. */
 async function computeModel(exp: BuilderExport): Promise<PreviewModel | null> {
   const part = exp.parts[0];
   if (!part) return null;
   const client = createPreviewClient();
+  const palette = (exp.overview.colors ?? []).map((c) => c.id);
   try {
-    const result: PreviewResult | null = await client.compute({ content: part.content, gauge: exp.overview.gauge, style: SNAPSHOT_STYLE });
+    const result: PreviewResult | null = await client.compute({
+      content: part.content,
+      gauge: exp.overview.gauge,
+      style: SNAPSHOT_STYLE,
+      ...(palette.length > 0 ? { palette } : {}),
+    });
     return result?.kind === "model" ? result.model : null;
   } finally {
     client.dispose();
@@ -251,15 +275,23 @@ async function computeAssembly(exp: BuilderExport): Promise<AssembledModel | nul
   return assembledFromResult(result);
 }
 
-/** Render the model off screen at `SNAPSHOT_SIZE`; null without WebGL or on any failure. */
-export async function snapshotModel(model: ViewMesh, spheres: readonly ViewSphere[] = []): Promise<PdfImage | null> {
+/**
+ * Render the model off screen at `SNAPSHOT_SIZE`, in the palette's colours (palette id → CSS,
+ * see `paletteColors`), with the assembly's eyes and embroidery; null without WebGL or on any
+ * failure.
+ */
+export async function snapshotModel(
+  model: ViewMesh,
+  colors: Readonly<Record<string, string>> = {},
+  spheres: readonly ViewSphere[] = [],
+): Promise<PdfImage | null> {
   try {
     const { createModelView } = await import("../three/modelView.js");
     const canvas = document.createElement("canvas");
     canvas.width = SNAPSHOT_SIZE.width;
     canvas.height = SNAPSHOT_SIZE.height;
     const view = createModelView(canvas, {
-      style: { background: SNAPSHOT_BACKGROUND, showGrid: false, yarn: "#e7b48f", backing: SNAPSHOT_BACKING },
+      style: { background: SNAPSHOT_BACKGROUND, showGrid: false, yarn: "#e7b48f", backing: SNAPSHOT_BACKING, colors },
       autoResize: false,
       maxPixelRatio: 1,
     });
@@ -285,7 +317,7 @@ export interface SavePdfDeps {
   computeModel?: (exp: BuilderExport) => Promise<PreviewModel | null>;
   /** The assembled toy (patterns with placements); its image replaces the first part's. */
   computeAssembly?: (exp: BuilderExport) => Promise<AssembledModel | null>;
-  snapshot?: (model: ViewMesh, spheres?: readonly ViewSphere[]) => Promise<PdfImage | null>;
+  snapshot?: (model: ViewMesh, colors: Readonly<Record<string, string>>, spheres?: readonly ViewSphere[]) => Promise<PdfImage | null>;
   save?: (blob: Blob, fileName: string) => void;
 }
 
@@ -300,13 +332,14 @@ export async function savePdf(doc: BuilderDoc, deps: SavePdfDeps = {}): Promise<
     placed ? (deps.computeAssembly ?? computeAssembly)(exp).catch(() => null) : Promise.resolve(null),
   ]);
   const snapshot = deps.snapshot ?? snapshotModel;
+  const colors = paletteColors(exp.overview.colors ?? []);
   let input: PdfInput;
   if (assembled) {
-    const image = await snapshot(assembled.mesh, assembled.spheres);
+    const image = await snapshot(assembled.mesh, colors, assembled.spheres);
     input = pdfInput(exp, { size: assembled.size, maxDiameter: 0 }, image, true);
   } else {
     const model = await (deps.computeModel ?? computeModel)(exp).catch(() => null);
-    const image = model ? await snapshot(model) : null;
+    const image = model ? await snapshot(model, colors) : null;
     input = pdfInput(exp, model, image);
   }
   const { pdf } = renderPdf(JsPdfCtor, input);

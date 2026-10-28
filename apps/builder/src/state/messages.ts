@@ -56,6 +56,8 @@ export function parseWarningMessage(warning: ParseWarning, type: Row["type"] = "
       return "Die Zahl der Wiederholungen wurde aus der angegebenen Maschenzahl bestimmt. Bitte prüfen.";
     case "repeat-count-ambiguous":
       return "„Wiederholen ab *“ ist mehrdeutig (n oder n + 1 Mal) – gelesen als n Mal. Eine Maschenzahl am Ende entscheidet.";
+    case "increase-ambiguous":
+      return "„3 hStb Zun“ ist mehrdeutig (drei hStb-Zunahmen oder „3 hStb, 1 Zun“) – gelesen als Zunahmen. Eine Maschenzahl am Ende entscheidet.";
   }
 }
 

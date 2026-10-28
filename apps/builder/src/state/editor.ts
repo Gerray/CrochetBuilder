@@ -20,17 +20,21 @@ import {
   modifierAllowed,
   normalizeModifiers,
   opsWithinLimits,
+  type Finish,
   type Gauge,
   type Material,
   type Op,
+  type PaletteColor,
   type PartContent,
   type Row,
   type StitchOp,
+  type Stuffing,
 } from "@crochetbuilder/engine";
 import { applyAssemblyAction, assemblyCoalesceKey, withoutPlacementsOf, type AssemblyAction } from "./assembly.js";
 import { emptyRow, instructionRow, type BuilderDoc } from "./document.js";
 import * as tree from "./op-tree.js";
 import type { OpPath } from "./op-tree.js";
+import { colorNameProblem, replaceColorInRow } from "./palette.js";
 
 export const HISTORY_LIMIT = 200;
 
@@ -73,6 +77,17 @@ export type EditorAction =
   | { type: "addMaterial"; material: Material }
   | { type: "updateMaterial"; index: number; material: Material }
   | { type: "removeMaterial"; index: number }
+  // palette (format v2): document-wide, see `applyPalette`
+  | { type: "addColor"; color: PaletteColor }
+  /** `hex: null` removes the display colour. */
+  | { type: "updateColor"; id: string; patch: { name?: string; hex?: string | null } }
+  /**
+   * Remove a colour. Rows and stitches that switch to it switch to `replacement` instead, or
+   * lose the switch (no replacement) - in every part, as one undo step.
+   */
+  | { type: "removeColor"; id: string; replacement?: string }
+  /** Move a colour to position `to` (0 = the colour the work starts in). */
+  | { type: "moveColor"; id: string; to: number }
   // rows
   | { type: "addRow"; id: string; afterId?: string | null; instruction?: boolean }
   | { type: "deleteRow"; rowId: string }
@@ -81,11 +96,16 @@ export type EditorAction =
   | { type: "updateRow"; rowId: string; patch: RowPatch }
   | { type: "setTarget"; rowId: string; target: number }
   | { type: "adoptTarget"; rowId: string }
-  | { type: "setRowOps"; rowId: string; ops: Op[]; target?: number }
+  /** `color`: the row's colour as written in its text (null: none; undefined: unchanged). */
+  | { type: "setRowOps"; rowId: string; ops: Op[]; target?: number; color?: string | null }
+  /** Colour change at the start of the row ("Farbwechsel ab dieser Runde"); null removes it. */
+  | { type: "setRowColor"; rowId: string; color: string | null }
   // ops inside a row
   | { type: "updateStitch"; rowId: string; path: OpPath; patch: StitchPatch }
   | { type: "setRepeatTimes"; rowId: string; path: OpPath; times: number }
   | { type: "insertOp"; rowId: string; path: OpPath; op: Op }
+  /** Colour change at a stitch ("ab dieser Masche"); null removes it. */
+  | { type: "setOpColor"; rowId: string; path: OpPath; color: string | null }
   | { type: "removeOp"; rowId: string; path: OpPath }
   | { type: "moveOp"; rowId: string; path: OpPath; delta: number }
   | { type: "wrapInRepeat"; rowId: string; path: OpPath; times?: number; length?: number }
@@ -97,6 +117,10 @@ export type EditorAction =
   | { type: "addPart"; rowId: string }
   | { type: "renamePart"; index: number; name: string }
   | { type: "setPartQuantity"; index: number; quantity: number }
+  /** How the part is finished (format v2); null: automatic (the engine decides). */
+  | { type: "setPartFinish"; index: number; finish: Finish | null }
+  /** How firmly the part is stuffed (format v2); null: automatic. */
+  | { type: "setPartStuffing"; index: number; stuffing: Stuffing | null }
   /** `rowIds`: one fresh id per row of the source part, in order (see `actions.ts`). */
   | { type: "duplicatePart"; index: number; rowIds: readonly string[] }
   | { type: "deletePart"; index: number }
@@ -442,9 +466,29 @@ function applyEdit(state: EditorState, action: EditorAction): DocResult {
     case "setRowOps":
       if (rowScope < 0) return same;
       return scoped({
-        doc: withRow(doc, action.rowId, (row) => rowWithOps(row, action.ops, pinned, action.target)),
+        doc: withRow(doc, action.rowId, (row) => {
+          const next = rowWithOps(row, action.ops, pinned, action.target);
+          // Ops the limits refuse keep the row as it is, colour included.
+          if (next === row && !sameJson(action.ops, row.ops)) return row;
+          return action.color === undefined ? next : withRowColor(next, action.color);
+        }),
         pinned: action.target === undefined ? pinned : pin(action.rowId),
       });
+
+    case "setRowColor":
+      if (rowScope < 0) return same;
+      return scoped({ doc: withRow(doc, action.rowId, (row) => withRowColor(row, action.color)), pinned });
+
+    case "setOpColor":
+      return opsEdit(action.rowId, (ops) =>
+        tree.updateOp(ops, action.path, (op) => {
+          if (op.kind !== "stitch" || (op.color ?? null) === action.color) return op;
+          const next: StitchOp = { ...op };
+          if (action.color === null) delete next.color;
+          else next.color = action.color;
+          return next;
+        }),
+      );
 
     case "updateStitch":
       return opsEdit(action.rowId, (ops) =>
@@ -514,6 +558,20 @@ function applyEdit(state: EditorState, action: EditorAction): DocResult {
       if (!Number.isInteger(quantity) || quantity < 1 || quantity > MAX_PART_QUANTITY) return same;
       return {
         doc: withPart(doc, action.index, (p) => (p.quantity === quantity ? p : { ...p, quantity })),
+        pinned,
+        scope: action.index,
+      };
+    }
+
+    case "setPartFinish":
+    case "setPartStuffing": {
+      const field = action.type === "setPartFinish" ? "finish" : "stuffing";
+      const value = action.type === "setPartFinish" ? action.finish : action.stuffing;
+      return {
+        doc: withPart(doc, action.index, (p) => {
+          if ((p.content[field] ?? null) === value) return p;
+          return { ...p, content: setOptionalText<PartContent, "finish" | "stuffing">(p.content, field, value ?? undefined) };
+        }),
         pinned,
         scope: action.index,
       };
@@ -598,6 +656,91 @@ function applyEdit(state: EditorState, action: EditorAction): DocResult {
     case "removePlacement": {
       const next = applyAssemblyAction(doc, action);
       return next === doc ? same : { doc: next, pinned };
+    }
+
+    case "addColor":
+    case "updateColor":
+    case "removeColor":
+    case "moveColor":
+      return { doc: applyPalette(doc, action), pinned };
+  }
+}
+
+/** `row` with its own colour set (a palette id) or removed (null); the same row when unchanged. */
+function withRowColor(row: Row, color: string | null): Row {
+  if ((row.color ?? null) === color) return row;
+  return setOptionalText(row, "color", color ?? undefined);
+}
+
+// ---------------------------------------------------------------------------
+// Palette (format v2): `overview.colors`. Ids are stable; an empty palette disappears.
+// ---------------------------------------------------------------------------
+
+type PaletteAction = Extract<EditorAction, { type: "addColor" | "updateColor" | "removeColor" | "moveColor" }>;
+
+const HEX = /^#[0-9a-f]{6}$/i;
+
+function withColors(doc: BuilderDoc, colors: PaletteColor[]): BuilderDoc {
+  return { ...doc, overview: setOptionalText(doc.overview, "colors", colors.length > 0 ? colors : undefined) };
+}
+
+function applyPalette(doc: BuilderDoc, action: PaletteAction): BuilderDoc {
+  const colors = doc.overview.colors ?? [];
+  const index = "id" in action ? colors.findIndex((c) => c.id === action.id) : -1;
+  switch (action.type) {
+    case "addColor": {
+      const c = action.color;
+      if (!c.id || colors.some((x) => x.id === c.id) || (c.hex !== undefined && !HEX.test(c.hex))) return doc;
+      if (colorNameProblem(c.name, colors) !== null) return doc;
+      return withColors(doc, [...colors, c.hex === undefined ? { ...c } : { ...c, hex: c.hex.toLowerCase() }]);
+    }
+
+    case "updateColor": {
+      const color = colors[index];
+      if (!color) return doc;
+      const next: PaletteColor = { ...color };
+      if (action.patch.name !== undefined) {
+        // Names must read back unambiguously from the row text (E26).
+        if (colorNameProblem(action.patch.name, colors, color.id) !== null) return doc;
+        next.name = action.patch.name;
+      }
+      if (action.patch.hex === null) delete next.hex;
+      else if (action.patch.hex !== undefined) {
+        if (!HEX.test(action.patch.hex)) return doc;
+        next.hex = action.patch.hex.toLowerCase();
+      }
+      if (sameJson(next, color)) return doc;
+      return withColors(doc, colors.map((c, i) => (i === index ? next : c)));
+    }
+
+    case "removeColor": {
+      if (index < 0) return doc;
+      const replacement =
+        action.replacement !== undefined && action.replacement !== action.id && colors.some((c) => c.id === action.replacement)
+          ? action.replacement
+          : undefined;
+      let rest = colors.filter((_, i) => i !== index);
+      // The start colour replaced: the replacement becomes the start colour, so every part
+      // still starts in the colour chosen for it.
+      if (index === 0 && replacement !== undefined) {
+        rest = [...rest.filter((c) => c.id === replacement), ...rest.filter((c) => c.id !== replacement)];
+      }
+      const next = withColors(doc, rest);
+      const parts = next.parts.map((part) => {
+        const rows = part.content.rows.map((r) => replaceColorInRow(r, action.id, replacement));
+        return rows.some((r, i) => r !== part.content.rows[i]) ? { ...part, content: { ...part.content, rows } } : part;
+      });
+      return parts.some((p, i) => p !== next.parts[i]) ? { ...next, parts } : next;
+    }
+
+    case "moveColor": {
+      if (index < 0 || !Number.isFinite(action.to)) return doc;
+      const to = Math.max(0, Math.min(colors.length - 1, Math.trunc(action.to)));
+      if (to === index) return doc;
+      const list = [...colors];
+      const [moved] = list.splice(index, 1);
+      list.splice(to, 0, moved!);
+      return withColors(doc, list);
     }
   }
 }
@@ -684,7 +827,12 @@ function applyAssist(state: EditorState, action: AssistAction): DocResult {
       if (newIds.length < missing || new Set(newIds).size !== newIds.length) return same;
       if (newIds.some((id) => partOfRow(doc, id) >= 0)) return same;
       const source = rows[start]!;
-      const copies = newIds.map((id): Row => ({ ...structuredClone(source), id }));
+      // The copies carry on in the colour of the run: a colour change stays on its first row (E26).
+      const copies = newIds.map((id): Row => {
+        const copy: Row = { ...structuredClone(source), id };
+        delete copy.color;
+        return copy;
+      });
       const end = start + rowIds.length;
       return {
         doc: withRows(doc, index, (list) => [...list.slice(0, end), ...copies, ...list.slice(end)]),
@@ -730,6 +878,10 @@ export interface AppendPartsAction {
   pinned: readonly string[];
   /** New overview notes (the old ones plus the pasted preamble), if they change. */
   notes?: string;
+  /** The new palette (the old colours plus the pasted ones), if it grows. */
+  colors?: NonNullable<BuilderDoc["overview"]["colors"]>;
+  /** Placements to add to the assembly (part and row ids of the appended parts). */
+  assembly?: NonNullable<BuilderDoc["assembly"]>;
 }
 
 function appendParts(state: EditorState, action: AppendPartsAction): DocResult {
@@ -746,9 +898,14 @@ function appendParts(state: EditorState, action: AppendPartsAction): DocResult {
   if (action.notes !== undefined && action.notes !== (doc.overview.notes ?? "")) {
     overview = setOptionalText(doc.overview, "notes", action.notes === "" ? undefined : action.notes);
   }
+  if (action.colors && action.colors.length > 0) overview = { ...overview, colors: structuredClone(action.colors) };
+  const next: BuilderDoc = { ...doc, overview, parts: [...doc.parts, ...structuredClone(action.parts)] };
+  if (action.assembly && action.assembly.length > 0) {
+    next.assembly = [...(doc.assembly ?? []), ...structuredClone(action.assembly)];
+  }
   const known = new Set(ids);
   return {
-    doc: { ...doc, overview, parts: [...doc.parts, ...structuredClone(action.parts)] },
+    doc: next,
     pinned: [...pinned, ...action.pinned.filter((id) => known.has(id))],
     scope: state.part,
     select: doc.parts.length,
@@ -766,6 +923,8 @@ function coalesceKey(action: EditorAction): string | undefined {
       return "gauge";
     case "updateMaterial":
       return `material:${action.index}`;
+    case "updateColor":
+      return `color:${action.id}:${action.patch.name !== undefined ? "name" : "hex"}`;
     case "renamePart":
       return `part:${action.index}:name`;
     case "setPartQuantity":

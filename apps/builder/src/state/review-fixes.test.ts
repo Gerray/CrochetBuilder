@@ -21,6 +21,8 @@ describe("parser hints", () => {
     expect(parseWarningMessage("repeat-scope-guessed", "row")).toContain("die ganze Reihe");
     expect(parseWarningMessage("repeat-scope-ambiguous", "row")).toContain("die ganze Reihe");
     expect(parseWarningMessage("repeat-count-ambiguous", "row")).not.toContain("Runde");
+    // Format v2 import: "3 hdc inc" without a written count.
+    expect(parseWarningMessage("increase-ambiguous")).toMatch(/^„3 hStb Zun“ ist mehrdeutig/);
   });
 });
 

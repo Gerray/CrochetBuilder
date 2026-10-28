@@ -55,6 +55,7 @@ const KNOWN = new Set([
   "stitchWidthMm",
   "yarnDiameterMm",
   "backing",
+  "paletteIds",
 ]);
 
 type Typed = Float32Array | Float64Array | Uint32Array | Int32Array | Uint16Array | Int16Array | Uint8Array | Int8Array;
@@ -198,6 +199,10 @@ export function combineScene(scene: AssemblyScene, meshes: ReadonlyArray<PartMes
   };
   if (backing) mesh.backing = backing;
   for (const [key, list] of extras) if (list.length === usable.length) mesh[key] = concatTyped(list);
+  // Yarn colours: every part's `nodeColor` indexes the document's palette ids (the same list
+  // for all parts), so the appended indices keep pointing at the right colour.
+  const palette = usable.find((x) => x.mesh.model.paletteIds)?.mesh.model.paletteIds;
+  if (palette && mesh.nodeColor) mesh.paletteIds = palette;
   return { mesh, ranges, eyes: scene.eyes, marks: scene.marks };
 }
 

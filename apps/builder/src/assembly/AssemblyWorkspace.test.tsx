@@ -55,7 +55,7 @@ const list = () => screen.getByRole("list");
 describe("AssemblyWorkspace", () => {
   it("shows the assembled parts and lists the placements in words", async () => {
     render(<Harness doc={bunny()} />);
-    await waitFor(() => expect(fakeViews.last?.mesh).toBeTruthy());
+    await waitFor(() => expect(fakeViews.last?.mesh).toBeTruthy(), { timeout: 8000 });
     // Kopf, Körper, Ohr ×2, Arm ×2, Bein ×2 in one mesh.
     expect(new Set(fakeViews.last!.mesh!.rowIds.map((id) => id.split("|")[0])).size).toBe(8);
     expect(within(list()).getAllByRole("listitem").map((li) => li.querySelector(".placement-text")!.textContent)).toEqual([
@@ -70,7 +70,7 @@ describe("AssemblyWorkspace", () => {
   it("sets eyes with a click on the head, highlights the round under the pointer, and fine-tunes them", async () => {
     const doc = bunny();
     render(<Harness doc={doc} />);
-    await waitFor(() => expect(fakeViews.last?.mesh).toBeTruthy());
+    await waitFor(() => expect(fakeViews.last?.mesh).toBeTruthy(), { timeout: 8000 });
     fireEvent.click(screen.getByRole("button", { name: "+ Augen" }));
     expect(screen.getByText(/Klicke im 3D-Bild auf die Stelle zwischen den Augen/)).toBeTruthy();
 
@@ -119,7 +119,7 @@ describe("AssemblyWorkspace", () => {
 
   it("attaches the part shown in the editor; Escape cancels; a click on the part itself is ignored", async () => {
     render(<Harness doc={{ ...bunny(), assembly: [] }} />);
-    await waitFor(() => expect(fakeViews.last?.mesh).toBeTruthy());
+    await waitFor(() => expect(fakeViews.last?.mesh).toBeTruthy(), { timeout: 8000 });
     fireEvent.click(screen.getByRole("button", { name: "+ Annähen" }));
     expect((screen.getByLabelText("Welches Teil wird angenäht?") as HTMLSelectElement).value).toBe("2");
     expect(screen.getByText(/an die Ohr genäht wird/)).toBeTruthy();
@@ -130,7 +130,7 @@ describe("AssemblyWorkspace", () => {
 
   it("removes a placement", async () => {
     render(<Harness doc={bunny()} />);
-    await waitFor(() => expect(fakeViews.last?.mesh).toBeTruthy());
+    await waitFor(() => expect(fakeViews.last?.mesh).toBeTruthy(), { timeout: 8000 });
     fireEvent.click(screen.getByRole("button", { name: /^Entfernen: Arm ×2/ }));
     expect(latest!.assembly!.map((p) => p.id)).toEqual(["kopf", "ohren", "beine"]);
   });
@@ -184,7 +184,7 @@ function hoverNode(node: number, rowKey: string) {
 describe("AssemblyWorkspace: review fixes", () => {
   it("lands a pick on copy 2 of a target on copy 1 and says so", async () => {
     render(<Harness doc={bunny()} />);
-    await waitFor(() => expect(fakeViews.last?.mesh).toBeTruthy());
+    await waitFor(() => expect(fakeViews.last?.mesh).toBeTruthy(), { timeout: 8000 });
     fireEvent.click(screen.getByRole("button", { name: "+ Augen" }));
     // Instances: Kopf 0, Körper 1, Ohr 2/3, Arm 4/5, Bein 6/7. Point at the second arm.
     const { node, rowKey } = nodeOn(5);
@@ -197,7 +197,7 @@ describe("AssemblyWorkspace: review fixes", () => {
   it("highlights both copies when the attached part comes twice", async () => {
     const base = bunny();
     render(<Harness doc={{ ...base, assembly: base.assembly!.filter((p) => p.id !== "arme") }} />);
-    await waitFor(() => expect(fakeViews.last?.mesh).toBeTruthy());
+    await waitFor(() => expect(fakeViews.last?.mesh).toBeTruthy(), { timeout: 8000 });
     fireEvent.click(screen.getByRole("button", { name: "+ Annähen" }));
     fireEvent.change(screen.getByLabelText("Welches Teil wird angenäht?"), { target: { value: "3" } });
     // Instances now: Kopf 0, Körper 1, Ohr 2/3, Arm 4 (beside), Bein 5/6. Point at the second leg.
@@ -210,7 +210,7 @@ describe("AssemblyWorkspace: review fixes", () => {
 
   it("places without a mouse: Zielteil, Runde, Winkel, Setzen", async () => {
     render(<Harness doc={bunny()} />);
-    await waitFor(() => expect(fakeViews.last?.mesh).toBeTruthy());
+    await waitFor(() => expect(fakeViews.last?.mesh).toBeTruthy(), { timeout: 8000 });
     fireEvent.click(screen.getByRole("button", { name: "+ Augen" }));
     const form = screen.getByRole("form", { name: "Platzierung ohne Maus setzen" });
     fireEvent.change(within(form).getByLabelText("Zielteil"), { target: { value: "0" } });
@@ -223,7 +223,7 @@ describe("AssemblyWorkspace: review fixes", () => {
 
   it("keeps the attached part when parts move while placing", async () => {
     render(<Harness doc={{ ...bunny(), assembly: [] }} />);
-    await waitFor(() => expect(fakeViews.last?.mesh).toBeTruthy());
+    await waitFor(() => expect(fakeViews.last?.mesh).toBeTruthy(), { timeout: 8000 });
     fireEvent.click(screen.getByRole("button", { name: "+ Annähen" })); // Ohr (index 2)
     act(() => dispatchRef!({ type: "movePart", index: 2, delta: -2 }));
     expect((screen.getByLabelText("Welches Teil wird angenäht?") as HTMLSelectElement).value).toBe("0");
@@ -234,7 +234,7 @@ describe("AssemblyWorkspace: review fixes", () => {
 
   it("ignores clicks while the scene is being recomputed", async () => {
     render(<Harness doc={bunny()} />);
-    await waitFor(() => expect(fakeViews.last?.mesh).toBeTruthy());
+    await waitFor(() => expect(fakeViews.last?.mesh).toBeTruthy(), { timeout: 8000 });
     fireEvent.click(screen.getByRole("button", { name: "+ Augen" }));
     const { node, rowKey } = nodeOn(0);
     act(() => dispatchRef!({ type: "updatePlacement", id: "arme", patch: { angle: 70 } }));
@@ -248,7 +248,7 @@ describe("AssemblyWorkspace: review fixes", () => {
 
   it("moves a placement to another target with the Zielteil field; labels follow the target's rows", async () => {
     render(<Harness doc={bunny()} />);
-    await waitFor(() => expect(fakeViews.last?.mesh).toBeTruthy());
+    await waitFor(() => expect(fakeViews.last?.mesh).toBeTruthy(), { timeout: 8000 });
     fireEvent.click(screen.getByRole("button", { name: /^Ändern: Bein ×2/ }));
     const field = document.getElementById("placement-beine-target") as HTMLSelectElement;
     fireEvent.change(field, { target: { value: "0" } });

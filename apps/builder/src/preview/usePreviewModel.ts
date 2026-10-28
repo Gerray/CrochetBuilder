@@ -3,10 +3,10 @@
  * main thread) for a model and keeps the last good one around.
  */
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { Gauge, MeshStyle, PartContent } from "@crochetbuilder/engine";
 import { createPreviewClient } from "./client.js";
-import type { PreviewClient, PreviewModel, PreviewResult } from "./protocol.js";
+import { geometryKey, withColors, type PreviewClient, type PreviewModel, type PreviewResult } from "./protocol.js";
 
 export interface PreviewState {
   /**
@@ -49,6 +49,9 @@ export function applyResult(state: PreviewState, result: PreviewResult, stillCom
       };
     case "error":
       return { status: "error", model: state.model, computing, error: result.message };
+    case "colors":
+      // New colours for the model shown: same geometry arrays, so the view only recolours.
+      return state.model ? { ...state, status: "model", model: withColors(state.model, result.colors), computing } : state;
   }
 }
 
@@ -66,18 +69,25 @@ export interface PreviewOptions {
 
 /**
  * The model for `content`/`gauge` in mesh `style`. The first computation and style changes
- * start at once; edits are debounced. Stale results never overwrite newer ones.
+ * start at once; edits are debounced. Stale results never overwrite newer ones. With
+ * `palette` (the palette's ids, format v2) the model carries every stitch's colour index.
  */
 export function usePreviewModel(
   content: PartContent,
   gauge: Gauge | undefined,
   style: MeshStyle,
   { debounceMs = 200, createClient = createPreviewClient, paused = false }: PreviewOptions = {},
+  palette: readonly string[] = [],
 ): PreviewState {
+  // Only the ids matter (renaming or recolouring a colour needs no new model).
+  const paletteKey = palette.join("\u0000");
   const [state, setState] = useState<PreviewState>(INITIAL_PREVIEW);
   const clientRef = useRef<PreviewClient | null>(null);
   const scheduled = useRef(false);
   const last = useRef<{ content: PartContent; gauge: Gauge | undefined } | null>(null);
+  // What shapes the mesh (without colours, labels, targets) and the shape of the model shown.
+  const shape = useMemo(() => `${geometryKey(content, gauge, 0)}\u0001${style}`, [content, gauge, style]);
+  const shownShape = useRef<string | null>(null);
 
   useEffect(() => {
     const client = createClient();
@@ -92,18 +102,24 @@ export function usePreviewModel(
     if (paused) return;
     const edited = last.current !== null && (last.current.content !== content || last.current.gauge !== gauge);
     last.current = { content, gauge };
-    setState((s) => (s.computing ? s : { ...s, computing: true }));
+    // The mesh shown has this shape already: only its colours (or nothing visible) changed.
+    const colorsOnly = shownShape.current === shape;
+    if (!colorsOnly) setState((s) => (s.computing ? s : { ...s, computing: true }));
     scheduled.current = true;
     const timer = setTimeout(
       () => {
         scheduled.current = false;
         const client = clientRef.current;
         if (!client) return;
+        const ids = paletteKey === "" ? [] : paletteKey.split("\u0000");
+        const request = { content, gauge, style, ...(ids.length > 0 ? { palette: ids } : {}), ...(colorsOnly ? { colorsOnly } : {}) };
         client
-          .compute({ content, gauge, style })
+          .compute(request)
           .then((result) => {
             if (!result) return;
             const mainThread = client.degraded;
+            if (result.kind === "model") shownShape.current = shape;
+            else if (result.kind !== "colors") shownShape.current = null;
             setState((s) => ({ ...applyResult(s, result, scheduled.current || client.busy), ...(mainThread ? { mainThread } : {}) }));
           })
           .catch((err: unknown) => {
@@ -111,13 +127,13 @@ export function usePreviewModel(
             console.error(err);
           });
       },
-      edited ? debounceMs : 0,
+      edited && !colorsOnly ? debounceMs : 0,
     );
     return () => {
       clearTimeout(timer);
       scheduled.current = false;
     };
-  }, [content, gauge, style, debounceMs, paused]);
+  }, [content, gauge, style, debounceMs, paletteKey, shape, paused]);
 
   return state;
 }

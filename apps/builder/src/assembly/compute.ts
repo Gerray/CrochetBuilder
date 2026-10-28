@@ -78,10 +78,18 @@ export type AssemblyResult =
   | { id: number; kind: "scene"; parts: AssemblyPartResult[]; scene: AssemblyScene; maxTotal: number }
   | { id: number; kind: "error"; message: string };
 
-/** Shape key of a part: what its relaxed model depends on, plus the colours its mesh carries. */
+/** Palette ids of the document (the mesh's colour indices refer to them; names and hex do not matter). */
+function paletteIds(doc: AssemblyDoc): string[] {
+  return (doc.overview.colors ?? []).map((c) => c.id);
+}
+
+/**
+ * Shape key of a part: what its relaxed model depends on, plus what its mesh's colour
+ * indices depend on (palette ids, colour changes in rows and stitches — those are in the ops).
+ */
 function shapeKey(doc: AssemblyDoc, index: number, maxStitches: number): string {
   const part = doc.parts[index]!;
-  const colors = JSON.stringify([doc.overview.colors ?? null, part.content.rows.map((r) => r.color ?? null)]);
+  const colors = JSON.stringify([paletteIds(doc), part.content.rows.map((r) => r.color ?? null)]);
   return `${colors}|${geometryKey(part.content, doc.overview.gauge, maxStitches)}`;
 }
 
@@ -91,12 +99,15 @@ export function partMeshKey(doc: AssemblyDoc, index: number, style: MeshStyle, m
 }
 
 /**
- * The preview request of one part. The one place where a part's preview input is assembled:
- * when the part preview learns new inputs (a palette for yarn colours …), add them here too.
+ * The preview request of one part, as the part preview builds it: with the palette's ids the
+ * mesh carries every stitch's colour (`nodeColor` / `paletteIds`), which the view looks up
+ * in the palette's CSS colours — so the assembled toy is coloured like each part. The one
+ * place where a part's preview input is assembled: new preview inputs go here too.
  */
 export function partRequest(doc: AssemblyDoc, index: number, style: MeshStyle, maxStitches: number): PreviewRequest {
   const gauge: Gauge | undefined = doc.overview.gauge;
-  return { id: 0, content: doc.parts[index]!.content, gauge, style, maxStitches };
+  const palette = paletteIds(doc);
+  return { id: 0, content: doc.parts[index]!.content, gauge, style, maxStitches, ...(palette.length > 0 ? { palette } : {}) };
 }
 
 /** Stitches of all parts (each once), as the budget counts them. */
@@ -109,7 +120,7 @@ interface CacheEntry {
   /** The relaxed model (set by the computer's build). */
   model: Model | null;
   /** Kind of the last preview result (style-independent: it depends on the model). */
-  kind: PreviewResult["kind"] | null;
+  kind: Exclude<PreviewResult["kind"], "colors"> | null;
   message?: string;
 }
 
@@ -160,8 +171,9 @@ export class AssemblyComputer {
         const known = (have.has(key) || sent.has(key)) && entry.kind === "model" && entry.model !== null;
         let mesh: PreviewModel | undefined;
         if (!known) {
+          // Never a colours-only request here: the result is a model, empty, over budget or an error.
           const result = entry.computer.compute(partRequest(doc, index, style, maxStitches));
-          entry.kind = result.kind;
+          entry.kind = result.kind === "colors" ? "error" : result.kind;
           if (result.kind === "error") entry.message = result.message;
           else delete entry.message;
           if (result.kind === "model") mesh = result.model;

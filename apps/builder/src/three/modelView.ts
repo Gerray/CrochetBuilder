@@ -59,9 +59,12 @@ import {
   choosePick,
   pickFromBacking,
   pickFromHit,
+  backingColors,
+  meshColors,
+  meshPalette,
   rowIndicesOf,
-  vertexColors,
   type Bounds,
+  type Rgb,
   type Framing,
   type PickResult,
   type ViewMesh,
@@ -74,8 +77,14 @@ export type { SnapshotOptions } from "./viewport.js";
 export interface ModelViewStyle {
   /** Canvas background (CSS colour). */
   background: string;
-  /** Yarn colour. */
+  /** Yarn colour (the whole piece without a palette). */
   yarn: string;
+  /**
+   * Palette colours: id → CSS colour. A mesh with `nodeColor` shows every stitch in the
+   * colour of its `paletteIds` entry (looked up by id; unknown ids in `yarn`). Empty (default)
+   * or a mesh without `nodeColor`: the piece is in `yarn`.
+   */
+  colors: Readonly<Record<string, string>>;
   /** Colour of the highlighted row. */
   highlight: string;
   /** Grid line colour. */
@@ -94,6 +103,7 @@ export interface ModelViewStyle {
 export const DEFAULT_STYLE: ModelViewStyle = {
   background: "#ffffff",
   yarn: "#e7b48f",
+  colors: {},
   // Fallbacks when no theme is available (tests, snapshots): the light tokens.
   highlight: "#2f9e96",
   grid: "#d6d6da",
@@ -226,6 +236,7 @@ export function createModelView(canvas: HTMLCanvasElement, opts: ModelViewOption
   // The fabric behind the stitch lattice: matte, translucent, never hides yarn in
   // front of it (no depth writes; the yarn is opaque and drawn first).
   const backingMaterial = new MeshStandardMaterial({
+    vertexColors: true, // each stitch's shade of its own yarn (`backingColors`)
     roughness: 1,
     metalness: 0,
     transparent: true,
@@ -284,10 +295,18 @@ export function createModelView(canvas: HTMLCanvasElement, opts: ModelViewOption
     renderer.setClearColor(style.background, 1);
   }
 
+  /** The mesh's palette colours (linear RGB), looked up by id. */
+  function paletteRgb(): Rgb[] {
+    return mesh ? meshPalette(mesh, style.colors, style.yarn).map(linearRgb) : [];
+  }
+
   function applyBacking() {
-    const c = linearRgb(style.yarn);
-    // A darker shade of the yarn, like the shadowed inside of the fabric.
-    backingMaterial.color.setRGB(c[0] * 0.55, c[1] * 0.5, c[2] * 0.48);
+    // A darker shade of each stitch's own yarn, like the shadowed inside of the fabric.
+    if (backingObject && mesh) {
+      const attr = backingObject.geometry.getAttribute("color");
+      backingColors(mesh, linearRgb(style.yarn), paletteRgb(), attr.array as Float32Array);
+      attr.needsUpdate = true;
+    }
     backingMaterial.opacity = Math.min(1, Math.max(0, style.backing));
     backingMaterial.needsUpdate = true;
     if (backingObject) backingObject.visible = style.backing > 0 && !style.dimmed;
@@ -308,9 +327,16 @@ export function createModelView(canvas: HTMLCanvasElement, opts: ModelViewOption
   function applyColors() {
     if (!mesh || !geometry) return;
     const attr = geometry.getAttribute("color");
-    const base = linearRgb(style.yarn);
-    const hi = linearRgb(style.highlight);
-    vertexColors(mesh, rowIndicesOf(mesh, highlightRowIds), base, hi, attr.array as Float32Array);
+    meshColors(
+      mesh,
+      {
+        base: linearRgb(style.yarn),
+        palette: paletteRgb(),
+        rows: rowIndicesOf(mesh, highlightRowIds),
+        highlight: linearRgb(style.highlight),
+      },
+      attr.array as Float32Array,
+    );
     attr.needsUpdate = true;
     invalidate();
   }
@@ -463,6 +489,13 @@ export function createModelView(canvas: HTMLCanvasElement, opts: ModelViewOption
 
     setMesh(next) {
       if (disposed) return;
+      // Same geometry, new colours (a colour-only update of the model): recolour in place.
+      if (mesh && next && geometry && next.positions === mesh.positions && next.indices === mesh.indices && next.nodeIndex === mesh.nodeIndex) {
+        mesh = next;
+        applyColors();
+        applyBacking();
+        return;
+      }
       const hadMesh = mesh !== null;
       if (object) {
         scene.remove(object);
@@ -494,6 +527,7 @@ export function createModelView(canvas: HTMLCanvasElement, opts: ModelViewOption
           g.setAttribute("position", new BufferAttribute(next.backing.positions, 3));
           g.setAttribute("normal", new BufferAttribute(next.backing.normals, 3));
           g.setIndex(new BufferAttribute(next.backing.indices, 1));
+          g.setAttribute("color", new BufferAttribute(new Float32Array(next.backing.positions.length), 3));
           g.computeBoundingSphere();
           backingObject = new Mesh(g, backingMaterial);
           backingObject.renderOrder = 1; // after the opaque yarn
@@ -521,9 +555,12 @@ export function createModelView(canvas: HTMLCanvasElement, opts: ModelViewOption
       const prev = style;
       style = { ...style, ...patch };
       if (prev.background !== style.background) applyBackground();
-      if (prev.yarn !== style.yarn || prev.highlight !== style.highlight) applyColors();
+      const paletteChanged = JSON.stringify(prev.colors) !== JSON.stringify(style.colors);
+      if (prev.yarn !== style.yarn || prev.highlight !== style.highlight || paletteChanged) applyColors();
       if (prev.dimmed !== style.dimmed) applyMaterials();
-      if (prev.dimmed !== style.dimmed || prev.backing !== style.backing || prev.yarn !== style.yarn) applyBacking();
+      if (prev.dimmed !== style.dimmed || prev.backing !== style.backing || prev.yarn !== style.yarn || paletteChanged) {
+        applyBacking();
+      }
       if (prev.showGrid !== style.showGrid || prev.grid !== style.grid) rebuildGrid();
       invalidate();
     },

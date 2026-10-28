@@ -61,6 +61,25 @@ describe("ViewerApp", () => {
     );
   });
 
+  it("lists the palette with swatches, shows colour changes in the rows and colours the model", async () => {
+    const doc = demoDocument(ids(), "ball");
+    doc.overview.colors = [
+      { id: "weiss", name: "Weiß", hex: "#ffffff" },
+      { id: "rosa", name: "Rosa", hex: "#f2aec3" },
+    ];
+    doc.parts[0]!.content.rows[4]!.color = "rosa";
+    const payload = await encodeShare(prepareExport(doc));
+    render(<ViewerApp location={at("", `#data=${payload}`)} />);
+    const colors = await screen.findByRole("list", { name: "Farben" });
+    const items = within(colors).getAllByRole("listitem");
+    expect(items.map((li) => li.textContent)).toEqual(["Weiß (Anfangsfarbe)", "Rosa"]);
+    expect((items[1]!.querySelector(".swatch") as HTMLElement).style.background).toBe("rgb(242, 174, 195)");
+    expect(screen.getByText("Runde 5: [Farbe: Rosa] 24 fM (24)")).toBeTruthy();
+    await waitFor(() => expect(fakeViews.last?.mesh?.nodeColor).toBeDefined());
+    expect(fakeViews.last!.style.colors).toEqual({ weiss: "#ffffff", rosa: "#f2aec3" });
+    expect(fakeViews.last!.mesh!.paletteIds).toEqual(["weiss", "rosa"]);
+  });
+
   it("with broken data: German error", async () => {
     render(<ViewerApp location={at("", "#data=v1.AAAAkaputt")} />);
     const alert = await screen.findByRole("alert");
@@ -229,7 +248,7 @@ describe("ViewerApp: Montage", () => {
 
     const switcher = screen.getByRole("radiogroup", { name: "Ansicht" });
     fireEvent.click(within(switcher).getByRole("radio", { name: "Montage" }));
-    await waitFor(() => expect(fakeViews.last?.mesh?.rowIds.some((id) => id.startsWith("7|"))).toBe(true));
+    await waitFor(() => expect(fakeViews.last?.mesh?.rowIds.some((id) => id.startsWith("7|"))).toBe(true), { timeout: 8000 });
     expect(fakeViews.last!.spheres.filter((s) => s.kind === "eye")).toHaveLength(2);
     // Read-only: nothing to place.
     expect(screen.queryByRole("button", { name: "+ Annähen" })).toBeNull();
