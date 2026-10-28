@@ -63,6 +63,22 @@ All notable changes to this project are documented here. The format follows
   apart). The 3D preview closes a part as its finish says and relaxes again when finish or
   stuffing change. Importing duplicate row ids renames them and moves the placements that
   point at them; a duplicated part gets no part id of its own.
+- `ParseRowContext.rowColor`: a leading colour mark (`[Farbe: Weiß] 6 fM`) comes back as the
+  row's colour (`result.color`) instead of on the first stitch, so `renderRow` text reads
+  back into `Row.color`.
+- **Colours in the builder.** A palette strip in the parts bar and a "Farben" section in
+  "Material & Hinweise": built-in colour names with one click, own name and colour, rename,
+  recolour, choose the start colour, delete (rows that use the colour switch to a replacement
+  or lose the change), take the colours over into the yarn of the material list. Every row
+  card shows the colour it starts in — emphasised where it changes, muted where it carries
+  on — and sets or clears "Farbwechsel ab dieser Runde"; the op editor sets a colour change
+  per stitch. The row text shows colour changes with the palette's names and reads them back
+  (a name the palette lacks joins it). The 3D preview, the viewer and the PDF image show
+  every stitch in its colour (the row highlight blends in, so it stays visible on any
+  colour); PDF and viewer list the palette with swatches.
+- **Finish and stuffing in the builder:** "Abschluss" (Offen, Zusammengezogen, Flach
+  zusammengehäkelt) and "Füllung" (Keine, Leicht, Fest) per part, "Automatisch" showing what
+  the engine decides; a large gathered last round offers a flat finish with one click.
 
 ## [0.2.0] — not released separately
 
