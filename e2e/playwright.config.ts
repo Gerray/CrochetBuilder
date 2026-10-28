@@ -5,10 +5,11 @@ import { defineConfig, devices } from "@playwright/test";
  * (`/CrochetBuilder/`) so relative asset, worker and viewer URLs are exercised as deployed.
  *
  * `npm run e2e` builds the builder app, starts `vite preview` and runs the suite in headless
- * Chromium. Set `E2E_SKIP_BUILD=1` to reuse an existing `apps/builder/dist`.
+ * Chromium. Set `E2E_SKIP_BUILD=1` to reuse an existing `apps/builder/dist`, and `E2E_PORT`
+ * to serve on another port (several checkouts testing at once must not share a server).
  */
 
-const PORT = 4179;
+const PORT = Number(process.env.E2E_PORT) || 4179;
 const BASE_PATH = "/CrochetBuilder/";
 const CI = !!process.env.CI;
 
