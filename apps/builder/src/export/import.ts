@@ -15,6 +15,7 @@ import {
   type PartContent,
 } from "@crochetbuilder/engine";
 import { newId, type BuilderDoc } from "../state/document.js";
+import { MAX_PART_QUANTITY, MAX_PARTS } from "../state/editor.js";
 
 /** Files above this size are not read at all (bytes). */
 export const MAX_IMPORT_FILE_BYTES = 5 * 1024 * 1024;
@@ -76,6 +77,20 @@ function uniqueRowIds(doc: BuilderDoc, makeId: () => string): BuilderDoc {
  */
 export function documentFromExport(exp: BuilderExport, makeId: () => string = newId): ImportResult {
   if (exp.parts.length === 0) return { ok: false, message: "Die Anleitung enthält keine Teile." };
+  if (exp.parts.length > MAX_PARTS) {
+    return {
+      ok: false,
+      message: `Die Anleitung hat ${exp.parts.length} Teile – der Builder bearbeitet höchstens ${MAX_PARTS}.`,
+    };
+  }
+  const many = exp.parts.findIndex((p) => p.quantity > MAX_PART_QUANTITY);
+  if (many >= 0) {
+    const part = exp.parts[many]!;
+    return {
+      ok: false,
+      message: `„${part.name.trim() || `Teil ${many + 1}`}“ soll ${part.quantity}-mal gehäkelt werden – der Builder erlaubt höchstens ${MAX_PART_QUANTITY}.`,
+    };
+  }
   if (!exp.parts.every((p) => withinLimits(p.content))) {
     return {
       ok: false,

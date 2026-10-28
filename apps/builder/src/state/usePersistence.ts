@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type Dispatch } from "react";
 import type { EditorAction, EditorState } from "./editor.js";
-import { loadState, saveState } from "./storage.js";
+import { loadShownPart, loadState, saveShownPart, saveState } from "./storage.js";
 
 export type SaveStatus = "loading" | "idle" | "saving" | "saved" | "error" | "suspended";
 
@@ -17,8 +17,6 @@ export const SAVE_DELAY_MS = 400;
 interface Pending {
   doc: EditorState["doc"];
   pinned: EditorState["pinned"];
-  /** The part shown, so a reload opens the same part. */
-  part: number;
 }
 
 /**
@@ -56,7 +54,7 @@ export function usePersistence(state: EditorState, dispatch: Dispatch<EditorActi
       (result) => {
         if (cancelled) return;
         if (result.kind === "ok") {
-          dispatch({ type: "hydrate", doc: result.state.doc, pinned: result.state.pinned, part: result.state.part });
+          dispatch({ type: "hydrate", doc: result.state.doc, pinned: result.state.pinned, part: loadShownPart() });
         }
         if (result.kind === "invalid") {
           setInvalidStored(result.raw);
@@ -80,11 +78,16 @@ export function usePersistence(state: EditorState, dispatch: Dispatch<EditorActi
   const { doc, pinned, part } = state;
   useEffect(() => {
     if (!ready.current) return;
-    pending.current = { doc, pinned, part };
+    pending.current = { doc, pinned };
     setStatus("saving");
     clearTimeout(timer.current);
     timer.current = setTimeout(flush, SAVE_DELAY_MS);
-  }, [doc, pinned, part, resumed, flush]);
+  }, [doc, pinned, resumed, flush]);
+
+  // The part shown is remembered on its own: switching parts is no document save.
+  useEffect(() => {
+    if (ready.current) saveShownPart(part);
+  }, [part, resumed]);
 
   // Never lose the last edits when the tab is hidden or closed.
   useEffect(() => {

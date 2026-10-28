@@ -3,7 +3,8 @@ import "fake-indexeddb/auto";
 import { IDBFactory } from "fake-indexeddb";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { demoDocument, emptyDocument } from "./document.js";
-import { BACKUP_KEY, LS_KEY, loadState, resetStorageConnection, saveState } from "./storage.js";
+import { MAX_PART_QUANTITY, MAX_PARTS } from "./editor.js";
+import { BACKUP_KEY, LS_KEY, PART_KEY, loadShownPart, loadState, resetStorageConnection, saveShownPart, saveState } from "./storage.js";
 
 const realIndexedDB = globalThis.indexedDB;
 
@@ -105,44 +106,49 @@ describe("storage — unreadable values", () => {
 });
 
 describe("storage — several parts", () => {
-  it("round-trips all parts and the shown part", async () => {
+  it("round-trips all parts", async () => {
     const doc = demoDocument(undefined, "bunny");
-    await saveState({ doc, pinned: [], part: 3 });
+    await saveState({ doc, pinned: [] });
     localStorage.clear(); // only the IndexedDB copy remains
     const result = await loadState();
     expect(result.kind).toBe("ok");
     if (result.kind === "ok") {
       expect(result.state.doc).toEqual(doc);
       expect(result.state.doc.parts).toHaveLength(5);
-      expect(result.state.part).toBe(3);
     }
   });
 
-  it("loads a save of the one-part builder unchanged, showing its part", async () => {
-    // Exactly what the one-part builder wrote: no `part` field.
+  it("loads a save of the one-part builder unchanged", async () => {
     const doc = demoDocument();
     const old = { doc, pinned: [doc.parts[0]!.content.rows[0]!.id], savedAt: 7 };
     localStorage.setItem(LS_KEY, JSON.stringify(old));
-    expect(await loadState()).toEqual({ kind: "ok", state: { ...old, part: 0 } });
+    expect(await loadState()).toEqual({ kind: "ok", state: old });
   });
 
-  it("clamps a stored part index that does not fit the document", async () => {
-    const doc = demoDocument(undefined, "bunny");
-    const cases: Array<[unknown, number]> = [
-      [9, 4],
-      [-2, 0],
-      [1.5, 0],
-      ["2", 0],
-    ];
-    for (const [stored, expected] of cases) {
-      localStorage.setItem(LS_KEY, JSON.stringify({ doc, pinned: [], part: stored, savedAt: 1 }));
-      const result = await loadState();
-      expect(result.kind === "ok" && result.state.part, String(stored)).toBe(expected);
+  it("keeps the shown part under its own key; anything odd reads as the first part", () => {
+    expect(loadShownPart()).toBe(0);
+    saveShownPart(3);
+    expect(localStorage.getItem(PART_KEY)).toBe("3");
+    expect(loadShownPart()).toBe(3);
+    for (const raw of ["-2", "1.5", '"2"', "kaputt"]) {
+      localStorage.setItem(PART_KEY, raw);
+      expect(loadShownPart(), raw).toBe(0);
     }
+    // The document copy is not touched by it.
+    expect(localStorage.getItem(LS_KEY)).toBeNull();
   });
 
-  it("refuses a document without parts", async () => {
-    localStorage.setItem(LS_KEY, JSON.stringify({ doc: { ...emptyDocument("a"), parts: [] }, pinned: [], savedAt: 1 }));
-    expect((await loadState()).kind).toBe("invalid");
+  it("refuses documents without parts, with too many parts or too high a quantity", async () => {
+    const tooMany = { ...emptyDocument("a"), parts: Array.from({ length: MAX_PARTS + 1 }, () => emptyDocument("b").parts[0]!) };
+    const tooOften = emptyDocument("c");
+    tooOften.parts[0]!.quantity = MAX_PART_QUANTITY + 1;
+    for (const doc of [{ ...emptyDocument("a"), parts: [] }, tooMany, tooOften]) {
+      localStorage.setItem(LS_KEY, JSON.stringify({ doc, pinned: [], savedAt: 1 }));
+      expect((await loadState()).kind).toBe("invalid");
+    }
+    const atLimit = emptyDocument("d");
+    atLimit.parts[0]!.quantity = MAX_PART_QUANTITY;
+    localStorage.setItem(LS_KEY, JSON.stringify({ doc: atLimit, pinned: [], savedAt: 2 }));
+    expect((await loadState()).kind).toBe("ok");
   });
 });

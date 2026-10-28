@@ -9,6 +9,7 @@ import {
   type PartContent,
 } from "@crochetbuilder/engine";
 import { demoDocument, emptyDocument, type BuilderDoc } from "../state/document.js";
+import { MAX_PART_QUANTITY, MAX_PARTS } from "../state/editor.js";
 import {
   documentFromExport,
   importFile,
@@ -52,13 +53,15 @@ describe("prepareExport", () => {
     expect(() => prepareExport(doc)).toThrow(ExportValidationError);
   });
 
-  it("renders several parts with a heading line each", () => {
+  it("renders several parts with a heading line each, worded like the PDF and the viewer", () => {
     const doc = ball();
     doc.parts.push({ name: "Ohr", quantity: 2, content: structuredClone(doc.parts[0]!.content) });
+    doc.parts.push({ name: " ", quantity: 1, content: { schemaVersion: 1, rows: [] } });
     const lines = renderedLines(doc);
     expect(lines[0]).toBe("Ball:");
-    expect(lines[12]).toBe("Ohr (2×):");
-    expect(lines).toHaveLength(24);
+    expect(lines[12]).toBe("Ohr ×2:");
+    expect(lines[24]).toBe("Teil 3:");
+    expect(lines).toHaveLength(25);
   });
 });
 
@@ -240,6 +243,26 @@ describe("import: several parts", () => {
     expect(result.notice).toBeUndefined();
     expect(result.pinned).toEqual(result.doc.parts.flatMap((p) => p.content.rows.map((r) => r.id)));
     expect(prepareExport(result.doc).parts).toEqual(prepareExport(twoParts()).parts);
+  });
+
+  it("refuses more than MAX_PARTS parts or a quantity above MAX_PART_QUANTITY, with a German message", () => {
+    const many = prepareExport(ball());
+    const content = { schemaVersion: 1 as const, rows: [] };
+    many.parts = Array.from({ length: MAX_PARTS + 1 }, (_, i) => ({ name: `T${i}`, quantity: 1, content }));
+    expect(documentFromExport(many, ids("m"))).toEqual({
+      ok: false,
+      message: `Die Anleitung hat ${MAX_PARTS + 1} Teile – der Builder bearbeitet höchstens ${MAX_PARTS}.`,
+    });
+    many.parts = many.parts.slice(0, MAX_PARTS);
+    expect(documentFromExport(many, ids("m")).ok).toBe(true);
+
+    const often = prepareExport(ball());
+    often.parts.push({ name: "", quantity: MAX_PART_QUANTITY + 1, content });
+    const text = JSON.stringify(often);
+    expect(parseImportText(text, "viele.json")).toEqual({
+      ok: false,
+      message: `„Teil 2“ soll ${MAX_PART_QUANTITY + 1}-mal gehäkelt werden – der Builder erlaubt höchstens ${MAX_PART_QUANTITY}.`,
+    });
   });
 
   it("row ids repeated across parts get fresh ones (ids are unique in the whole document)", () => {
