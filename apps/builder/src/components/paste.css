@@ -189,6 +189,9 @@
   gap: var(--sp-1) var(--sp-4);
   margin: 0;
 }
+.paste-detail-note {
+  color: var(--c-text-2);
+}
 .paste-badge {
   padding: 0 var(--sp-2);
   border: var(--bd-default);

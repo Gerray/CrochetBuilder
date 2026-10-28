@@ -14,7 +14,9 @@ import { SAMPLE_PATTERN, SAMPLE_V2_PATTERN } from "../test/samplePattern.js";
 import {
   applyPaste,
   effectiveMode,
+  droppedPlacements,
   mergePalette,
+  paletteNotes,
   notesWith,
   partEdit,
   pasteBlocker,
@@ -308,6 +310,30 @@ describe("applyPaste — colours, finish, stuffing and assembly (format v2)", ()
     expect(state.doc.assembly!.map((p) => p.id)).toEqual(["p0", ...action.assembly!.map((p) => p.id)]);
     expect(problems(state.doc)).toEqual([]);
     expect(editorReducer(state, { type: "undo" }).doc).toEqual(existing);
+  });
+
+  it("matches the main colour in every spelling, and names a kept shade when adding parts", () => {
+    const merged = mergePalette([{ id: "m", name: "Hauptfarbe" }], [{ id: "main-color", name: "Main color" }]);
+    expect(merged.ids.get("main-color")).toBe("m");
+    const base = demoDocument(ids("old"), "sphere");
+    const doc: BuilderDoc = {
+      ...base,
+      overview: { ...base.overview, colors: [{ id: "x", name: "BRAUN", hex: "#123456" }, { id: "y", name: "Creme", hex: "#FFFDD0" }] },
+    };
+    expect(paletteNotes(v2, doc, "append")).toEqual(["BRAUN: vorhandener Farbton bleibt"]); // Creme: same shade
+    expect(paletteNotes(v2, doc, "replace")).toEqual([]);
+    expect(paletteNotes(v2, emptyDocument("e"), "append")).toEqual([]); // an empty pattern is replaced
+  });
+
+  it("counts placements whose part or row is gone, and leaves them out", () => {
+    expect(droppedPlacements(v2)).toBe(0);
+    const broken = structuredClone(v2);
+    broken.assembly[0]!.row = "nowhere";
+    broken.assembly[1]!.part = "nobody";
+    expect(droppedPlacements(broken)).toBe(2);
+    const action = actionOf(broken, emptyDocument("old"), replace);
+    if (action.type !== "replaceDocument") throw new Error("expected replaceDocument");
+    expect(action.doc.assembly).toBeUndefined();
   });
 
   it("leaves palette and assembly alone when the text has none", () => {

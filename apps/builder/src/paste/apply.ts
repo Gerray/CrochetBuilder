@@ -7,6 +7,7 @@
 import {
   CURRENT_SCHEMA_VERSION,
   MAX_STITCH_COUNT_TARGET,
+  colorKey,
   opsWithinLimits,
   rowLabel,
   rowOrdinals,
@@ -126,9 +127,16 @@ function freeId(base: string, taken: Set<string>): string {
   return id;
 }
 
+/** The existing colour an imported one becomes: same name (`colorKey`: case and "MC" / "Main color" aside). */
+function sameColor(existing: readonly PaletteColor[], color: PaletteColor): PaletteColor | undefined {
+  const key = colorKey(color.name);
+  return existing.find((c) => colorKey(c.name) === key);
+}
+
 /**
  * The palette after the import: the existing colours, plus the imported ones whose name is
- * not there yet (ignoring case). Returns the palette and the id each imported colour gets.
+ * not there yet (see `sameColor`). Returns the palette and the id each imported colour gets.
+ * An existing colour keeps its own display colour (see `paletteNotes`).
  */
 export function mergePalette(
   existing: readonly PaletteColor[],
@@ -138,7 +146,7 @@ export function mergePalette(
   const taken = new Set(colors.map((c) => c.id));
   const ids = new Map<string, string>();
   for (const color of imported) {
-    const same = colors.find((c) => c.name.trim().toLowerCase() === color.name.trim().toLowerCase());
+    const same = sameColor(colors, color);
     if (same) {
       ids.set(color.id, same.id);
       continue;
@@ -148,6 +156,37 @@ export function mergePalette(
     ids.set(color.id, added.id);
   }
   return { colors, ids };
+}
+
+/**
+ * What the dialog says about the colours when parts are added: "Rosa: vorhandener Farbton
+ * bleibt" for an imported colour whose name the pattern already has with another display
+ * colour. Empty for a new pattern (nothing to merge with).
+ */
+export function paletteNotes(preview: Pick<PastePreview, "colors">, doc: BuilderDoc, mode: PasteMode): string[] {
+  if (effectiveMode(mode, doc) === "replace") return [];
+  const existing = doc.overview.colors ?? [];
+  const notes: string[] = [];
+  for (const color of preview.colors) {
+    const same = sameColor(existing, color);
+    if (same && same.hex && color.hex && same.hex.toLowerCase() !== color.hex.toLowerCase()) {
+      notes.push(`${same.name}: vorhandener Farbton bleibt`);
+    }
+  }
+  return notes;
+}
+
+/**
+ * Placements of the preview that cannot be taken over because their part or row is not in it
+ * (they are left out on import).
+ */
+export function droppedPlacements(preview: Pick<PastePreview, "assembly" | "parts">): number {
+  const partById = new Map(preview.parts.map((p) => [p.id, p]));
+  return preview.assembly.filter((p) => {
+    const target = partById.get(p.target);
+    if (!target || !target.rows.some((r) => r.id === p.row)) return true;
+    return p.part !== undefined && !partById.has(p.part);
+  }).length;
 }
 
 /** Colour ids of ops renamed by `ids` (colours not in it are kept as they are). */

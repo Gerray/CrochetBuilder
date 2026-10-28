@@ -152,6 +152,15 @@ describe("Anleitung einfügen", () => {
     expect(await box.findByText("Montage: 2 Augen, 4 Teile angenäht")).toBeTruthy();
   });
 
+  it("says when a colour of the same name keeps the pattern's own shade", async () => {
+    const base = demoDocument(() => "r", "sphere");
+    const doc: BuilderDoc = { ...base, overview: { ...base.overview, colors: [{ id: "c1", name: "braun", hex: "#5a3a1a" }] } };
+    render(<PasteDialog initialText={SAMPLE_V2_PATTERN} doc={doc} onImport={() => {}} onClose={() => {}} previewOptions={{ debounceMs: 0 }} />);
+    expect(await within(dialog()).findByText("braun: vorhandener Farbton bleibt")).toBeTruthy();
+    // Creme is new, and a colour with the same shade needs no remark.
+    expect(within(dialog()).queryByText(/Creme: vorhandener/)).toBeNull();
+  });
+
   it("adds the parts to the current pattern and appends the preamble to its notes", async () => {
     await renderApp();
     fireEvent.click(screen.getByRole("button", { name: "Demo laden" }));

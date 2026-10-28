@@ -2,7 +2,9 @@ import { Fragment, memo, useCallback, useEffect, useId, useMemo, useRef, useStat
 import type { NotationLocale } from "@crochetbuilder/engine";
 import {
   applyPaste,
+  droppedPlacements,
   effectiveMode,
+  paletteNotes,
   partEdit,
   pasteBlocker,
   type PartEdit,
@@ -152,6 +154,16 @@ export function PasteDialog({ initialText, doc, onImport, onClose, previewOption
 
   const close = () => onClose(text);
   // Both actions are checked up front, so a button is disabled with its reason before a click.
+  // Colours that keep the pattern's own shade when parts are added; placements left out.
+  const notes = useMemo(() => {
+    if (!preview) return [];
+    const out = paletteNotes(preview, doc, "append");
+    const dropped = droppedPlacements(preview);
+    if (dropped > 0) {
+      out.push(`${dropped} ${dropped === 1 ? "Montageangabe" : "Montageangaben"} ohne Teil oder Runde – ${dropped === 1 ? "wird" : "werden"} nicht übernommen`);
+    }
+    return out;
+  }, [preview, doc]);
   const blockers = useMemo(() => {
     if (!preview) return { replace: null, append: null };
     const check = (mode: PasteMode) => pasteBlocker(preview, { mode, edits: indexEdits, includePreamble }, doc);
@@ -291,6 +303,7 @@ export function PasteDialog({ initialText, doc, onImport, onClose, previewOption
                 onlyProblems={onlyProblems}
                 onOnlyProblems={setOnlyProblems}
                 edits={indexEdits}
+                notes={notes}
                 onEdit={setEdit}
                 onSelectLine={selectLine}
               />
@@ -352,12 +365,14 @@ interface PreviewContentProps {
   edits: ReadonlyMap<number, Partial<PartEdit>>;
   onEdit: (index: number, patch: Partial<PartEdit>) => void;
   onSelectLine: (line: number | undefined) => void;
+  /** Remarks on taking the colours and placements over ("Rosa: vorhandener Farbton bleibt"). */
+  notes: readonly string[];
 }
 
 const percent = (confidence: number) => `${Math.round(confidence * 100)} %`;
 
 const PreviewContent = memo(function PreviewContent(props: PreviewContentProps) {
-  const { preview, computing, choice, onChoice, onlyProblems, onOnlyProblems, edits, onEdit, onSelectLine } = props;
+  const { preview, computing, choice, onChoice, onlyProblems, onOnlyProblems, edits, onEdit, onSelectLine, notes } = props;
   // The notation has its own box above; skipped lines are no problem.
   const general = preview.general.filter(
     (g) => g.code !== "LOCALE_UNCERTAIN" && (!onlyProblems || g.code !== "IGNORED"),
@@ -377,7 +392,7 @@ const PreviewContent = memo(function PreviewContent(props: PreviewContentProps) 
           <input type="checkbox" checked={onlyProblems} onChange={(e) => onOnlyProblems(e.target.checked)} />
           nur Problemstellen
         </label>
-        {(preview.colors.length > 0 || assembly) && (
+        {(preview.colors.length > 0 || assembly || notes.length > 0) && (
           <p className="paste-details muted small">
             {preview.colors.length > 0 && (
               <span>
@@ -391,6 +406,11 @@ const PreviewContent = memo(function PreviewContent(props: PreviewContentProps) 
               </span>
             )}
             {assembly && <span>{assembly}</span>}
+            {notes.map((note) => (
+              <span key={note} className="paste-detail-note">
+                {note}
+              </span>
+            ))}
           </p>
         )}
       </div>
