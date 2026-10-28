@@ -179,6 +179,17 @@ describe("composeAssembly: attaching", () => {
     expect(len(sub(mirror(mean(ear0), c, right), mean(ear1)))).toBeLessThan(0.5 * SW);
   });
 
+  it("turns the whole scene to face +Z on request, keeping it rigid", () => {
+    const turned = composeAssembly(doc, [HEAD, EAR], { faceFront: true });
+    const h = find(turned.instances, 0);
+    const front = rotate(h.transform.rotation, frame(HEAD.graph, "r1").front);
+    expect(front[2]).toBeCloseTo(1, 6);
+    // Distances between the parts do not change.
+    const d0 = len(sub(base(EAR, ear0), base(EAR, ear1)));
+    const d1 = len(sub(base(EAR, find(turned.instances, 1, 0)), base(EAR, find(turned.instances, 1, 1))));
+    expect(d1).toBeCloseTo(d0, 6);
+  });
+
   it("is deterministic", () => {
     expect(JSON.stringify(composeAssembly(doc, [HEAD, EAR]))).toBe(JSON.stringify(scene));
   });

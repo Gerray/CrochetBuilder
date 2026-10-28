@@ -142,6 +142,11 @@ export interface ComposeOptions {
   defaultMarkMm?: number;
   /** Gap between the main group and parts set beside it (mm). Default 15. */
   gapMm?: number;
+  /**
+   * Turn the whole scene about the vertical axis so that the main part's front (angle 0)
+   * faces +Z (the default view direction). Default false: the main part keeps its own pose.
+   */
+  faceFront?: boolean;
 }
 
 export const DEFAULT_EYE_MM = 10;
@@ -569,6 +574,14 @@ export function composeAssembly(
     return rootPart(a) - rootPart(b);
   });
   const main = ranked[0] !== undefined && isRealRoot(ranked[0]) ? ranked[0] : undefined;
+
+  // Optionally turn everything so the main part faces the viewer (+Z).
+  if (opts.faceFront && main !== undefined) {
+    const f = frontAt(models[rootPart(main)]!.graph, undefined);
+    // Rotation about Y taking (fx, 0, fz) to (0, 0, 1).
+    const spin: RigidTransform = { rotation: [f[2], 0, -f[0], 0, 1, 0, f[0], 0, f[2]], translation: [0, 0, 0] };
+    for (const [key, value] of local) if (value) local.set(key, { ...value, transform: composeTransforms(spin, value.transform) });
+  }
 
   // 5. World transforms: the main group in place, the others beside it, left to right.
   const world = new Map<string, RigidTransform>();
