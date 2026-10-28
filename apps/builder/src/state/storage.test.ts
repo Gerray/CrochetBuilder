@@ -103,3 +103,46 @@ describe("storage — unreadable values", () => {
     expect((await loadState()).kind).toBe("invalid");
   });
 });
+
+describe("storage — several parts", () => {
+  it("round-trips all parts and the shown part", async () => {
+    const doc = demoDocument(undefined, "bunny");
+    await saveState({ doc, pinned: [], part: 3 });
+    localStorage.clear(); // only the IndexedDB copy remains
+    const result = await loadState();
+    expect(result.kind).toBe("ok");
+    if (result.kind === "ok") {
+      expect(result.state.doc).toEqual(doc);
+      expect(result.state.doc.parts).toHaveLength(5);
+      expect(result.state.part).toBe(3);
+    }
+  });
+
+  it("loads a save of the one-part builder unchanged, showing its part", async () => {
+    // Exactly what the one-part builder wrote: no `part` field.
+    const doc = demoDocument();
+    const old = { doc, pinned: [doc.parts[0]!.content.rows[0]!.id], savedAt: 7 };
+    localStorage.setItem(LS_KEY, JSON.stringify(old));
+    expect(await loadState()).toEqual({ kind: "ok", state: { ...old, part: 0 } });
+  });
+
+  it("clamps a stored part index that does not fit the document", async () => {
+    const doc = demoDocument(undefined, "bunny");
+    const cases: Array<[unknown, number]> = [
+      [9, 4],
+      [-2, 0],
+      [1.5, 0],
+      ["2", 0],
+    ];
+    for (const [stored, expected] of cases) {
+      localStorage.setItem(LS_KEY, JSON.stringify({ doc, pinned: [], part: stored, savedAt: 1 }));
+      const result = await loadState();
+      expect(result.kind === "ok" && result.state.part, String(stored)).toBe(expected);
+    }
+  });
+
+  it("refuses a document without parts", async () => {
+    localStorage.setItem(LS_KEY, JSON.stringify({ doc: { ...emptyDocument("a"), parts: [] }, pinned: [], savedAt: 1 }));
+    expect((await loadState()).kind).toBe("invalid");
+  });
+});

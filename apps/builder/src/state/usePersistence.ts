@@ -17,6 +17,8 @@ export const SAVE_DELAY_MS = 400;
 interface Pending {
   doc: EditorState["doc"];
   pinned: EditorState["pinned"];
+  /** The part shown, so a reload opens the same part. */
+  part: number;
 }
 
 /**
@@ -54,7 +56,7 @@ export function usePersistence(state: EditorState, dispatch: Dispatch<EditorActi
       (result) => {
         if (cancelled) return;
         if (result.kind === "ok") {
-          dispatch({ type: "hydrate", doc: result.state.doc, pinned: result.state.pinned });
+          dispatch({ type: "hydrate", doc: result.state.doc, pinned: result.state.pinned, part: result.state.part });
         }
         if (result.kind === "invalid") {
           setInvalidStored(result.raw);
@@ -75,14 +77,14 @@ export function usePersistence(state: EditorState, dispatch: Dispatch<EditorActi
     };
   }, [dispatch]);
 
-  const { doc, pinned } = state;
+  const { doc, pinned, part } = state;
   useEffect(() => {
     if (!ready.current) return;
-    pending.current = { doc, pinned };
+    pending.current = { doc, pinned, part };
     setStatus("saving");
     clearTimeout(timer.current);
     timer.current = setTimeout(flush, SAVE_DELAY_MS);
-  }, [doc, pinned, resumed, flush]);
+  }, [doc, pinned, part, resumed, flush]);
 
   // Never lose the last edits when the tab is hidden or closed.
   useEffect(() => {

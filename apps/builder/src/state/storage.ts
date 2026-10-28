@@ -18,6 +18,8 @@ import type { BuilderDoc } from "./document.js";
 export interface StoredState {
   doc: BuilderDoc;
   pinned: string[];
+  /** Index of the part shown in the editor (0 for saves from before several parts). */
+  part: number;
   /** Milliseconds since epoch of the save. */
   savedAt: number;
 }
@@ -40,10 +42,13 @@ function savedAtOf(value: unknown): number {
   return typeof at === "number" && Number.isFinite(at) ? at : 0;
 }
 
-/** Check a stored value; anything that is not a valid one-part document within limits → null. */
+/**
+ * Check a stored value; anything that is not a valid document with at least one part within
+ * the limits → null. Saves from the one-part builder load unchanged (shown part: the first).
+ */
 export function parseStored(value: unknown): StoredState | null {
   if (!value || typeof value !== "object") return null;
-  const record = value as { doc?: unknown; pinned?: unknown };
+  const record = value as { doc?: unknown; pinned?: unknown; part?: unknown };
   const parsed = BuilderExportSchema.safeParse(record.doc);
   if (!parsed.success || parsed.data.parts.length === 0) return null;
   const withinLimits = parsed.data.parts.every((part) =>
@@ -53,7 +58,9 @@ export function parseStored(value: unknown): StoredState | null {
   );
   if (!withinLimits) return null;
   const pinned = Array.isArray(record.pinned) ? record.pinned.filter((x): x is string => typeof x === "string") : [];
-  return { doc: parsed.data, pinned, savedAt: savedAtOf(value) };
+  const last = parsed.data.parts.length - 1;
+  const part = Number.isInteger(record.part) ? Math.min(last, Math.max(0, record.part as number)) : 0;
+  return { doc: parsed.data, pinned, part, savedAt: savedAtOf(value) };
 }
 
 // ---------------------------------------------------------------------------
@@ -161,8 +168,8 @@ export async function loadState(): Promise<LoadResult> {
  * first `await`, so a save started on `pagehide` survives the tab closing. Rejects only if
  * neither store took the write.
  */
-export async function saveState(state: { doc: BuilderDoc; pinned: readonly string[] }): Promise<void> {
-  const record: StoredState = { doc: state.doc, pinned: [...state.pinned], savedAt: Date.now() };
+export async function saveState(state: { doc: BuilderDoc; pinned: readonly string[]; part?: number }): Promise<void> {
+  const record: StoredState = { doc: state.doc, pinned: [...state.pinned], part: state.part ?? 0, savedAt: Date.now() };
   const lsOk = lsPut(LS_KEY, record);
   const idbOk = await idbPut(KEY, record);
   if (!lsOk && !idbOk) throw new Error("Speichern fehlgeschlagen");

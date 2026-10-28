@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { BuilderExportSchema, buildModel, validate } from "@crochetbuilder/engine";
+import { BuilderExportSchema, buildModel, computeRowStitches, validate } from "@crochetbuilder/engine";
 import { loadDemo } from "./actions.js";
 import { DEMOS, demoDocument } from "./document.js";
 import { currentPart, editorReducer, initEditorState } from "./editor.js";
@@ -10,11 +10,11 @@ const counter = () => {
 };
 
 describe("demo patterns", () => {
-  it("every demo is a valid builder export without findings", () => {
+  it("every demo is a valid builder export without findings in any part", () => {
     for (const { kind } of DEMOS) {
       const doc = demoDocument(counter(), kind);
       expect(BuilderExportSchema.safeParse(doc).success, kind).toBe(true);
-      expect(validate(currentPart(doc)), kind).toEqual([]);
+      for (const part of doc.parts) expect(validate(part.content), `${kind}: ${part.name}`).toEqual([]);
     }
   });
 
@@ -52,6 +52,38 @@ describe("demo patterns", () => {
     const state = editorReducer(initEditorState(demoDocument(counter())), loadDemo("ball"));
     expect(state.doc.title).toBe("Amigurumi-Ball");
     expect(state.pinned).toEqual(currentPart(state.doc).rows.map((r) => r.id));
+  });
+
+  it("the bunny is a multi-part toy: head, body, and ears, arms and legs twice each", () => {
+    const doc = demoDocument(counter(), "bunny");
+    expect(doc.parts.map((p) => [p.name, p.quantity])).toEqual([
+      ["Kopf", 1],
+      ["Körper", 1],
+      ["Ohr", 2],
+      ["Arm", 2],
+      ["Bein", 2],
+    ]);
+    // Row ids are unique across all parts.
+    const ids = doc.parts.flatMap((p) => p.content.rows.map((r) => r.id));
+    expect(new Set(ids).size).toBe(ids.length);
+    // Each part builds a closed or tubular model; the ears are long and slim.
+    const model = (name: string) => buildModel(doc.parts.find((p) => p.name === name)!.content, doc.overview.gauge);
+    const head = model("Kopf");
+    const ear = model("Ohr");
+    expect(head.maxDiameter).toBeGreaterThan(ear.maxDiameter * 1.8);
+    expect(ear.size.height).toBeGreaterThan(ear.maxDiameter * 1.5);
+    const total = doc.parts.reduce(
+      (sum, p) => sum + p.quantity * p.content.rows.reduce((n, r) => n + computeRowStitches(r), 0),
+      0,
+    );
+    expect(total).toBeGreaterThan(1000);
+  });
+
+  it("loadDemo pins the rows of every part", () => {
+    const state = editorReducer(initEditorState(demoDocument(counter())), loadDemo("bunny"));
+    expect(state.doc.parts).toHaveLength(5);
+    expect(state.part).toBe(0);
+    expect(state.pinned).toEqual(state.doc.parts.flatMap((p) => p.content.rows.map((r) => r.id)));
   });
 
   it("demo documents do not share mutable state", () => {
