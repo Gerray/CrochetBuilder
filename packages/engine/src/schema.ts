@@ -12,8 +12,8 @@
  *
  * Format versions: parsers read `schemaVersion` 1 and 2, writers write 2
  * (`CURRENT_SCHEMA_VERSION`). Version 2 is purely additive — colours, stitch groups, the
- * codes BOBBLE/PUFF/POPCORN/PICOT, the modifiers FP/BP, a part's finish and stuffing — so
- * every v1 document is a valid v2 document.
+ * codes BOBBLE/PUFF/POPCORN/PICOT, the modifiers FP/BP, rounds around a foundation chain
+ * (`Row.around`), a part's finish and stuffing — so every v1 document is a valid v2 document.
  *
  * Note: this Zod schema validates *shape*, not crochet correctness — a recursive
  * RepeatGroup tree cannot enforce row stitch counts. The real guarantee is
