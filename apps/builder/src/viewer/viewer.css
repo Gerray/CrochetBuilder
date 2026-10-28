@@ -119,6 +119,19 @@ body,
   line-height: var(--lh-base);
   font-weight: var(--fw-semibold);
 }
+/* Each part's rows; the part whose model is shown carries the accent marker. Scrolling to a
+ * part keeps it clear of the top edge. */
+.viewer-part {
+  scroll-margin-top: var(--sp-4);
+  padding-left: var(--sp-3);
+  border-left: var(--bd-marker) transparent;
+}
+.viewer-part.is-current {
+  border-left-color: var(--c-accent-base);
+}
+.viewer-part.is-current h3 {
+  color: var(--c-accent-text);
+}
 .viewer-list {
   margin: 0;
   padding-left: 1.2em;

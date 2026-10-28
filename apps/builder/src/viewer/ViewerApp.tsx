@@ -23,7 +23,8 @@ const STYLES: Array<[MeshStyle, string]> = [
 
 /**
  * Read-only page for share links and embeds: title, 3D model, size, materials, rows. With
- * several parts a switcher picks the part whose model and rows are shown.
+ * several parts, tabs pick the part whose model is shown and scroll to its rows; the text
+ * always lists every part (so printing the page prints the whole pattern).
  */
 export function ViewerApp({ location = globalThis.location, previewOptions, loadView = loadModelCanvas }: ViewerAppProps) {
   const [data, setData] = useState<ViewerData>({ status: "loading" });
@@ -90,7 +91,16 @@ export function ViewerApp({ location = globalThis.location, previewOptions, load
   const model = (
     <ViewerModel exp={data.exp} part={shown} embed={embed} previewOptions={previewOptions} loadView={loadView} />
   );
-  const switcher = <PartSwitcher exp={data.exp} selected={shown} onSelect={setPart} compact={embed} />;
+  const selectPart = (index: number) => {
+    setPart(index);
+    // The text lists every part: bring the chosen one's rows into view (no text in embeds).
+    if (!embed) {
+      setTimeout(() => {
+        document.getElementById(partSectionId(index))?.scrollIntoView?.({ block: "start", behavior: "smooth" });
+      }, 0);
+    }
+  };
+  const switcher = <PartSwitcher exp={data.exp} selected={shown} onSelect={selectPart} compact={embed} />;
 
   if (embed) {
     return (
@@ -142,8 +152,10 @@ export function ViewerApp({ location = globalThis.location, previewOptions, load
 
 // ---------------------------------------------------------------------------
 
-/** id of the panel the part tabs control (the model and the rows). */
+/** Ids of the part tabs, of the panel they control (the 3D model) and of each part's rows. */
 const VIEWER_PART_TAB = (index: number) => `viewer-part-${index}`;
+const VIEWER_MODEL_PANEL = "viewer-model";
+const partSectionId = (index: number) => `viewer-part-rows-${index}`;
 
 /** Tabs to pick a part ("Kopf", "Ohr ×2"); nothing for a single part. */
 function PartSwitcher({
@@ -181,6 +193,7 @@ function PartSwitcher({
             type="button"
             role="tab"
             aria-selected={i === selected}
+            aria-controls={VIEWER_MODEL_PANEL}
             tabIndex={i === selected ? 0 : -1}
             onClick={() => onSelect(i)}
           >
@@ -228,8 +241,14 @@ function ViewerModel({
     overlay = <Message title="Modell konnte nicht berechnet werden">{preview.error}</Message>;
   }
 
+  const tabbed = exp.parts.length > 1;
   return (
-    <div className="viewer-model">
+    <div
+      className="viewer-model"
+      id={VIEWER_MODEL_PANEL}
+      role={tabbed ? "tabpanel" : undefined}
+      aria-labelledby={tabbed ? VIEWER_PART_TAB(index) : undefined}
+    >
       {!embed && (
         <div className="model-toolbar">
           <div className="segmented segmented-small" role="radiogroup" aria-label="Darstellung">
@@ -293,9 +312,6 @@ function PatternText({ exp, part: index }: { exp: BuilderExport; part: number })
   const estimate = estimateNote(exp.overview.gauge);
   const notes = exp.overview.notes?.trim();
   const several = exp.parts.length > 1;
-  const part = exp.parts[index]!;
-  const rows = renderedRows(part.content, "de");
-  const heading = partHeading(part.name, part.quantity, index);
   return (
     <div className="viewer-text">
       {materials.length > 0 && (
@@ -329,18 +345,26 @@ function PatternText({ exp, part: index }: { exp: BuilderExport; part: number })
         <h2 id="viewer-rows" className="section-title">
           Anleitung
         </h2>
-        <div className="viewer-part">
-          {(several || part.quantity > 1) && <h3>{heading}</h3>}
-          {rows.length === 0 ? (
-            <p className="muted">Noch keine Reihen.</p>
-          ) : (
-            <ol className="viewer-rows" aria-label={several ? `Reihen von ${heading}` : "Reihen"}>
-              {rows.map((row, k) => (
-                <li key={k}>{row}</li>
-              ))}
-            </ol>
-          )}
-        </div>
+        {exp.parts.map((part, i) => {
+          const rows = renderedRows(part.content, "de");
+          const heading = partHeading(part.name, part.quantity, i);
+          // The part whose model is shown is marked (several parts only).
+          const current = several && i === index;
+          return (
+            <div key={i} id={partSectionId(i)} className={`viewer-part${current ? " is-current" : ""}`}>
+              {(several || part.quantity > 1) && <h3>{heading}</h3>}
+              {rows.length === 0 ? (
+                <p className="muted">Noch keine Reihen.</p>
+              ) : (
+                <ol className="viewer-rows" aria-label={several ? `Reihen von ${heading}` : "Reihen"}>
+                  {rows.map((row, k) => (
+                    <li key={k}>{row}</li>
+                  ))}
+                </ol>
+              )}
+            </div>
+          );
+        })}
       </section>
     </div>
   );

@@ -128,7 +128,7 @@ describe("ViewerApp", () => {
     expect(document.documentElement.classList.contains("is-embed")).toBe(true);
   });
 
-  it("several parts: tabs switch the model and the rows; the TellmeCrochet link carries all parts", async () => {
+  it("several parts: the text lists every part; tabs switch the model and scroll to the part", async () => {
     const exp = prepareExport(demoDocument(ids(), "bunny"));
     const payload = await encodeShare(exp);
     render(<ViewerApp location={at("", `#data=${payload}`)} />);
@@ -136,17 +136,47 @@ describe("ViewerApp", () => {
     const tabs = within(tablist).getAllByRole("tab");
     expect(tabs.map((t) => t.textContent)).toEqual(["Kopf", "Körper", "Ohr ×2", "Arm ×2", "Bein ×2"]);
     expect(tabs[0]!.getAttribute("aria-selected")).toBe("true");
-    expect(screen.getByText("Gesamt: 1.140 Maschen in 8 Teilen")).toBeTruthy();
-    // First part: its 14 rounds, in the model and as text.
+    expect(screen.getByText("Gesamt: 1.140 Maschen, 8 Teile zu häkeln")).toBeTruthy();
+    // Every part's rows are in the text (and in print), each under its own heading.
+    expect(screen.getAllByRole("heading", { level: 3 }).map((h) => h.textContent)).toEqual([
+      "Kopf",
+      "Körper",
+      "Ohr ×2",
+      "Arm ×2",
+      "Bein ×2",
+    ]);
+    for (const [i, part] of exp.parts.entries()) {
+      const heading = tabs[i]!.textContent!;
+      const list = screen.getByRole("list", { name: `Reihen von ${heading}` });
+      expect(within(list).getAllByRole("listitem")).toHaveLength(part.content.rows.length);
+    }
+    // The tabs control the 3D model, which starts with the first part.
+    const panel = screen.getByRole("tabpanel");
+    expect(tabs.every((t) => t.getAttribute("aria-controls") === panel.id)).toBe(true);
+    expect(panel.getAttribute("aria-labelledby")).toBe(tabs[0]!.id);
     await waitFor(() => expect(fakeViews.last?.mesh?.rowIds).toHaveLength(14));
-    expect(within(screen.getByRole("list", { name: "Reihen von Kopf" })).getAllByRole("listitem")).toHaveLength(14);
 
-    fireEvent.click(tabs[2]!);
+    const scrolled: string[] = [];
+    const original = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = function (this: Element) {
+      scrolled.push(this.id);
+    };
+    vi.useFakeTimers({ toFake: ["setTimeout"] });
+    try {
+      fireEvent.click(tabs[2]!);
+      vi.runAllTimers();
+    } finally {
+      vi.useRealTimers();
+      Element.prototype.scrollIntoView = original;
+    }
     expect(within(tablist).getByRole("tab", { name: "Ohr ×2" }).getAttribute("aria-selected")).toBe("true");
-    expect(screen.getByRole("heading", { level: 3 }).textContent).toBe("Ohr ×2");
-    const earRows = within(screen.getByRole("list", { name: "Reihen von Ohr ×2" })).getAllByRole("listitem");
-    expect(earRows).toHaveLength(13);
-    expect(earRows[1]!.textContent).toBe("Runde 2: 3× (1 fM, 1 Zun) (9)");
+    expect(screen.getByRole("tabpanel").getAttribute("aria-labelledby")).toBe(tabs[2]!.id);
+    // Scrolled to the ear's rows, which are marked as the part in view.
+    const earSection = screen.getByRole("list", { name: "Reihen von Ohr ×2" }).parentElement!;
+    expect(scrolled).toEqual([earSection.id]);
+    expect(earSection.className).toContain("is-current");
+    expect(screen.getByRole("list", { name: "Reihen von Kopf" }).parentElement!.className).not.toContain("is-current");
+    expect(screen.getAllByRole("heading", { level: 3 })).toHaveLength(5);
     await waitFor(() => expect(fakeViews.last?.mesh?.rowIds).toEqual(exp.parts[2]!.content.rows.map((r) => r.id)));
 
     // Arrow keys move between the tabs.
@@ -166,9 +196,12 @@ describe("ViewerApp", () => {
     const payload = await encodeShare(prepareExport(demoDocument(ids(), "bunny")));
     render(<ViewerApp location={at("?embed=1", `#data=${payload}`)} />);
     const tablist = await screen.findByRole("tablist", { name: "Teile" });
+    // Compact: floating over the model, without the total and without any rows.
+    expect(tablist.parentElement!.className).toBe("viewer-parts viewer-parts-compact");
+    expect(screen.queryByText(/^Gesamt:/)).toBeNull();
+    expect(screen.queryAllByRole("list")).toHaveLength(0);
     fireEvent.click(within(tablist).getByRole("tab", { name: "Bein ×2" }));
     await waitFor(() => expect(fakeViews.last?.mesh?.rowIds).toHaveLength(8));
-    expect(screen.queryByText(/^Gesamt:/)).toBeNull();
   });
 
   it("without WebGL the page still shows the pattern", async () => {
