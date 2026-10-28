@@ -568,13 +568,17 @@ function applyColor(op: Op, color: string): boolean {
   return op.ops.length > 0 && applyColor(op.ops[0]!, color);
 }
 
-/** A colour as written (a palette name or id) → its palette id; else the text as written. */
+/**
+ * A colour as written (a palette name or id) → its palette id; else the text as written.
+ * Names come first (rendered text shows names): a colour renamed away from its id and a new
+ * colour that took the old name resolve to the colour that carries the name now.
+ */
 function resolveColor(written: string, palette: ParseRowContext["colors"]): string {
   if (!palette) return written;
   const key = (s: string) => s.trim().toLowerCase();
   const hit =
-    palette.find((c) => c.id === written) ??
     palette.find((c) => c.name !== undefined && key(c.name) === key(written)) ??
+    palette.find((c) => c.id === written) ??
     palette.find((c) => key(c.id) === key(written));
   return hit ? hit.id : written;
 }
