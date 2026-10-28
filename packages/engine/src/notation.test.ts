@@ -428,3 +428,342 @@ describe("empty repeat groups", () => {
     expectOps("() x 3", [rep(3, [])]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Real-world notation (lenient pass): what pasted patterns actually write
+// ---------------------------------------------------------------------------
+
+function expectRow(
+  text: string,
+  ops: Op[],
+  target?: number,
+  locale: NotationLocale = "en_us",
+  previousCount?: number,
+) {
+  const result = parseRowText(text, locale, previousCount === undefined ? {} : { previousCount });
+  expect(result, text).toEqual(target === undefined ? { ok: true, ops } : { ok: true, ops, stitchCountTarget: target });
+}
+
+describe("parseRowText — counts glued to or after the stitch", () => {
+  it("reads counts glued to the stitch", () => {
+    expectRow("21sc", [st("SC", 21)]);
+    expectRow("6dec", [st("DEC", 6)]);
+    expectRow("1sc,inc", [st("SC", 1), st("INC", 1)]);
+    expectRow("3hdc", [st("HDC", 3)]);
+    expectRow("Ch32", [st("CH", 32)]);
+  });
+
+  it("reads counts after the stitch", () => {
+    expectRow("sc 2", [st("SC", 2)]);
+    expectRow("inc x 6", [st("INC", 6)]);
+    expectRow("Dec x 9", [st("DEC", 9)]);
+    expectRow("Dec × 9 [9]", [st("DEC", 9)], 9);
+    expectRow("6 inc", [st("INC", 6)]);
+    expectRow("sc 2, inc", [st("SC", 2), st("INC", 1)]);
+    expectRow("Inc × 2, 4 Sc, Inc × 3 (14)", [st("INC", 2), st("SC", 4), st("INC", 3)], 14);
+    expectRow("ch 1", [st("CH", 1)]);
+  });
+
+  it("reads a postfix count on a counted stitch as a repeat", () => {
+    expectRow("2 sc x 3", [rep(3, [st("SC", 2)])]);
+  });
+});
+
+describe("parseRowText — repeat spellings", () => {
+  const body = [st("SC", 1), st("INC", 1)];
+  it("reads star, times and word forms", () => {
+    for (const text of [
+      "(1 sc, inc)*6",
+      "(1 sc, inc) * 6",
+      "(1 sc, inc) × 6",
+      "(1 sc, inc) repeat 6 times",
+      "(1sc,inc) rep 6 times",
+      "[1 sc, inc] 6 times",
+      "*1 sc, inc* repeat 6 times",
+      "*1 sc, inc* 6 times",
+      "*1 sc, inc; rep from * 5 more times",
+    ]) {
+      expectRow(text, [rep(6, body)]);
+    }
+  });
+
+  it("reads German repeat words", () => {
+    expectRow("(1 fM, 1 Zun) 6x wiederholen", [rep(6, body)], undefined, "de");
+    expectRow("(1 fM, 1 Zun) 6 mal wdh.", [rep(6, body)], undefined, "de");
+  });
+
+  it("keeps ops after a repeat", () => {
+    expectRow("1sc, inc, (2sc,inc) repeat 5 times, 1 sc", [
+      st("SC", 1),
+      st("INC", 1),
+      rep(5, [st("SC", 2), st("INC", 1)]),
+      st("SC", 1),
+    ]);
+  });
+});
+
+describe("parseRowText — to the end of the round", () => {
+  it("resolves (…)* and (…) around from the previous count", () => {
+    expectRow("(1 sc, inc)*", [rep(6, [st("SC", 1), st("INC", 1)])], undefined, "en_us", 12);
+    expectRow("(inc)* [12]", [rep(6, [st("INC", 1)])], 12, "en_us", 6);
+    expectRow("(2 sc, inc) around", [rep(4, [st("SC", 2), st("INC", 1)])], undefined, "en_us", 12);
+    expectRow("2 sc, inc, rep around", [rep(4, [st("SC", 2), st("INC", 1)])], undefined, "en_us", 12);
+    expectRow("*2 sc, inc; rep from * around", [rep(4, [st("SC", 2), st("INC", 1)])], undefined, "en_us", 12);
+    expectRow("3 sc, (1 sc, dec) around", [st("SC", 3), rep(3, [st("SC", 1), st("DEC", 1)])], undefined, "en_us", 12);
+  });
+
+  it("resolves whole-round phrases", () => {
+    expectRow("sc around", [st("SC", 18)], undefined, "en_us", 18);
+    expectRow("sc in each st", [st("SC", 18)], undefined, "en_us", 18);
+    expectRow("sc in each st around", [st("SC", 18)], undefined, "en_us", 18);
+    expectRow("Sc in each stitch around.", [st("SC", 18)], undefined, "en_us", 18);
+    expectRow("inc in each st around", [st("INC", 6)], undefined, "en_us", 6);
+    expectRow("Increase in each st around= 12", [st("INC", 6)], 12, "en_us", 6);
+    expectRow("inc around (12)", [st("INC", 6)], 12, "en_us", 6);
+    expectRow("dec around", [st("DEC", 6)], undefined, "en_us", 12);
+    expectRow("2 sc in each st", [st("INC", 6)], undefined, "en_us", 6);
+  });
+
+  it("resolves German whole-round phrases", () => {
+    expectRow("fM rundherum", [st("SC", 24)], undefined, "de", 24);
+    expectRow("in jede M 1 fM", [st("SC", 24)], undefined, "de", 24);
+    expectRow("1 fM in jede M", [st("SC", 24)], undefined, "de", 24);
+    expectRow("Zun in jede M", [st("INC", 6)], undefined, "de", 6);
+    expectRow("(1 fM, 1 Zun) bis zum Rundenende", [rep(6, [st("SC", 1), st("INC", 1)])], undefined, "de", 12);
+  });
+
+  it("asks for the previous count when it is unknown", () => {
+    expect(parseRowText("sc around", "en_us")).toEqual({ ok: false, code: "needs-context" });
+    expect(parseRowText("(1 sc, inc)*", "en_us")).toEqual({ ok: false, code: "needs-context" });
+  });
+
+  it("reports a previous count that does not divide", () => {
+    expect(parseRowText("(1 sc, inc)*", "en_us", { previousCount: 13 })).toEqual({
+      ok: false,
+      code: "fill-mismatch",
+      limit: 13,
+    });
+    expect(parseRowText("dec around", "en_us", { previousCount: 7 })).toMatchObject({ ok: false, code: "fill-mismatch" });
+  });
+
+  it("does not resolve more than one fill or 3+ stitches into one", () => {
+    expect(parseRowText("sc around, (sc, inc)*", "en_us", { previousCount: 12 }).ok).toBe(false);
+    expect(parseRowText("3 sc in each st", "en_us", { previousCount: 12 }).ok).toBe(false);
+  });
+});
+
+describe("parseRowText — magic ring starts", () => {
+  const ring = [st("MR", 1), st("SC", 6)];
+  it("reads English forms", () => {
+    for (const text of ["6 sc in MR", "6 sc in magic ring", "6 sc into a magic ring", "MR, 6 sc", "MR 6", "MR: 6 sc", "MR 6 sc"]) {
+      expectRow(text, ring);
+    }
+    expectRow("Make 6 sc into a magic ring= 6", ring, 6);
+    expectRow("Make a magic ring, 6 sc", ring);
+    expectRow("6 sc in Magic Ring (6)", ring, 6);
+  });
+
+  it("reads German forms", () => {
+    for (const text of ["6 fM in einen Fadenring", "6 fM in einen Magic Ring", "6 fM in den MR", "MR 6", "MR mit 6 fM"]) {
+      expectRow(text, ring, undefined, "de");
+    }
+  });
+
+  it("uses the locale's single crochet for `MR 6`", () => {
+    expectRow("MR 6", ring, undefined, "en_uk");
+  });
+});
+
+describe("parseRowText — stitch counts at the end", () => {
+  it("reads every common form", () => {
+    const ops = [rep(6, [st("SC", 2), st("INC", 1)])];
+    for (const text of [
+      "(2 sc, inc) x 6 (24)",
+      "(2 sc, inc) x 6 [24]",
+      "(2 sc, inc) x 6 = 24",
+      "(2 sc, inc) x 6= 24",
+      "(2 sc, inc) x 6 = [24]",
+      "(2 sc, inc) x 6 (24 sts)",
+      "(2 sc, inc) x 6 – 24",
+      "(2 sc, inc) x 6 — 24",
+      "(2 sc, inc) × 6 = 24.",
+    ]) {
+      expectRow(text, ops, 24);
+    }
+  });
+
+  it("returns a rounds annotation separately", () => {
+    expect(parseRowText("42 sc (7 rounds)", "en_us")).toEqual({ ok: true, ops: [st("SC", 42)], rounds: 7 });
+    expect(parseRowText("48sc (5 rows)", "en_us")).toEqual({ ok: true, ops: [st("SC", 48)], rounds: 5 });
+    expect(parseRowText("12 sc (12) (3 rounds)", "en_us")).toEqual({
+      ok: true,
+      ops: [st("SC", 12)],
+      stitchCountTarget: 12,
+      rounds: 3,
+    });
+    expect(parseRowText("12 fM (4 Runden)")).toEqual({ ok: true, ops: [st("SC", 12)], rounds: 4 });
+  });
+});
+
+describe("parseRowText — row-level loops", () => {
+  it("adds BLO/FLO to every stitch it applies to", () => {
+    expectRow("BLO: 36 sc", [st("SC", 36, ["BLO"])]);
+    expectRow("in BLO 36 sc", [st("SC", 36, ["BLO"])]);
+    expectRow("work in BLO: 36 sc", [st("SC", 36, ["BLO"])]);
+    expectRow("Through back loops only, (5sc, dec) x 6 [36]", [rep(6, [st("SC", 5, ["BLO"]), st("DEC", 1, ["BLO"])])], 36);
+    expectRow("FLO 6 sc, 2 ch", [st("SC", 6, ["FLO"]), st("CH", 2)]);
+    expectRow("36 sc in BLO", [st("SC", 36, ["BLO"])]);
+    expectRow("(5 sc, inc) x 6 (BLO)", [rep(6, [st("SC", 5, ["BLO"]), st("INC", 1, ["BLO"])])]);
+    expectRow("nur hinteres Maschenglied: 36 fM", [st("SC", 36, ["BLO"])], undefined, "de");
+    expectRow("36 fM nur in das vordere Maschenglied", [st("SC", 36, ["FLO"])], undefined, "de");
+  });
+
+  it("combines with whole-round phrases", () => {
+    expectRow("BLO: sc around", [st("SC", 36, ["BLO"])], undefined, "en_us", 36);
+  });
+});
+
+describe("parseRowText — spelling tolerances", () => {
+  it("reads slip stitch spellings", () => {
+    for (const text of ["2 sl-st", "2 slst", "2 sl st", "2 sl. st."]) expectRow(text, [st("SL_ST", 2)]);
+    expectRow("2 ss", [st("SL_ST", 2)], undefined, "en_uk");
+    expectRow("2 ss", [st("SL_ST", 2)]);
+    expectRow("2 Kettm", [st("SL_ST", 2)], undefined, "de");
+  });
+
+  it("tolerates NBSP, dashes, a trailing period and a trailing turn", () => {
+    expectRow("6 sc, inc (8).", [st("SC", 6), st("INC", 1)], 8);
+    expectRow("6 sc, inc x 2 – 10", [st("SC", 6), st("INC", 2)], 10);
+    expectRow("6 sc, ch 1, turn", [st("SC", 6), st("CH", 1)]);
+    expectRow("6 fM, 1 Lm, wenden", [st("SC", 6), st("CH", 1)], undefined, "de");
+  });
+
+  it("reads next-stitch phrases and sc2tog", () => {
+    expectRow("2 sc in next st", [st("INC", 1)]);
+    expectRow("sc in next 5 sts, 2 sc in next st", [st("SC", 5), st("INC", 1)]);
+    expectRow("6 sc2tog", [st("SC", 6, ["TOG"])]);
+    expectRow("sc in 2nd ch from hook, 4 sc", [st("SC", 1), st("SC", 4)]);
+  });
+
+  it("still fails on what it cannot read", () => {
+    expect(parseRowText("3 sc in one st", "en_us").ok).toBe(false);
+    expect(parseRowText("6 sc with left leg", "en_us").ok).toBe(false);
+    expect(parseRowText("Stuff the head", "en_us").ok).toBe(false);
+  });
+
+  it("keeps strict-pass errors for text neither pass reads", () => {
+    expect(parseRowText("1 MR 6 fM")).toEqual({ ok: false, code: "syntax", position: 5 });
+    expect(parseRowText("1 MR (hMG)")).toMatchObject({ ok: false, code: "invalid-modifier" });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Review fixes A3: a silent misreading is worse than an error
+// ---------------------------------------------------------------------------
+
+describe("parseRowText — no silent misreadings", () => {
+  it("does not read a bare number after a counted stitch", () => {
+    for (const text of ["6 inc 12", "18 sc 18", "6 sc in MR 6"]) {
+      expect(parseRowText(text, "en_us").ok, text).toBe(false);
+    }
+    expect(parseRowText("6 fM 12")).toEqual({ ok: false, code: "syntax", position: 5 });
+    expect(parseRowText("6 Zun 12").ok).toBe(false);
+    expect(parseRowText("6 fM in den Fadenring 6").ok).toBe(false);
+    // A times sign still makes a repeat, and an uncounted stitch still takes a count.
+    expectRow("2 sc x 3", [rep(3, [st("SC", 2)])]);
+    expectRow("sc 5 (18)", [st("SC", 5)], 18);
+  });
+
+  it("keeps 'in next st' only for a single stitch", () => {
+    expect(parseRowText("2 hdc in next st", "en_us").ok).toBe(false);
+    expect(parseRowText("3 sc in next st", "en_us").ok).toBe(false);
+    expect(parseRowText("2 tr in next st", "en_uk").ok).toBe(false);
+    expectRow("sc in next st, inc", [st("SC", 1), st("INC", 1)]);
+    expectRow("1 hdc in next st, 5 sc", [st("HDC", 1), st("SC", 5)]);
+    expectRow("2 dc in next st", [st("INC", 1)], undefined, "en_uk");
+  });
+
+  it("settles 'x N' after a list with the written count", () => {
+    // Only the whole-row reading gives 18.
+    expect(parseRowText("sc, inc x6 (18)", "en_us")).toEqual({
+      ok: true,
+      ops: [rep(6, [st("SC", 1), st("INC", 1)])],
+      stitchCountTarget: 18,
+      warnings: ["repeat-scope-guessed"],
+    });
+    // The last-stitch reading gives 13: no warning.
+    expect(parseRowText("sc, inc x6 (13)", "en_us")).toEqual({
+      ok: true,
+      ops: [st("SC", 1), st("INC", 6)],
+      stitchCountTarget: 13,
+    });
+    // Neither reading fits, or no count: read as written and flagged.
+    expect(parseRowText("sc, inc x6 (20)", "en_us")).toMatchObject({
+      ok: true,
+      ops: [st("SC", 1), st("INC", 6)],
+      warnings: ["repeat-scope-ambiguous"],
+    });
+    expect(parseRowText("sc, inc x6", "en_us")).toMatchObject({ warnings: ["repeat-scope-ambiguous"] });
+  });
+
+  it("settles 'rep from * N times' with the written count", () => {
+    const body = [st("SC", 1), st("INC", 1)];
+    expect(parseRowText("*sc, inc; rep from * 5 times (18)", "en_us")).toEqual({
+      ok: true,
+      ops: [rep(6, body)],
+      stitchCountTarget: 18,
+      warnings: ["repeat-count-guessed"],
+    });
+    expect(parseRowText("*sc, inc; rep from * 5 times (15)", "en_us")).toEqual({
+      ok: true,
+      ops: [rep(5, body)],
+      stitchCountTarget: 15,
+    });
+    expect(parseRowText("*sc, inc; rep from * 5 times", "en_us")).toEqual({
+      ok: true,
+      ops: [rep(5, body)],
+      warnings: ["repeat-count-ambiguous"],
+    });
+    expect(parseRowText("*sc, inc; rep from * 5 more times", "en_us")).toEqual({ ok: true, ops: [rep(6, body)] });
+    expect(parseRowText("*sc, inc; rep from * 5 more times (15)", "en_us")).toMatchObject({
+      ops: [rep(5, body)],
+      warnings: ["repeat-count-guessed"],
+    });
+    expect(parseRowText("*sc, inc; rep from * 5 times (40)", "en_us")).toMatchObject({
+      ops: [rep(5, body)],
+      warnings: ["repeat-count-ambiguous"],
+    });
+  });
+
+  it("reports a too-large lenient reading instead of the strict error", () => {
+    expect(parseRowText("inc x 1000", "en_us")).toMatchObject({ ok: false, code: "too-large", limit: MAX_COUNT });
+    expect(parseRowText("(sc, inc) repeat 1000 times", "en_us")).toMatchObject({
+      ok: false,
+      code: "too-large",
+      limit: MAX_TIMES,
+    });
+  });
+
+  it("does not let a literal @ act as the internal fill marker", () => {
+    expect(parseRowText("sc @", "en_us", { previousCount: 12 }).ok).toBe(false);
+    expect(parseRowText("@ 1 fM", "de", { previousCount: 12 }).ok).toBe(false);
+  });
+
+  it("fails deep nesting with a syntax error instead of overflowing the stack", () => {
+    const deep = `${"(".repeat(5000)}1 fM${")".repeat(5000)} x 2`;
+    expect(parseRowText(deep)).toMatchObject({ ok: false, code: "syntax" });
+    const fifty = `${"1×(".repeat(50)}1 fM${")".repeat(50)}`;
+    expect(parseRowText(fifty).ok).toBe(true);
+    expect(parseRowText(`2×(${fifty})`).ok).toBe(false);
+  });
+
+  it("reads long text quickly (strict pass only above 1500 characters)", () => {
+    const words = "sc in each st around ".repeat(1000); // ~21 KB
+    const started = performance.now();
+    expect(parseRowText(words, "en_us", { previousCount: 12 }).ok).toBe(false);
+    expect(parseRowText(`${"sc, ".repeat(5000)}sc`, "en_us").ok).toBe(true);
+    // Just under the cap, the lenient pass must stay fast too.
+    expect(parseRowText("sc in each st around ".repeat(70), "en_us", { previousCount: 12 }).ok).toBe(false);
+    expect(performance.now() - started).toBeLessThan(200);
+  });
+});

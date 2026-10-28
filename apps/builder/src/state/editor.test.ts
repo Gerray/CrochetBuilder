@@ -315,6 +315,8 @@ describe("messages", () => {
     expect(parseErrorMessage(parseRowText("6 Quatsch"))).toBe("Unbekannter Begriff: „Quatsch“");
     expect(parseErrorMessage(parseRowText("6× (1 fM"))).toContain("Zeichen 9");
     expect(parseErrorMessage(parseRowText("6 fM"))).toBeNull();
+    expect(parseErrorMessage(parseRowText("fM rundherum"))).toContain("Vorrunde");
+    expect(parseErrorMessage(parseRowText("Abn rundherum", "de", { previousCount: 7 }))).toContain("7 Maschen");
   });
 });
 

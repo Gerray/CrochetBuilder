@@ -125,7 +125,20 @@ export {
   MOD_ABBREVIATIONS,
   MOD_NAMES,
 } from "./notation.js";
-export type { NotationLocale, ParseRowResult, ParseRowErrorCode } from "./notation.js";
+export type { NotationLocale, ParseRowResult, ParseRowErrorCode, ParseRowContext } from "./notation.js";
+
+export { detectNotationLocale } from "./detect-locale.js";
+export type { LocaleDetection } from "./detect-locale.js";
+
+export { parsePatternText } from "./pattern-import.js";
+export type {
+  PatternImport,
+  ImportedPart,
+  ImportIssue,
+  ImportIssueCode,
+  ImportIssueSeverity,
+  ParsePatternOptions,
+} from "./pattern-import.js";
 
 export {
   MaterialKindSchema,
