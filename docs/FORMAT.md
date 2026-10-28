@@ -90,7 +90,9 @@ and it does not shape the piece.
 
 ## Gauge
 
-Optional, carried alongside the pattern (in TellmeCrochet: `pattern.overview.gauge`).
+Optional, carried alongside the pattern in the builder export (`overview.gauge`). The
+hand-off to TellmeCrochet turns it into a text step (see
+[Hand-off to TellmeCrochet](#hand-off-to-tellmecrochet)).
 
 ```ts
 type Gauge = {
@@ -358,11 +360,132 @@ The reference decoder reports failures as `ShareDecodeError` with a `code`: `mal
 | Viewer (read-only page with 3D model and rows) | `<builder>/viewer/#data=<payload>` |
 | Embed (compact viewer for an `<iframe>`) | `<builder>/viewer/?embed=1#data=<payload>` |
 | Open in the builder for editing | `<builder>/#data=<payload>` |
-| Import into TellmeCrochet | `https://tellmecrochet.de/import#data=<payload>` |
+| Open in TellmeCrochet | `https://tellmecrochet.de/import#data=tmc1.…` — a different payload, see [Hand-off to TellmeCrochet](#hand-off-to-tellmecrochet) |
 
 `<builder>` is wherever the builder is deployed, e.g. `https://gerray.github.io/CrochetBuilder`.
 The builder removes the fragment from the address bar after reading it and asks before it
 replaces a document that is not empty.
+
+## Hand-off to TellmeCrochet
+
+TellmeCrochet, the companion app for crocheting along a pattern, keeps its own copy of
+**format version 1** and creates new patterns from **drafts**. It does not read
+`BuilderExport`. "In TellmeCrochet öffnen" and "Für TellmeCrochet speichern (.json)" therefore
+convert the export into a draft in TellmeCrochet's structure and wrap it in an **envelope**.
+Source: `packages/engine/src/tellmecrochet.ts` (`toTellmeCrochetDraft`, `toTmcEnvelope`,
+`encodeTmcPayload`, `decodeTmcPayload`, `buildTmcImportUrl`; Zod schemas `TmcDraftSchema`,
+`TmcEnvelopeSchema`).
+
+> Status: the receiving side in TellmeCrochet is not live yet. Until then the builder offers to
+> save the envelope as a file.
+
+### Envelope
+
+```ts
+type TmcEnvelope = {
+  format: "tmc-draft";                    // fixed
+  version: 1;                             // envelope version; a receiver refuses others
+  sourceNotation: "de" | "us" | "uk";     // notation of all text in the draft; the builder writes "de"
+  originHint: "self_created" | "imported";
+  draft: TmcDraft;
+};
+
+type TmcDraft = {
+  schemaVersion: 1;
+  title?: string;                         // left out when empty
+  materials?: TmcMaterial[];              // the builder always writes the list (maybe empty)
+  parts: TmcDraftPart[];                  // at least one
+};
+
+type TmcDraftPart = {
+  name: string;                           // never empty
+  quantity: number;                       // integer ≥ 1
+  content: { schemaVersion: 1; rows: TmcRow[] };   // at least one row, ids unique per part
+  stitchCheck: { rowId: string; expected: number; actual: number; ok: boolean }[];
+};
+
+type TmcRow = {                           // a version-1 row: no colours
+  id: string; label?: string; type: "row" | "round";
+  ops: TmcOp[];                           // version-1 codes and modifiers (BLO, FLO, TOG) only, no groups
+  stitchCountTarget: number;
+  note?: string;
+};
+
+type TmcMaterial = {
+  kind: "yarn" | "hook" | "accessory";
+  label: string;                          // never empty
+  colors?: string[];                      // no empty entries
+  amount?: string;                        // never empty
+};
+```
+
+All objects are strict: unknown fields make the envelope invalid. `stitchCheck` has one entry
+per row, in row order: `actual` is the sum of the stitches the row's ops produce
+(`STITCH_PROPERTIES`), `ok` is `actual === expected`. A free instruction (see below) has
+`stitchCountTarget: 0` and checks green.
+
+**`originHint`** says where the pattern presumably comes from. The builder writes `imported`
+as soon as the document has taken in text through "Anleitung einfügen" (pasting a pattern
+text), and also from the viewer, which cannot know who wrote a shared pattern; otherwise
+`self_created`. It is a hint only: a receiver records a pattern as the person's own creation
+only after she has confirmed that explicitly, and otherwise as imported. Which documents took
+in pasted text is remembered by the builder next to the stored document, not in the format.
+
+### Payload and link
+
+```
+payload = "tmc1." + base64url( deflate-raw( UTF-8( JSON.stringify(TmcEnvelope) ) ) )
+link    = "https://tellmecrochet.de/import#data=" + payload
+```
+
+Packing, limits and decoding are exactly those of [share links](#share-links) — base64url
+without padding, raw DEFLATE ending at the last byte, at most 262,144 encoded characters,
+2 MiB of JSON (enforced while inflating) and 200 nesting levels — with two differences: the
+prefix is **`tmc1.`** (a `v1.` share payload is refused, and the other way round), and the
+JSON is validated against `TmcEnvelope` instead of `BuilderExport`. The saved file
+(`<title>.tellmecrochet.json`) is the same envelope as plain, pretty-printed JSON.
+
+### Mapping
+
+| Builder export | In the draft |
+|---|---|
+| `title` | `title` (trimmed; left out when empty) |
+| part `name`, `quantity` | `name` (empty → `Teil n`), `quantity` |
+| row without version-2 features | same row (colours removed); `stitchCountTarget` 0 on a row with stitches ("no number given") → the counted stitches |
+| row with stitch groups, BOBBLE/PUFF/POPCORN/PICOT or FP/BP | **text**: free instruction, `label` = "Runde 3", `note` = the full German line, e.g. `Runde 3: 6× ((3 fM) in dieselbe M) (18)` |
+| rows after such a row | keep their number as `label` ("Runde 4"), because the receiver numbers only rows with stitches |
+| free instruction (no stitches, with text) | same row; rows with neither stitches nor text are left out |
+| colour at the start of a row | **text**: an instruction before the row, `Farbwechsel: Weiß`; with two or more palette colours each part first states `Farbe: …` |
+| colour change inside a row | **text**: appended to the row's `note`, `Farbwechsel in dieser Runde: 6 fM, [Farbe: Weiß] 6 fM` |
+| `stuffing`, `finish` | **text**: instructions at the end of the part (`Füllung: fest mit Füllwatte füllen.`, `Abschluss: …`) |
+| `overview.notes`, `overview.gauge` | **text**: instructions at the start of the first part (`Hinweise: …`, `Maschenprobe: … · Garn: DK · Nadel: 3,5 mm`) |
+| `assembly` | **text**: an extra last part `Zusammensetzen` (quantity 1), one instruction per placement, e.g. `Kopf: Sicherheitsaugen 12 mm vorne zwischen Runde 8 und 9 einsetzen, 6 Maschen Abstand.` |
+| `overview.colors` (palette) | colour names added to the yarn material (one yarn: its `colors`; none: a new yarn `Garn`; several: a new yarn `Garnfarben`) |
+| `overview.materials` | trimmed; entries with an empty label are left out, empty colours and amounts dropped |
+| part without rows | one instruction `Für dieses Teil sind noch keine Reihen angegeben.` |
+| duplicate row ids in a part | later ones get `-2`, `-3`, … |
+| `rendered`, part `id`s | not carried |
+
+A free instruction is a row with `ops: []` and its text in `note`; TellmeCrochet's guided mode
+shows it as a step of its own. Nothing is dropped silently: the converter returns a list of
+everything it carried differently (`losses`, with a German message each), and the builder shows
+a short summary before it opens TellmeCrochet.
+
+### What a receiver implements
+
+1. A page at `/import` that reads `#data=` from the fragment (the fragment never reaches a
+   server), takes the canonical payload as in [Decoding](#decoding), checks the `tmc1.` prefix,
+   decodes and inflates within the limits and validates against `TmcEnvelope` (strict). Any
+   failure is shown as an error; nothing is partially imported. A received file is validated
+   the same way.
+2. If the person is not signed in, keeps the payload (e.g. in session storage) through sign-in
+   and continues afterwards.
+3. Shows a preview (title, parts, number of rows) and asks whether the pattern is her own
+   creation; `originHint` only preselects the answer. The stored origin is "self-created" only
+   after an explicit confirmation, otherwise "imported".
+4. Creates a draft from `draft` as it is (it already matches the draft structure), with
+   `sourceNotation` as the draft's notation, recomputes `stitchCheck` with its own check rather
+   than trusting the received one, and opens the draft for review.
 
 ## Example: an amigurumi sphere
 

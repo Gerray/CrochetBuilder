@@ -63,6 +63,31 @@ All notable changes to this project are documented here. The format follows
   apart). The 3D preview closes a part as its finish says and relaxes again when finish or
   stuffing change. Importing duplicate row ids renames them and moves the placements that
   point at them; a duplicated part gets no part id of its own.
+- **Hand-off to TellmeCrochet** (`tellmecrochet.ts`): `toTellmeCrochetDraft(doc)` turns an
+  export into a TellmeCrochet draft (format version 1, strict `TmcDraftSchema`) and lists what
+  it carried differently (`losses`, summarised in German by `summarizeTmcLosses`). Rows
+  with groups, bobble-family stitches, picots or relief stitches, colour changes, finish,
+  stuffing, notes, gauge and the assembly (an extra part "Zusammensetzen",
+  `describePlacement`) become text steps; nothing is dropped silently. The draft travels in an
+  envelope `{ format: "tmc-draft", version: 1, sourceNotation, originHint, draft }`, packed
+  like a share payload with the prefix `tmc1.` (`encodeTmcPayload`, `decodeTmcPayload`).
+  `renderedRowLine` renders a single row like `renderedRows`. Documented in
+  docs/FORMAT.md, "Hand-off to TellmeCrochet".
+- **Builder:** "In TellmeCrochet öffnen" (export menu and viewer) carries that envelope and
+  first shows briefly what arrives differently, with one click to continue; the new entry
+  "Für TellmeCrochet speichern (.json)" saves it as a file. The envelope's `originHint` is
+  `imported` once the document took in pasted text ("Anleitung einfügen"; remembered next to
+  the stored document, not in the format) and from the viewer, else `self_created`.
+
+### Changed
+
+- `buildTmcImportUrl` and `TMC_IMPORT_URL` moved to `tellmecrochet.ts`; the link carries a
+  `tmc1.` payload (a `v1.` share payload is refused) instead of the builder export.
+
+### Fixed
+
+- Documentation no longer claims that TellmeCrochet re-exports the engine schema, reads
+  `pattern.overview.gauge` or already imports builder links.
 
 ## [0.2.0] — not released separately
 
