@@ -93,7 +93,7 @@ describe("useFragmentImport", () => {
     expect(log.questions).toEqual([]);
   });
 
-  it("passes the several-parts notice on", async () => {
+  it("opens a link with several parts without a notice (all parts are editable)", async () => {
     const { pending, decode } = controlledDecode();
     const log = newLog();
     render(<Harness doc={emptyDocument("r1")} decode={decode} log={log} />);
@@ -102,6 +102,6 @@ describe("useFragmentImport", () => {
     exp.parts = [...exp.parts, { ...exp.parts[0]!, name: "Ohr", content: { schemaVersion: 1, rows: [] } }];
     await act(async () => pending[0]!.resolve(exp));
     expect(log.imported).toEqual(["Teile"]);
-    expect(log.notices[0]).toMatch(/^Dieser Link enthält 2 Teile; der Builder bearbeitet bisher nur das erste\./);
+    expect(log.notices).toEqual([undefined]);
   });
 });

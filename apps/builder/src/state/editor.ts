@@ -522,6 +522,8 @@ function coalesceKey(action: EditorAction): string | undefined {
       return `material:${action.index}`;
     case "renamePart":
       return `part:${action.index}:name`;
+    case "setPartQuantity":
+      return `part:${action.index}:quantity`;
     case "updateRow":
       return "label" in action.patch || "note" in action.patch ? `row:${action.rowId}:text` : undefined;
     case "setTarget":

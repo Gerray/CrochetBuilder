@@ -30,18 +30,6 @@ export type ImportResult =
     }
   | { ok: false; message: string };
 
-/** Where an imported document comes from (for the wording of notices). */
-export type ImportSource = "file" | "link";
-
-/**
- * The builder edits only the first part (MVP); the others are kept untouched and appear
- * again in every export, PDF and the viewer. Opening such a document says so.
- */
-export function multiPartNotice(parts: number, source: ImportSource): string {
-  const where = source === "file" ? "Diese Datei" : "Dieser Link";
-  return `${where} enthält ${parts} Teile; der Builder bearbeitet bisher nur das erste. Die übrigen bleiben erhalten und werden mit exportiert.`;
-}
-
 const TOO_DEEP_MESSAGE = "Die Anleitung in der Datei ist zu tief verschachtelt (zu viele Wiederholungen ineinander).";
 
 /** Where the first schema problem sits: ` (bei „parts.0.content.rows.3.ops“)` — or nothing. */
@@ -86,11 +74,7 @@ function uniqueRowIds(doc: BuilderDoc, makeId: () => string): BuilderDoc {
  * A validated export as an editor document: `rendered` is dropped (it is regenerated on
  * every export), duplicate row ids are replaced, the editor limits are checked.
  */
-export function documentFromExport(
-  exp: BuilderExport,
-  makeId: () => string = newId,
-  source: ImportSource = "file",
-): ImportResult {
+export function documentFromExport(exp: BuilderExport, makeId: () => string = newId): ImportResult {
   if (exp.parts.length === 0) return { ok: false, message: "Die Anleitung enthält keine Teile." };
   if (!exp.parts.every((p) => withinLimits(p.content))) {
     return {
@@ -101,9 +85,7 @@ export function documentFromExport(
   const { rendered: _rendered, ...rest } = exp;
   const doc = uniqueRowIds(rest, makeId);
   const pinned = doc.parts.flatMap((p) => p.content.rows.map((r) => r.id));
-  return doc.parts.length > 1
-    ? { ok: true, doc, pinned, notice: multiPartNotice(doc.parts.length, source) }
-    : { ok: true, doc, pinned };
+  return { ok: true, doc, pinned };
 }
 
 /** A bare part content becomes a one-part document (title from the file name). */

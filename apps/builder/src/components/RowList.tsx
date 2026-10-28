@@ -20,6 +20,8 @@ interface RowListProps {
   onAddRow: (afterId: string | null, instruction: boolean) => void;
   onDuplicate: (rowId: string) => void;
   onDelete: (rowId: string) => void;
+  /** The pattern has more than one part (the tip mentions switching). */
+  severalParts?: boolean;
 }
 
 const NO_FINDINGS: readonly Finding[] = [];
@@ -78,6 +80,12 @@ export function RowList(props: RowListProps) {
         Tipp: Maschen als Text eintippen, z. B. <kbd>6× (1 fM, 1 Zun)</kbd> oder <kbd>6 Zun (12)</kbd>.{" "}
         <kbd>Enter</kbd> übernimmt und springt weiter, <kbd>Esc</kbd> verwirft, <kbd>Alt</kbd>+<kbd>N</kbd> fügt eine
         neue Runde ein.
+        {props.severalParts && (
+          <>
+            {" "}
+            <kbd>Alt</kbd>+<kbd>↑</kbd>/<kbd>↓</kbd> wechselt das Teil.
+          </>
+        )}
       </p>
     </section>
   );

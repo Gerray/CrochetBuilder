@@ -13,7 +13,6 @@ import {
   documentFromExport,
   importFile,
   MAX_IMPORT_FILE_BYTES,
-  multiPartNotice,
   parseImportText,
   shareErrorMessage,
 } from "./import.js";
@@ -232,25 +231,26 @@ describe("import: several parts", () => {
     return doc;
   };
 
-  it("keeps every part and says that only the first one is edited", () => {
+  it("keeps every part, pins all their rows and needs no notice", () => {
     const result = parseImportText(JSON.stringify(prepareExport(twoParts())), "teile.json");
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.doc.parts).toHaveLength(2);
     expect(result.doc.parts[1]!.name).toBe("Ohr");
-    expect(result.notice).toBe(
-      "Diese Datei enthält 2 Teile; der Builder bearbeitet bisher nur das erste. Die übrigen bleiben erhalten und werden mit exportiert.",
-    );
-    // The hidden part is exported again.
+    expect(result.notice).toBeUndefined();
+    expect(result.pinned).toEqual(result.doc.parts.flatMap((p) => p.content.rows.map((r) => r.id)));
     expect(prepareExport(result.doc).parts).toEqual(prepareExport(twoParts()).parts);
   });
 
-  it("links get the same notice, worded for a link; one part has none", () => {
-    const fromLink = documentFromExport(prepareExport(twoParts()), ids("x"), "link");
-    expect(fromLink.ok && fromLink.notice).toBe(multiPartNotice(2, "link"));
-    expect(multiPartNotice(3, "link")).toMatch(/^Dieser Link enthält 3 Teile;/);
-    const single = documentFromExport(prepareExport(ball()), ids("y"), "link");
-    expect(single.ok && single.notice).toBeUndefined();
+  it("row ids repeated across parts get fresh ones (ids are unique in the whole document)", () => {
+    const doc = ball();
+    doc.parts.push({ name: "Kopie", quantity: 1, content: structuredClone(doc.parts[0]!.content) });
+    const result = documentFromExport(prepareExport(doc), ids("x"));
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const all = result.doc.parts.flatMap((p) => p.content.rows.map((r) => r.id));
+    expect(new Set(all).size).toBe(all.length);
+    expect(result.doc.parts[0]!.content.rows.map((r) => r.id)).toEqual(doc.parts[0]!.content.rows.map((r) => r.id));
   });
 });
 

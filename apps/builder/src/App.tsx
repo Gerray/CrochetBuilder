@@ -1,21 +1,28 @@
-import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
-import { DEFAULT_MAX_STITCHES, validate } from "@crochetbuilder/engine";
+import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import type { ExportActions } from "./components/ExportMenu.js";
+import { focusLater } from "./components/focus.js";
+import { PART_PANEL_ID, PartsBar, partTabId } from "./components/PartsBar.js";
 import { PreviewPane } from "./components/PreviewPane.js";
 import { RowList, type FocusRequest } from "./components/RowList.js";
 import { SplitPane } from "./components/SplitPane.js";
 import { StorageNotice } from "./components/StorageNotice.js";
 import { TopBar } from "./components/TopBar.js";
 import { useFragmentImport } from "./export/useFragmentImport.js";
-import { addRow, duplicateRow, loadDemo, newDocument } from "./state/actions.js";
+import { addPart, addRow, duplicatePart, duplicateRow, loadDemo, newDocument } from "./state/actions.js";
 import { emptyDocument, type BuilderDoc } from "./state/document.js";
-import { canRedo, canUndo, currentPart, editorReducer, initEditorState } from "./state/editor.js";
+import { canRedo, canUndo, editorReducer, initEditorState, selectedPart } from "./state/editor.js";
+import { partFindings, partName } from "./state/parts.js";
 import { shortcutFor } from "./state/shortcuts.js";
 import { usePersistence } from "./state/usePersistence.js";
 
 function isEditable(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false;
   return target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName);
+}
+
+/** Alt+↑/↓ belongs to the control itself here (opening a list, moving by paragraph). */
+function keepsAltArrows(target: EventTarget | null): boolean {
+  return target instanceof HTMLElement && ["TEXTAREA", "SELECT"].includes(target.tagName);
 }
 
 export interface AppProps {
@@ -32,6 +39,19 @@ export function App({ exportActions }: AppProps = {}) {
   const focusCounter = useRef(0);
   const [linkError, setLinkError] = useState<string | null>(null);
   const [linkNotice, setLinkNotice] = useState<string | null>(null);
+  const [nameFocusToken, setNameFocusToken] = useState(0);
+  // The deleted part the notice offers to bring back, with the document before the deletion
+  // (the notice shows while that deletion is the latest undo step).
+  const [deleted, setDeleted] = useState<{ name: string; index: number; before: BuilderDoc } | null>(null);
+  // Another part in view (click, shortcut, undo …): no row of it is selected, and an old focus
+  // request must not pull focus into the rows when they mount. Reset during render, so the
+  // new rows never see the old values.
+  const [shownPart, setShownPart] = useState(state.part);
+  if (shownPart !== state.part) {
+    setShownPart(state.part);
+    setSelectedRowId(null);
+    setFocusRequest(null);
+  }
 
   const replaceDocument = useCallback((doc: BuilderDoc, pinned: string[]) => {
     dispatch({ type: "replaceDocument", doc, pinned });
@@ -53,11 +73,37 @@ export function App({ exportActions }: AppProps = {}) {
     },
   });
 
-  const part = currentPart(state.doc);
-  // Validation only reruns when the part content changes (row/op limits keep it cheap).
+  const part = selectedPart(state);
+  // Validation only reruns when a part's content changes (cached per part, see parts.ts).
   // The stitch budget of the 3D preview is reported like any other finding.
-  const findings = useMemo(() => validate(part, { maxStitches: DEFAULT_MAX_STITCHES }), [part]);
+  const findings = partFindings(part);
   const rows = part.rows;
+
+  const selectPart = useCallback((index: number) => dispatch({ type: "selectPart", index }), []);
+
+  const addNewPart = useCallback(() => {
+    dispatch(addPart());
+    setNameFocusToken((t) => t + 1);
+  }, []);
+
+  const duplicateSelectedPart = useCallback(
+    (index: number) => dispatch(duplicatePart(state.doc, index)),
+    [state.doc],
+  );
+
+  const deletePart = useCallback(
+    (index: number) => {
+      const target = state.doc.parts[index];
+      if (!target || state.doc.parts.length <= 1) return;
+      const next = editorReducer(state, { type: "deletePart", index });
+      dispatch({ type: "deletePart", index });
+      setDeleted({ name: partName(target.name, index), index, before: state.doc });
+      focusLater(partTabId(next.part));
+    },
+    [state],
+  );
+  const lastStep = state.past[state.past.length - 1];
+  const deletedName = deleted && lastStep?.doc === deleted.before ? deleted.name : null;
 
   const focusRow = useCallback((rowId: string) => {
     setSelectedRowId(rowId);
@@ -102,6 +148,19 @@ export function App({ exportActions }: AppProps = {}) {
         e.preventDefault();
         const exists = rows.some((r) => r.id === selectedRowId);
         addRowAfter(exists ? selectedRowId : null, false);
+      } else if (shortcut === "prevPart" || shortcut === "nextPart") {
+        if (keepsAltArrows(e.target)) return;
+        e.preventDefault();
+        const count = state.doc.parts.length;
+        const next = (state.part + (shortcut === "nextPart" ? 1 : count - 1)) % count;
+        if (next === state.part) return;
+        // Leaving a field commits it (to its own part) before the rows are swapped.
+        const active = document.activeElement;
+        const inRows = active instanceof HTMLElement && active.closest(`#${PART_PANEL_ID}`) !== null;
+        if (isEditable(active) && active instanceof HTMLElement) active.blur();
+        dispatch({ type: "selectPart", index: next });
+        // Focus follows into the bar unless it was elsewhere (title, preview …).
+        if (inRows || active?.closest?.("[role='tablist']")) focusLater(partTabId(next));
       } else if (shortcut && !isEditable(e.target)) {
         // Inside text fields the browser's own undo applies.
         e.preventDefault();
@@ -110,7 +169,7 @@ export function App({ exportActions }: AppProps = {}) {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [rows, selectedRowId, addRowAfter]);
+  }, [rows, selectedRowId, addRowAfter, state.doc.parts.length, state.part]);
 
   useEffect(() => {
     document.title = state.doc.title.trim() ? `${state.doc.title.trim()} – CrochetBuilder` : "CrochetBuilder";
@@ -162,18 +221,40 @@ export function App({ exportActions }: AppProps = {}) {
       <main className="workspace">
         <SplitPane
           left={
-            <RowList
-              rows={rows}
-              findings={findings}
-              selectedRowId={selectedRowId}
-              focusRequest={focusRequest}
-              dispatch={dispatch}
-              onSelect={setSelectedRowId}
-              onFocusRow={focusRow}
-              onAddRow={addRowAfter}
-              onDuplicate={duplicate}
-              onDelete={deleteRow}
-            />
+            <>
+              <PartsBar
+                doc={state.doc}
+                selected={state.part}
+                dispatch={dispatch}
+                onSelect={selectPart}
+                onAdd={addNewPart}
+                onDuplicate={duplicateSelectedPart}
+                onDelete={deletePart}
+                nameFocusToken={nameFocusToken}
+                onRequestNameFocus={() => setNameFocusToken((t) => t + 1)}
+                deletedName={deletedName}
+                onUndoDelete={() => {
+                  dispatch({ type: "undo" });
+                  if (deleted) focusLater(partTabId(deleted.index));
+                  setDeleted(null);
+                }}
+              />
+              <div id={PART_PANEL_ID} role="tabpanel" aria-labelledby={partTabId(state.part)}>
+                <RowList
+                  rows={rows}
+                  findings={findings}
+                  selectedRowId={selectedRowId}
+                  focusRequest={focusRequest}
+                  dispatch={dispatch}
+                  onSelect={setSelectedRowId}
+                  onFocusRow={focusRow}
+                  onAddRow={addRowAfter}
+                  onDuplicate={duplicate}
+                  onDelete={deleteRow}
+                  severalParts={state.doc.parts.length > 1}
+                />
+              </div>
+            </>
           }
           right={
             <PreviewPane
