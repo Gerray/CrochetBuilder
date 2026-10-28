@@ -41,6 +41,24 @@ export function findingMessage(finding: Finding, row: Row | undefined): string {
 
 const n = (value: number) => value.toLocaleString("de-DE");
 
+/** A guess of the tolerant parser (`ParseRowResult.warnings`). */
+export type ParseWarning = NonNullable<Extract<ParseRowResult, { ok: true }>["warnings"]>[number];
+
+/** German hint for a parser guess, shown under the text field of a round or row. */
+export function parseWarningMessage(warning: ParseWarning, type: Row["type"] = "round"): string {
+  const whole = type === "row" ? "die ganze Reihe" : "die ganze Runde";
+  switch (warning) {
+    case "repeat-scope-guessed":
+      return `„×n“ gilt hier für ${whole} – nur so passt die angegebene Maschenzahl. Bitte prüfen.`;
+    case "repeat-scope-ambiguous":
+      return `„×n“ ist mehrdeutig: gelesen als Anzahl der letzten Masche. Falls ${whole} gemeint war, bitte Klammern setzen.`;
+    case "repeat-count-guessed":
+      return "Die Zahl der Wiederholungen wurde aus der angegebenen Maschenzahl bestimmt. Bitte prüfen.";
+    case "repeat-count-ambiguous":
+      return "„Wiederholen ab *“ ist mehrdeutig (n oder n + 1 Mal) – gelesen als n Mal. Eine Maschenzahl am Ende entscheidet.";
+  }
+}
+
 /** German message for a failed parse, or null on success. */
 export function parseErrorMessage(result: ParseRowResult): string | null {
   if (result.ok) return null;

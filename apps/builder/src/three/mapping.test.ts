@@ -10,6 +10,7 @@ import {
   pickFromBacking,
   pickFromHit,
   rowIndexOf,
+  rowIndicesOf,
   vertexColors,
   vertexForHit,
   type Bounds,
@@ -40,6 +41,15 @@ describe("row highlight colours", () => {
     expect(rowIndexOf(MESH, null)).toBe(-1);
     expect(rowIndexOf(MESH, "instruction-row")).toBe(-1);
     expect(Array.from(vertexColors(MESH, -1, BASE, HI)).every((v) => v === 1)).toBe(true);
+  });
+
+  it("colours several rows at once (a group card), skipping unknown ones", () => {
+    expect(rowIndicesOf(MESH, ["b", "nope", "a"])).toEqual([1, 0]);
+    expect(rowIndicesOf(MESH, "b")).toEqual([1]);
+    expect(rowIndicesOf(MESH, null)).toEqual([]);
+    const c = vertexColors(MESH, rowIndicesOf(MESH, ["a", "b"]), BASE, HI);
+    expect(Array.from(c).every((v, i) => v === HI[i % 3])).toBe(true);
+    expect(Array.from(vertexColors(MESH, [], BASE, HI)).every((v) => v === 1)).toBe(true);
   });
 
   it("reuses the output buffer when it fits", () => {

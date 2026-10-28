@@ -15,6 +15,8 @@ import {
 export interface ModelCanvasProps {
   mesh: ViewMesh | null;
   highlightRowId: string | null;
+  /** Several rows to highlight together (a group card); overrides `highlightRowId`. */
+  highlightRowIds?: readonly string[] | undefined;
   dimmed: boolean;
   showGrid: boolean;
   /** Opacity of the faint fabric behind the stitch lattice (0 = off; default 0). */
@@ -109,7 +111,11 @@ export default function ModelCanvas(props: ModelCanvasProps) {
   }, []);
 
   useEffect(() => viewRef.current?.setMesh(mesh), [mesh]);
-  useEffect(() => viewRef.current?.setHighlight(highlightRowId), [highlightRowId, mesh]);
+  const groupKey = props.highlightRowIds && props.highlightRowIds.length > 1 ? props.highlightRowIds.join("|") : null;
+  useEffect(
+    () => viewRef.current?.setHighlight(groupKey !== null ? groupKey.split("|") : highlightRowId),
+    [groupKey, highlightRowId, mesh],
+  );
   useEffect(() => viewRef.current?.setStyle({ dimmed, showGrid, backing }), [dimmed, showGrid, backing]);
   useEffect(() => {
     if (resetToken > 0) viewRef.current?.resetView();

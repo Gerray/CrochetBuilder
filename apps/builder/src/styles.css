@@ -799,6 +799,157 @@ input[aria-invalid="true"]:focus-visible {
   font-size: var(--fs-xs);
 }
 
+/* ---------------------------------------------------------------- editor assistance */
+
+/* A group of identical rows ("Runde 7–12"): a second hairline edge below, like a stack. */
+.row-card.is-group {
+  margin-bottom: 3px;
+  box-shadow:
+    0 3px 0 -1px var(--c-surface),
+    0 3px 0 0 var(--c-line);
+}
+.row-group-count {
+  padding: 1px var(--sp-2);
+  border: var(--bd-hairline);
+  border-radius: var(--r-pill);
+  color: var(--c-text-2);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+}
+/* An automatic Soll (follows the Ist) is muted; a typed one looks like any input. */
+.stitch-count.is-auto .soll-input {
+  border-style: dashed;
+  color: var(--c-text-mute);
+}
+.stitch-count.is-auto .soll-input:focus-visible {
+  border-style: solid;
+  color: var(--c-text);
+}
+.row-text-input.is-suggested {
+  color: var(--c-text-2);
+}
+.row-suggestion-hint,
+.field-warnings {
+  margin: var(--sp-1) 0 0;
+  color: var(--c-text-mute);
+  font-size: var(--fs-xs);
+  line-height: var(--lh-xs);
+}
+.row-suggestion-hint strong {
+  color: var(--c-accent-text);
+  font-weight: var(--fw-semibold);
+}
+.field-warnings {
+  list-style: none;
+  padding: 0;
+  display: grid;
+  gap: 2px;
+  color: var(--c-text-2);
+}
+.field-warnings li {
+  padding-left: var(--sp-2);
+  border-left: 2px solid var(--c-border);
+}
+.row-repeat,
+.row-split {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Findings with one-click fixes. */
+.finding {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-1) var(--sp-2);
+}
+.finding-fixes {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: var(--sp-1);
+}
+.finding-fix {
+  background: var(--c-surface);
+  color: var(--c-text);
+}
+.finding-entry {
+  display: grid;
+  gap: var(--sp-1);
+}
+.finding-entry > .finding-fixes {
+  padding-left: calc(var(--sp-3) + 3px);
+}
+
+/* Small popovers (Runde ×N, Bausteine): the menu surface with a form inside. */
+.popover-anchor {
+  position: relative;
+  display: inline-flex;
+}
+.popover {
+  position: absolute;
+  top: calc(100% + var(--sp-1));
+  left: 0;
+  z-index: 20;
+  display: grid;
+  gap: var(--sp-2);
+  padding: var(--sp-3);
+  border: var(--bd-default);
+  border-radius: var(--r-card);
+  background: var(--c-surface);
+  box-shadow: var(--el-popover);
+  font-size: var(--fs-sm);
+}
+.popover-hint {
+  margin: 0;
+  color: var(--c-text-mute);
+  font-size: var(--fs-xs);
+}
+.repeat-popover {
+  left: auto;
+  right: 0;
+  min-width: 17em;
+}
+.snippet-popover {
+  width: min(30em, calc(100vw - 2 * var(--sp-4)));
+}
+.snippet-kinds {
+  flex-wrap: wrap;
+}
+.snippet-kind.is-unavailable {
+  opacity: 0.5;
+}
+.snippet-param {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+}
+.snippet-param-label {
+  min-width: 3.5em;
+  color: var(--c-text-mute);
+  font-size: var(--fs-xs);
+}
+.snippet-sizes {
+  display: inline-flex;
+  gap: 2px;
+}
+.snippet-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  padding-top: var(--sp-2);
+  border-top: var(--bd-hairline);
+}
+.snippet-summary {
+  color: var(--c-text-2);
+  font-size: var(--fs-xs);
+}
+.snippet-problem {
+  color: var(--c-warn-text);
+  font-size: var(--fs-xs);
+}
+
 /* ---------------------------------------------------------------- op editor */
 
 .op-editor {

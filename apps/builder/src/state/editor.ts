@@ -100,6 +100,18 @@ export type EditorAction =
   | { type: "duplicatePart"; index: number; rowIds: readonly string[] }
   | { type: "deletePart"; index: number }
   | { type: "movePart"; index: number; delta: number }
+  // editor assistance (A4): see `applyAssist`
+  /** Several edits as one undo step (`key`: coalesce like the edit it stands for). */
+  | { type: "batch"; actions: readonly EditorAction[]; key?: string }
+  /** Insert finished rows (fresh ids) after `afterId`, else at the end of the part shown. */
+  | { type: "insertRows"; afterId: string | null; rows: readonly Row[] }
+  /**
+   * The run `rowIds` (consecutive rows, e.g. a group "Runde 7–12") becomes `length` rows:
+   * copies of its first row are added after it (ids from `newIds`) or rows removed at its end.
+   */
+  | { type: "setRunLength"; rowIds: readonly string[]; length: number; newIds: readonly string[] }
+  /** Back to an automatic Soll: not pinned any more, equal to the Ist. */
+  | { type: "unpinTarget"; rowId: string }
   // pattern paste ("Anleitung einfügen", see the block at the end of `applyEdit`)
   | AppendPartsAction
   // document
@@ -200,6 +212,50 @@ function sameJson(a: unknown, b: unknown): boolean {
 }
 
 /**
+ * Whether the Soll of `row` follows its Ist on the next ops edit: it was never set explicitly
+ * and still equals the Ist — or it is still 0 (nothing declared yet).
+ */
+export function followsActual(row: Row, pinned: readonly string[]): boolean {
+  if (row.stitchCountTarget === 0) return true;
+  return !pinned.includes(row.id) && row.stitchCountTarget === computeRowStitches(row);
+}
+
+/**
+ * The Soll is shown as automatic (muted): not set explicitly and equal to the Ist — or 0 on a
+ * row with stitches, which means "no count declared" (E23).
+ */
+export function isAutoTarget(row: Row, pinned: readonly string[]): boolean {
+  if (row.stitchCountTarget === 0 && row.ops.length > 0) return true;
+  return !pinned.includes(row.id) && row.stitchCountTarget === computeRowStitches(row);
+}
+
+/**
+ * A document as the editor holds it (E23): a row with stitches and Soll 0 declares no count,
+ * so its Soll takes the Ist and follows it (not pinned). Returns the inputs unchanged when
+ * there is no such row. Applied to every document that comes in (loaded, imported, opened).
+ */
+export function withAutoTargets(doc: BuilderDoc, pinned: readonly string[]): { doc: BuilderDoc; pinned: readonly string[] } {
+  const filled: string[] = [];
+  const parts = doc.parts.map((part) => {
+    let changed = false;
+    const rows = part.content.rows.map((row) => {
+      if (row.stitchCountTarget !== 0 || row.ops.length === 0) return row;
+      filled.push(row.id);
+      const actual = computeRowStitches(row);
+      if (actual === 0) return row;
+      changed = true;
+      return { ...row, stitchCountTarget: actual };
+    });
+    return changed ? { ...part, content: { ...part.content, rows } } : part;
+  });
+  const unpinned = pinned.filter((id) => !filled.includes(id));
+  return {
+    doc: parts.some((p, i) => p !== doc.parts[i]) ? { ...doc, parts } : doc,
+    pinned: unpinned.length === pinned.length ? pinned : unpinned,
+  };
+}
+
+/**
  * New ops for a row, applying the Soll-follows-Ist rule. Edits that would break the limits
  * (count/times > 999, more than 10,000 worked stitches) are refused: the row stays as is.
  */
@@ -209,9 +265,7 @@ function rowWithOps(row: Row, ops: Op[], pinned: readonly string[], target?: num
   if (target !== undefined && (target < 0 || target > MAX_STITCH_COUNT_TARGET)) return row;
   const next: Row = { ...row, ops };
   if (target !== undefined) next.stitchCountTarget = target;
-  else if (!pinned.includes(row.id) && row.stitchCountTarget === computeRowStitches(row)) {
-    next.stitchCountTarget = computeRowStitches(next);
-  }
+  else if (followsActual(row, pinned)) next.stitchCountTarget = computeRowStitches(next);
   return next;
 }
 
@@ -365,6 +419,8 @@ function applyEdit(state: EditorState, action: EditorAction): DocResult {
       const target = action.target;
       if (!Number.isInteger(target) || target < 0 || target > MAX_STITCH_COUNT_TARGET) return same;
       const row = doc.parts[rowScope]?.content.rows.find((r) => r.id === action.rowId);
+      // A Soll of 0 on a row with stitches declares no count: back to automatic (E23).
+      if (row && target === 0 && row.ops.length > 0) return applyAssist(state, { type: "unpinTarget", rowId: row.id });
       // An unchanged value is a no-op: no pin, no history entry.
       if (!row || row.stitchCountTarget === target) return same;
       const next = withRow(doc, action.rowId, (r) => ({ ...r, stitchCountTarget: target }));
@@ -509,20 +565,144 @@ function applyEdit(state: EditorState, action: EditorAction): DocResult {
     }
 
     case "replaceDocument":
-      return { doc: action.doc, pinned: action.pinned ?? [], scope: state.part, select: 0 };
+      return { ...withAutoTargets(action.doc, action.pinned ?? []), scope: state.part, select: 0 };
 
     case "hydrate":
-      return { doc: action.doc, pinned: action.pinned ?? [] };
+      return withAutoTargets(action.doc, action.pinned ?? []);
 
-    case "appendParts":
-      return appendParts(state, action);
+    case "appendParts": {
+      // Pasted rows without a declared count follow their Ist (E23).
+      const result = appendParts(state, action);
+      return result.doc === doc ? result : { ...result, ...withAutoTargets(result.doc, result.pinned) };
+    }
 
     case "selectPart":
     case "undo":
     case "redo":
     case "endTyping":
       return same;
+
+    case "batch":
+    case "insertRows":
+    case "setRunLength":
+    case "unpinTarget":
+      return applyAssist(state, action);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Editor assistance (A4): batches, inserted rows, runs of identical rows, automatic Soll
+// ---------------------------------------------------------------------------
+
+/** Most rows in one run ("Runde ×N"). */
+export const MAX_RUN_LENGTH = 999;
+
+type AssistAction = Extract<EditorAction, { type: "batch" | "insertRows" | "setRunLength" | "unpinTarget" }>;
+
+const NOT_BATCHABLE: ReadonlySet<EditorAction["type"]> = new Set(["undo", "redo", "hydrate", "endTyping", "selectPart"]);
+
+/** An empty stitch row (being written, no note): snippets replace it instead of following it. */
+function isBlankRow(row: Row | undefined): boolean {
+  return !!row && row.ops.length === 0 && row.note === undefined && !row.label?.trim();
+}
+
+function applyAssist(state: EditorState, action: AssistAction): DocResult {
+  const { doc, pinned } = state;
+  const same = { doc, pinned };
+  switch (action.type) {
+    case "batch": {
+      let current: EditorState = state;
+      let scope: number | undefined;
+      let select: number | undefined;
+      for (const inner of action.actions) {
+        if (NOT_BATCHABLE.has(inner.type)) continue;
+        const result = applyEdit(current, inner);
+        scope ??= result.scope;
+        if (result.select !== undefined) select = result.select;
+        const part = clampPart(result.doc, result.select ?? current.part);
+        current = { ...current, doc: result.doc, pinned: result.pinned, part };
+      }
+      if (current.doc === doc && current.pinned === pinned) return same;
+      const result: DocResult = { doc: current.doc, pinned: current.pinned };
+      if (scope !== undefined) result.scope = scope;
+      if (select !== undefined) result.select = select;
+      return result;
+    }
+
+    case "insertRows": {
+      if (action.rows.length === 0) return same;
+      const ids = action.rows.map((r) => r.id);
+      if (new Set(ids).size !== ids.length || ids.some((id) => partOfRow(doc, id) >= 0)) return same;
+      const anchorPart = action.afterId ? partOfRow(doc, action.afterId) : -1;
+      const index = anchorPart >= 0 ? anchorPart : state.part;
+      let dropped: string | undefined;
+      const next = withRows(doc, index, (rows) => {
+        const anchor = anchorPart >= 0 ? rows.findIndex((r) => r.id === action.afterId) : rows.length - 1;
+        const inserted = action.rows.map((r) => structuredClone(r));
+        // An empty row being written at the insertion point is replaced, not left above.
+        if (isBlankRow(rows[anchor])) {
+          dropped = rows[anchor]!.id;
+          return [...rows.slice(0, anchor), ...inserted, ...rows.slice(anchor + 1)];
+        }
+        return [...rows.slice(0, anchor + 1), ...inserted, ...rows.slice(anchor + 1)];
+      });
+      const keep = dropped === undefined ? pinned : pinned.filter((id) => id !== dropped);
+      return { doc: next, pinned: keep.length === pinned.length ? pinned : keep, scope: index };
+    }
+
+    case "setRunLength": {
+      const { rowIds, length } = action;
+      if (rowIds.length === 0 || !Number.isInteger(length) || length < 1 || length > MAX_RUN_LENGTH) return same;
+      const index = partOfRow(doc, rowIds[0]!);
+      const rows = doc.parts[index]?.content.rows ?? [];
+      const start = rows.findIndex((r) => r.id === rowIds[0]);
+      // The run must be consecutive rows of one part, in order.
+      if (start < 0 || rowIds.some((id, i) => rows[start + i]?.id !== id)) return same;
+      if (length === rowIds.length) return same;
+      if (length < rowIds.length) {
+        const gone = new Set(rowIds.slice(length));
+        return {
+          doc: withRows(doc, index, (list) => list.filter((r) => !gone.has(r.id))),
+          pinned: pinned.some((id) => gone.has(id)) ? pinned.filter((id) => !gone.has(id)) : pinned,
+          scope: index,
+        };
+      }
+      const missing = length - rowIds.length;
+      const newIds = action.newIds.slice(0, missing);
+      if (newIds.length < missing || new Set(newIds).size !== newIds.length) return same;
+      if (newIds.some((id) => partOfRow(doc, id) >= 0)) return same;
+      const source = rows[start]!;
+      const copies = newIds.map((id): Row => ({ ...structuredClone(source), id }));
+      const end = start + rowIds.length;
+      return {
+        doc: withRows(doc, index, (list) => [...list.slice(0, end), ...copies, ...list.slice(end)]),
+        pinned: pinned.includes(source.id) ? [...pinned, ...newIds] : pinned,
+        scope: index,
+      };
+    }
+
+    case "unpinTarget": {
+      const index = partOfRow(doc, action.rowId);
+      if (index < 0) return same;
+      const next = withRow(doc, action.rowId, (row) => {
+        const actual = computeRowStitches(row);
+        return row.stitchCountTarget === actual ? row : { ...row, stitchCountTarget: actual };
+      });
+      const unpinned = pinned.includes(action.rowId) ? pinned.filter((id) => id !== action.rowId) : pinned;
+      return { doc: next, pinned: unpinned, scope: index };
+    }
+  }
+}
+
+/**
+ * The same row edit for every row of `rowIds` (a group card), as one undo step. Actions
+ * without a row pass through unchanged.
+ */
+export function fanOut(action: EditorAction, rowIds: readonly string[]): EditorAction {
+  if (!("rowId" in action) || rowIds.length <= 1) return action;
+  const key = coalesceKey(action);
+  const actions = rowIds.map((rowId) => ({ ...action, rowId }) as EditorAction);
+  return key === undefined ? { type: "batch", actions } : { type: "batch", actions, key: `group:${rowIds[0]}:${key}` };
 }
 
 // ---------------------------------------------------------------------------
@@ -581,11 +761,14 @@ function coalesceKey(action: EditorAction): string | undefined {
     case "updateRow":
       return "label" in action.patch || "note" in action.patch ? `row:${action.rowId}:text` : undefined;
     case "setTarget":
+    case "unpinTarget":
       return `row:${action.rowId}:target`;
     case "updateStitch":
       return "count" in action.patch ? `op:${action.rowId}:${action.path.join(".")}` : undefined;
     case "setRepeatTimes":
       return `op:${action.rowId}:${action.path.join(".")}`;
+    case "batch":
+      return action.key;
     default:
       return undefined;
   }
@@ -617,7 +800,8 @@ export function editorReducer(state: EditorState, action: EditorAction): EditorS
     };
   }
   if (action.type === "hydrate") {
-    return initEditorState(action.doc, action.pinned ?? [], action.part ?? 0);
+    const loaded = withAutoTargets(action.doc, action.pinned ?? []);
+    return initEditorState(loaded.doc, loaded.pinned, action.part ?? 0);
   }
   if (action.type === "endTyping") {
     return state.lastKey === undefined ? state : { ...state, lastKey: undefined };

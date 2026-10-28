@@ -21,7 +21,11 @@ import type { ModelCanvasProps } from "../three/ModelCanvas.js";
 import { usePreviewModel, type PreviewOptions, type PreviewState } from "../preview/usePreviewModel.js";
 import { sizeBasisText } from "../export/labels.js";
 import { displayRowLabels } from "../state/labels.js";
+import { fanOut, type EditorAction } from "../state/editor.js";
+import { cardFindings, type RowItem } from "../state/grouping.js";
 import { findingMessage } from "../state/messages.js";
+import { quickFixes } from "../state/quickfix.js";
+import { FindingFixes } from "./FindingFixes.js";
 
 /** The 3D view's code could not be fetched (e.g. an old chunk after a redeploy: 404). */
 export class ViewLoadError extends Error {
@@ -52,6 +56,17 @@ export interface PreviewPaneProps {
   findings: readonly Finding[];
   /** Row selected in the editor — highlighted in the model. */
   selectedRowId: string | null;
+  /** All rows of the selected card (a group "Runde 7–12"), highlighted together. */
+  highlightRowIds?: readonly string[];
+  /** Apply a quick fix of a finding (without it, no fixes are offered). */
+  onApplyFix?: (action: EditorAction) => void;
+  /** Rows whose Soll was set explicitly (quick fixes respect it). */
+  pinned?: readonly string[];
+  /**
+   * The cards of the row list: a group's finding shows once ("Runde 5–8: …") and its fixes
+   * go to every row of the group, as on the card.
+   */
+  groups?: readonly RowItem[];
   /** Select and focus a row in the editor (finding click, stitch click in the model). */
   onSelectRow: (rowId: string) => void;
   /** Preview computation options (tests: a fake client, no debounce). */
@@ -163,12 +178,19 @@ export function ViewError({ error, onRetry }: { error: unknown; onRetry: () => v
   );
 }
 
+const NO_PINS: readonly string[] = [];
+const NO_GROUPS: readonly RowItem[] = [];
+
 export function PreviewPane({
   content,
   gauge,
   findings,
   selectedRowId,
+  highlightRowIds,
   onSelectRow,
+  onApplyFix,
+  pinned = NO_PINS,
+  groups = NO_GROUPS,
   previewOptions,
   loadView = loadModelCanvas,
 }: PreviewPaneProps) {
@@ -197,6 +219,7 @@ export function PreviewPane({
     return new Map(content.rows.map((r, i) => [r.id, names[i] ?? ""]));
   }, [content]);
   const rowsById = useMemo(() => new Map(content.rows.map((r) => [r.id, r])), [content]);
+  const shown = useMemo(() => cardFindings(findings, groups, labels), [findings, groups, labels]);
   const errors = findings.filter((f) => f.severity === "error").length;
   const warnings = findings.length - errors;
 
@@ -282,6 +305,7 @@ export function PreviewPane({
                   <ModelCanvas
                     mesh={preview.model}
                     highlightRowId={selectedRowId}
+                    highlightRowIds={highlightRowIds}
                     dimmed={stale}
                     showGrid={showGrid}
                     backing={style === "stitches" && showBacking ? BACKING_OPACITY : 0}
@@ -343,15 +367,26 @@ export function PreviewPane({
           <p className="all-good">Keine Befunde – Maschenzahlen und Übergänge stimmen.</p>
         ) : (
           <ul className="finding-list">
-            {findings.map((f, i) => (
-              <li key={i}>
+            {shown.map(({ finding: f, rowIds, label }, i) => (
+              <li key={i} className="finding-entry">
                 <button
                   type="button"
-                  className={`finding-link finding-${f.severity}${f.rowId === selectedRowId ? " is-selected" : ""}`}
+                  className={`finding-link finding-${f.severity}${
+                    selectedRowId !== null && rowIds.includes(selectedRowId) ? " is-selected" : ""
+                  }`}
                   onClick={() => onSelectRow(f.rowId)}
                 >
-                  <strong>{labels.get(f.rowId) ?? "Zeile"}:</strong> {findingMessage(f, rowsById.get(f.rowId))}
+                  <strong>{label || "Zeile"}:</strong> {findingMessage(f, rowsById.get(f.rowId))}
                 </button>
+                {onApplyFix && (
+                  <FindingFixes
+                    fixes={quickFixes(f, content.rows, pinned)}
+                    onApply={(fix) => {
+                      onApplyFix(fanOut(fix.action, rowIds));
+                      onSelectRow(f.rowId);
+                    }}
+                  />
+                )}
               </li>
             ))}
           </ul>

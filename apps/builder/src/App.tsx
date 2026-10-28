@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
+import type { Row } from "@crochetbuilder/engine";
 import { createPortal } from "react-dom";
 import type { ExportActions } from "./components/ExportMenu.js";
 import { focusLater } from "./components/focus.js";
@@ -7,6 +8,7 @@ import { PasteDialog, pasteShortcut, type PasteImport } from "./components/Paste
 import { commitPendingEdits } from "./components/pendingEdits.js";
 import { PreviewPane } from "./components/PreviewPane.js";
 import { RowList, type FocusRequest } from "./components/RowList.js";
+import { useRowGroups } from "./components/useRowGroups.js";
 import { SplitPane } from "./components/SplitPane.js";
 import { StorageNotice } from "./components/StorageNotice.js";
 import { TopBar } from "./components/TopBar.js";
@@ -14,10 +16,11 @@ import { isDocumentEmpty } from "./export/prepare.js";
 import { useFragmentImport } from "./export/useFragmentImport.js";
 import { looksLikePattern } from "./paste/detect.js";
 import type { PastePreviewOptions } from "./paste/usePastePreview.js";
-import { addPart, addRow, duplicatePart, duplicateRow, loadDemo, newDocument } from "./state/actions.js";
+import { addPart, addRow, duplicatePart, duplicateRow, insertRounds, loadDemo, newDocument } from "./state/actions.js";
 import { emptyDocument, type BuilderDoc } from "./state/document.js";
-import { canRedo, canUndo, editorReducer, initEditorState, selectedPart } from "./state/editor.js";
+import { canRedo, canUndo, editorReducer, initEditorState, selectedPart, type EditorAction } from "./state/editor.js";
 import { partFindings, partName } from "./state/parts.js";
+import type { RoundSpec } from "./state/rounds.js";
 import { isMacPlatform, shortcutFor } from "./state/shortcuts.js";
 import { usePersistence } from "./state/usePersistence.js";
 
@@ -64,6 +67,8 @@ export function App({ exportActions, pastePreviewOptions }: AppProps = {}) {
   const [state, dispatch] = useReducer(editorReducer, undefined, () => initEditorState(emptyDocument()));
   const persistence = usePersistence(state, dispatch);
   const [selectedRowId, setSelectedRowId] = useState<string | null>(null);
+  // All rows of the selected card (a group "Runde 7–12" has several).
+  const [selectedGroup, setSelectedGroup] = useState<readonly string[]>([]);
   const [focusRequest, setFocusRequest] = useState<FocusRequest | null>(null);
   const focusCounter = useRef(0);
   const [linkError, setLinkError] = useState<string | null>(null);
@@ -112,6 +117,8 @@ export function App({ exportActions, pastePreviewOptions }: AppProps = {}) {
   // The stitch budget of the 3D preview is reported like any other finding.
   const findings = partFindings(part);
   const rows = part.rows;
+  // Cards of the row list (groups of identical rounds), shared with the findings panel.
+  const groups = useRowGroups(rows, findings);
 
   // Everything that swaps the rows in view first commits typed text; an unreadable text stops
   // it (the field keeps its error and the focus).
@@ -157,6 +164,15 @@ export function App({ exportActions, pastePreviewOptions }: AppProps = {}) {
     setFocusRequest({ rowId, token: ++focusCounter.current });
   }, []);
 
+  const selectRow = useCallback((rowId: string, rowIds: readonly string[]) => {
+    setSelectedRowId(rowId);
+    setSelectedGroup(rowIds);
+  }, []);
+  // The rows of the selected card: highlighted together in 3D; new rows go after the last.
+  const selectedRows =
+    selectedRowId === null ? [] : selectedGroup.includes(selectedRowId) ? selectedGroup : [selectedRowId];
+  const selectionEnd = selectedRows.length > 0 ? selectedRows[selectedRows.length - 1]! : null;
+
   const addRowAfter = useCallback(
     (afterId: string | null, instruction: boolean) => {
       const action = addRow(afterId, instruction);
@@ -175,16 +191,31 @@ export function App({ exportActions, pastePreviewOptions }: AppProps = {}) {
     [focusRow],
   );
 
-  // Deleting a row moves focus to its neighbour (next, else previous), never to <body>.
-  const deleteRow = useCallback(
-    (rowId: string) => {
-      const index = rows.findIndex((r) => r.id === rowId);
-      const neighbour = rows[index + 1] ?? rows[index - 1];
-      dispatch({ type: "deleteRow", rowId });
+  // Deleting a row (or a group) moves focus to its neighbour (next, else previous), never
+  // to <body>.
+  const deleteRows = useCallback(
+    (rowIds: readonly string[]) => {
+      const first = rows.findIndex((r) => r.id === rowIds[0]);
+      const last = rows.findIndex((r) => r.id === rowIds[rowIds.length - 1]);
+      if (first < 0) return;
+      const neighbour = rows[last + 1] ?? rows[first - 1];
+      const actions: EditorAction[] = rowIds.map((rowId) => ({ type: "deleteRow", rowId }));
+      dispatch(actions.length === 1 ? actions[0]! : { type: "batch", actions });
       if (neighbour) focusRow(neighbour.id);
       else setTimeout(() => document.querySelector<HTMLElement>("[data-focus-id='add-row']")?.focus(), 0);
     },
     [rows, focusRow],
+  );
+
+  // Snippet rounds: one undo step, the last inserted row is selected afterwards.
+  const insertSnippet = useCallback(
+    (afterId: string | null, rounds: RoundSpec[], type: Row["type"]) => {
+      const action = insertRounds(afterId, rounds, type);
+      dispatch(action);
+      const last = action.rows[action.rows.length - 1];
+      if (last) focusRow(last.id);
+    },
+    [focusRow],
   );
 
   /** Open "Anleitung einfügen"; false when typed text elsewhere could not be committed. */
@@ -237,8 +268,8 @@ export function App({ exportActions, pastePreviewOptions }: AppProps = {}) {
       const shortcut = shortcutFor(e);
       if (shortcut === "addRow") {
         e.preventDefault();
-        const exists = rows.some((r) => r.id === selectedRowId);
-        addRowAfter(exists ? selectedRowId : null, false);
+        const exists = rows.some((r) => r.id === selectionEnd);
+        addRowAfter(exists ? selectionEnd : null, false);
       } else if (shortcut === "prevPart" || shortcut === "nextPart") {
         if (keepsAltArrows(e.target) || overlayOpen()) return;
         e.preventDefault();
@@ -259,7 +290,7 @@ export function App({ exportActions, pastePreviewOptions }: AppProps = {}) {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [rows, selectedRowId, addRowAfter, selectPart, state.doc.parts.length, state.part, paste]);
+  }, [rows, selectionEnd, addRowAfter, selectPart, state.doc.parts.length, state.part, paste]);
 
   const appRoot = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -359,15 +390,17 @@ export function App({ exportActions, pastePreviewOptions }: AppProps = {}) {
                   )}
                   <RowList
                     rows={rows}
-                    findings={findings}
+                    groups={groups}
+                    pinned={state.pinned}
                     selectedRowId={selectedRowId}
                     focusRequest={focusRequest}
                     dispatch={dispatch}
-                    onSelect={setSelectedRowId}
+                    onSelect={selectRow}
                     onFocusRow={focusRow}
                     onAddRow={addRowAfter}
                     onDuplicate={duplicate}
-                    onDelete={deleteRow}
+                    onDelete={deleteRows}
+                    onInsertRounds={insertSnippet}
                     severalParts={state.doc.parts.length > 1}
                   />
                 </div>
@@ -379,7 +412,11 @@ export function App({ exportActions, pastePreviewOptions }: AppProps = {}) {
                 gauge={state.doc.overview.gauge}
                 findings={findings}
                 selectedRowId={selectedRowId}
+                highlightRowIds={selectedRows}
                 onSelectRow={focusRow}
+                pinned={state.pinned}
+                groups={groups.items}
+                onApplyFix={(action) => dispatch(action)}
               />
             }
           />
