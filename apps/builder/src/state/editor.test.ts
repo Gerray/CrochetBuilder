@@ -312,6 +312,15 @@ describe("messages", () => {
       findingMessage({ rowId: "a", severity: "warning", code: "CONSUMES_UNDERFLOW", message: "", expected: 6, actual: 5 }, { ...r, type: "row" }),
     ).toBe("Wird nur in 5 von 6 Maschen gearbeitet – 1 bleibt frei.");
     expect(findingMessage({ rowId: "a", severity: "error", code: "NO_ANCHOR_ROW", message: "", actual: 6 }, r)).toContain("keine Runde");
+    // Rounds around a foundation chain (oval start).
+    const oval: Row = { ...r, around: true };
+    expect(findingMessage({ rowId: "a", severity: "error", code: "AROUND_WITHOUT_CHAIN", message: "" }, oval)).toContain("nach einer Luftmaschenkette");
+    expect(findingMessage({ rowId: "a", severity: "error", code: "CONSUMES_OVERFLOW", message: "", expected: 14, actual: 15 }, oval)).toContain(
+      "um die Luftmaschenkette herum gibt es nur 14 Einstichstellen",
+    );
+    expect(findingMessage({ rowId: "a", severity: "warning", code: "CONSUMES_UNDERFLOW", message: "", expected: 11, actual: 9 }, oval)).toBe(
+      "Wird nur in 9 Einstichstellen um die Luftmaschenkette gearbeitet, üblich sind 11 – 2 bleiben frei.",
+    );
     expect(parseErrorMessage(parseRowText("6 Quatsch"))).toBe("Unbekannter Begriff: „Quatsch“");
     expect(parseErrorMessage(parseRowText("6× (1 fM"))).toContain("Zeichen 9");
     expect(parseErrorMessage(parseRowText("6 fM"))).toBeNull();
