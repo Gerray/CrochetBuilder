@@ -4,7 +4,18 @@
  * Checks the editor's limits and gives every refusal a German message.
  */
 
-import { MAX_STITCH_COUNT_TARGET, opsWithinLimits, rowLabel, rowOrdinals, type Row } from "@crochetbuilder/engine";
+import {
+  CURRENT_SCHEMA_VERSION,
+  MAX_STITCH_COUNT_TARGET,
+  opsWithinLimits,
+  rowLabel,
+  rowOrdinals,
+  type Op,
+  type PaletteColor,
+  type PartContent,
+  type Placement,
+  type Row,
+} from "@crochetbuilder/engine";
 import { isDocumentEmpty } from "../export/prepare.js";
 import { emptyDocument, newId, type BuilderDoc } from "../state/document.js";
 import { MAX_PART_QUANTITY, MAX_PARTS, type EditorAction } from "../state/editor.js";
@@ -107,9 +118,52 @@ export function notesWith(previous: string | undefined, preamble: readonly strin
   return old ? `${old}\n\n${added}` : added;
 }
 
+/** `base`, or `base-2`, `base-3` … — the first not in `taken` (which receives it). */
+function freeId(base: string, taken: Set<string>): string {
+  let id = base;
+  for (let n = 2; taken.has(id); n++) id = `${base}-${n}`;
+  taken.add(id);
+  return id;
+}
+
+/**
+ * The palette after the import: the existing colours, plus the imported ones whose name is
+ * not there yet (ignoring case). Returns the palette and the id each imported colour gets.
+ */
+export function mergePalette(
+  existing: readonly PaletteColor[],
+  imported: readonly PaletteColor[],
+): { colors: PaletteColor[]; ids: Map<string, string> } {
+  const colors = [...existing];
+  const taken = new Set(colors.map((c) => c.id));
+  const ids = new Map<string, string>();
+  for (const color of imported) {
+    const same = colors.find((c) => c.name.trim().toLowerCase() === color.name.trim().toLowerCase());
+    if (same) {
+      ids.set(color.id, same.id);
+      continue;
+    }
+    const added: PaletteColor = { ...color, id: freeId(color.id, taken) };
+    colors.push(added);
+    ids.set(color.id, added.id);
+  }
+  return { colors, ids };
+}
+
+/** Colour ids of ops renamed by `ids` (colours not in it are kept as they are). */
+function recolorOps(ops: Op[], ids: ReadonlyMap<string, string>): void {
+  for (const op of ops) {
+    if (op.kind !== "stitch") recolorOps(op.ops as Op[], ids);
+    else if (op.color !== undefined) op.color = ids.get(op.color) ?? op.color;
+  }
+}
+
 /**
  * The editor action for the preview, or why it cannot be imported. Rows get fresh ids; the
  * declared stitch counts are pinned (an author's mistake is reported, never silently fixed).
+ * Format v2 data comes along: the colours join the palette (a colour of the same name is
+ * reused), finish and stuffing go to their part, and the placements to the assembly with the
+ * new part and row ids.
  */
 export function applyPaste(
   preview: PastePreview,
@@ -121,16 +175,39 @@ export function applyPaste(
   if (blocker) return { ok: false, message: blocker };
   const mode = effectiveMode(options.mode, doc);
 
+  const palette = mergePalette(mode === "replace" ? [] : (doc.overview.colors ?? []), preview.colors);
+  const takenParts = new Set(mode === "replace" ? [] : doc.parts.flatMap((p) => (p.id ? [p.id] : [])));
+  const partIds = new Map<string, string>();
+  const rowIds = new Map<string, string>();
   const pinned: string[] = [];
   const parts: BuilderDoc["parts"] = preview.parts.map((part, i) => {
     const { name, quantity } = partEdit(preview, i, options.edits);
     const rows = part.rows.map((row): Row => {
       const id = makeId();
       pinned.push(id);
-      return { ...structuredClone(row), id };
+      rowIds.set(row.id, id);
+      const copy: Row = { ...structuredClone(row), id };
+      if (copy.color !== undefined) copy.color = palette.ids.get(copy.color) ?? copy.color;
+      recolorOps(copy.ops, palette.ids);
+      return copy;
     });
-    return { name: name.trim() || `Teil ${i + 1}`, quantity, content: { schemaVersion: 1, rows } };
+    const content: PartContent = { schemaVersion: CURRENT_SCHEMA_VERSION, rows };
+    if (part.finish) content.finish = part.finish;
+    if (part.stuffing) content.stuffing = part.stuffing;
+    const id = freeId(part.id, takenParts);
+    partIds.set(part.id, id);
+    return { id, name: name.trim() || `Teil ${i + 1}`, quantity, content };
   });
+  const assembly: Placement[] = [];
+  for (const placement of preview.assembly) {
+    const target = partIds.get(placement.target);
+    const row = rowIds.get(placement.row);
+    const part = placement.part === undefined ? undefined : partIds.get(placement.part);
+    if (!target || !row || (placement.part !== undefined && !part)) continue;
+    const moved: Placement = { ...placement, id: makeId(), target, row };
+    if (part) moved.part = part;
+    assembly.push(moved);
+  }
   const unread = preview.counts.unread;
 
   // A title taken from the text is not repeated in the notes.
@@ -140,13 +217,16 @@ export function applyPaste(
   if (mode === "replace") {
     const fresh = emptyDocument(makeId());
     const notes = notesWith(undefined, preamble);
+    const overview: BuilderDoc["overview"] = notes ? { ...fresh.overview, notes } : { ...fresh.overview };
+    if (palette.colors.length > 0) overview.colors = palette.colors;
     const next: BuilderDoc = {
       ...fresh,
       // A new pattern: its title comes from the text, or stays empty.
       title: preview.title ?? "",
-      overview: notes ? { ...fresh.overview, notes } : fresh.overview,
+      overview,
       parts,
     };
+    if (assembly.length > 0) next.assembly = assembly;
     return { ok: true, action: { type: "replaceDocument", doc: next, pinned }, mode, parts: parts.length, unread };
   }
 
@@ -155,5 +235,7 @@ export function applyPaste(
     const notes = notesWith(doc.overview.notes, preamble);
     if (notes !== (doc.overview.notes?.trim() ?? "")) action.notes = notes;
   }
+  if (palette.colors.length > (doc.overview.colors?.length ?? 0)) action.colors = palette.colors;
+  if (assembly.length > 0) action.assembly = assembly;
   return { ok: true, action, mode, parts: parts.length, unread };
 }

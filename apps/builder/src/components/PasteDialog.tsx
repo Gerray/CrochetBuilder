@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { Fragment, memo, useCallback, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import type { NotationLocale } from "@crochetbuilder/engine";
 import {
   applyPaste,
@@ -10,6 +10,9 @@ import {
   type PasteResult,
 } from "../paste/apply.js";
 import {
+  assemblySummary,
+  FINISH_LABELS,
+  STUFFING_LABELS,
   summaryText,
   type LineStatus,
   type PastePreview,
@@ -359,6 +362,7 @@ const PreviewContent = memo(function PreviewContent(props: PreviewContentProps) 
   const general = preview.general.filter(
     (g) => g.code !== "LOCALE_UNCERTAIN" && (!onlyProblems || g.code !== "IGNORED"),
   );
+  const assembly = assemblySummary(preview, (i) => partEdit(preview, i, edits).quantity);
   let budget = MAX_PREVIEW_LINES;
 
   return (
@@ -373,6 +377,22 @@ const PreviewContent = memo(function PreviewContent(props: PreviewContentProps) 
           <input type="checkbox" checked={onlyProblems} onChange={(e) => onOnlyProblems(e.target.checked)} />
           nur Problemstellen
         </label>
+        {(preview.colors.length > 0 || assembly) && (
+          <p className="paste-details muted small">
+            {preview.colors.length > 0 && (
+              <span>
+                Farben:
+                {preview.colors.map((c) => (
+                  <Fragment key={c.id}>
+                    {" "}
+                    <ColorChip color={c} />
+                  </Fragment>
+                ))}
+              </span>
+            )}
+            {assembly && <span>{assembly}</span>}
+          </p>
+        )}
       </div>
 
       {general.length > 0 && (
@@ -426,6 +446,16 @@ const PreviewContent = memo(function PreviewContent(props: PreviewContentProps) 
               <span className="muted small">
                 {part.stitchRows} {part.stitchRows === 1 ? "Runde" : "Runden"}
               </span>
+              {part.finish && (
+                <span className="paste-badge" title="Abschluss laut Text">
+                  {FINISH_LABELS[part.finish]}
+                </span>
+              )}
+              {part.stuffing && (
+                <span className="paste-badge" title="Füllung laut Text">
+                  {STUFFING_LABELS[part.stuffing]}
+                </span>
+              )}
             </div>
             {shown.length > 0 && (
               <ol className="paste-lines">
@@ -465,6 +495,20 @@ const PreviewContent = memo(function PreviewContent(props: PreviewContentProps) 
   );
 });
 
+/** A colour as a chip: swatch (when the text names a known colour) and name. */
+function ColorChip({ color }: { color: { name: string; hex?: string } }) {
+  return (
+    <span className="paste-color" title={`Farbe: ${color.name}`}>
+      <span
+        className={`paste-swatch${color.hex ? "" : " is-unknown"}`}
+        style={color.hex ? { backgroundColor: color.hex } : undefined}
+        aria-hidden="true"
+      />
+      {color.name}
+    </span>
+  );
+}
+
 function StatusIcon({ status }: { status: LineStatus }) {
   return (
     <span className={`paste-status is-${status}`} role="img" aria-label={STATUS[status].label}>
@@ -488,7 +532,13 @@ function LineView({
       <StatusIcon status={line.status} />
       <span className="paste-line-main">
         <span className="paste-line-text">
-          <strong>{line.label}:</strong> {line.text}
+          <strong>{line.label}:</strong>{" "}
+          {line.color && (
+            <>
+              <ColorChip color={line.color} />{" "}
+            </>
+          )}
+          {line.text}
         </span>
         {line.messages.map((m, i) => (
           <span key={i} className={`paste-message is-${m.severity}`}>

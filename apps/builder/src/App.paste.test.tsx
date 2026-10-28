@@ -8,7 +8,7 @@ import { MAX_PASTE_CHARS, workerParser, type PasteParser } from "./paste/client.
 import { buildPastePreview, type LocaleChoice, type PastePreview } from "./paste/preview.js";
 import { demoDocument, emptyDocument, type BuilderDoc } from "./state/document.js";
 import { MAX_PARTS } from "./state/editor.js";
-import { SAMPLE_LINES, SAMPLE_PATTERN } from "./test/samplePattern.js";
+import { SAMPLE_LINES, SAMPLE_PATTERN, SAMPLE_V2_PATTERN } from "./test/samplePattern.js";
 
 // No WebGL in jsdom: the 3D view is replaced by a recording fake.
 vi.mock("./three/modelView.js", async () => (await import("./test/fakeModelView.js")).fakeModule);
@@ -130,6 +130,26 @@ describe("Anleitung einfügen", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Rückgängig" }));
     expect(tabNames()).toEqual(["Teil 1"]);
+  });
+
+  it("shows colour chips, finish and stuffing badges and the assembly the text describes", async () => {
+    await renderApp();
+    fireEvent.click(screen.getByRole("button", { name: "Anleitung einfügen…" }));
+    fireEvent.change(textArea(), { target: { value: SAMPLE_V2_PATTERN } });
+    const box = within(dialog());
+    expect(await box.findByText("Montage: 2 Augen, 2 Teile angenäht")).toBeTruthy();
+    const kopf = within(box.getByRole("region", { name: "Teil 1: Kopf" }));
+    const fluegel = within(box.getByRole("region", { name: "Teil 2: Flügel" }));
+    expect([kopf.getByText("zusammengezogen"), kopf.getByText("fest gefüllt")]).toHaveLength(2);
+    expect([fluegel.getByText("flach geschlossen"), fluegel.getByText("ungefüllt")]).toHaveLength(2);
+    // The palette in the summary, and a chip on every row that changes the colour.
+    expect(kopf.getAllByTitle("Farbe: Braun")).toHaveLength(1);
+    expect(fluegel.getAllByTitle("Farbe: Creme")).toHaveLength(1);
+    expect(fluegel.getAllByTitle("Farbe: Braun")).toHaveLength(1);
+    expect(box.getAllByTitle(/^Farbe: /)).toHaveLength(5);
+    // A bigger quantity sews on more parts.
+    fireEvent.change(box.getByRole("textbox", { name: "Anzahl von Teil 2" }), { target: { value: "4" } });
+    expect(await box.findByText("Montage: 2 Augen, 4 Teile angenäht")).toBeTruthy();
   });
 
   it("adds the parts to the current pattern and appends the preamble to its notes", async () => {

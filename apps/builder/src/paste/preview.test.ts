@@ -1,7 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { SAMPLE_LINES, SAMPLE_PATTERN } from "../test/samplePattern.js";
+import { SAMPLE_LINES, SAMPLE_PATTERN, SAMPLE_V2_PATTERN } from "../test/samplePattern.js";
 import { UNREAD_ROW_LABEL, UNSUPPORTED_ROW_LABEL, importIssueMessage } from "../state/import-messages.js";
-import { buildPastePreview, summaryText, titleCandidate, type PastePreview } from "./preview.js";
+import {
+  assemblySummary,
+  buildPastePreview,
+  previewLines,
+  summaryText,
+  titleCandidate,
+  type PastePreview,
+  type PreviewLine,
+} from "./preview.js";
 
 const view = (preview: PastePreview, part: number) =>
   preview.parts[part]!.lines.map((l) => `${l.label}: ${l.text} [${l.status}${l.source ? ` @${l.source}` : ""}]`);
@@ -210,5 +218,68 @@ describe("titleCandidate", () => {
     const preview = buildPastePreview(`Material\n50 g Garn\n\n${SAMPLE_PATTERN.split("\n").slice(4).join("\n")}`);
     expect(preview.preamble[0]).toBe("Material");
     expect(preview.title).toBeUndefined();
+  });
+});
+
+describe("buildPastePreview — colours, finish, stuffing and assembly (format v2)", () => {
+  const preview = buildPastePreview(SAMPLE_V2_PATTERN);
+  const [kopf, fluegel] = preview.parts;
+
+  it("carries the palette, part ids, finish and stuffing", () => {
+    expect(preview.colors).toEqual([
+      { id: "braun", name: "Braun", hex: "#8b5a2b" },
+      { id: "creme", name: "Creme", hex: "#fffdd0" },
+    ]);
+    expect(preview.parts.map((p) => [p.id, p.name, p.quantity, p.finish, p.stuffing])).toEqual([
+      ["kopf", "Kopf", 1, "gather", "firm"],
+      ["fluegel", "Flügel", 2, "flat", "none"],
+    ]);
+  });
+
+  it("puts a colour chip on the row where the colour changes, and starts a new line there", () => {
+    const chips = (lines: PreviewLine[]) => lines.map((l) => `${l.label}${l.color ? ` [${l.color.name}]` : ""}`);
+    expect(chips(kopf!.lines)).toEqual([
+      "Hinweis",
+      "Runde 1 [Braun]",
+      "Runde 2",
+      "Runde 3–5",
+      "Hinweis",
+      "Hinweis",
+      "Runde 6",
+      "Hinweis",
+    ]);
+    expect(chips(fluegel!.lines)).toEqual(["Hinweis", "Runde 1 [Creme]", "Runde 2", "Hinweis", "Runde 3 [Braun]", "Hinweis", "Hinweis"]);
+    // Identical rows still collapse, but never across a colour change.
+    const rows = [
+      { id: "a", type: "round" as const, ops: [{ kind: "stitch" as const, code: "SC" as const, count: 6 }], stitchCountTarget: 6 },
+      { id: "b", type: "round" as const, ops: [{ kind: "stitch" as const, code: "SC" as const, count: 6 }], stitchCountTarget: 6 },
+      { id: "c", type: "round" as const, color: "x", ops: [{ kind: "stitch" as const, code: "SC" as const, count: 6 }], stitchCountTarget: 6 },
+    ];
+    expect(previewLines(rows, [], () => [], [{ id: "x", name: "Rot" }]).map((l) => [l.label, l.color?.name])).toEqual([
+      ["Runde 1–2", undefined],
+      ["Runde 3", "Rot"],
+    ]);
+  });
+
+  it("reports the placements, the guessed angle as information", () => {
+    expect(preview.assembly.map((p) => [p.kind, p.part, p.target])).toEqual([
+      ["eyes", undefined, "kopf"],
+      ["attach", "fluegel", "kopf"],
+    ]);
+    const sew = fluegel!.lines.find((l) => l.text.startsWith("Flügel zwischen"))!;
+    expect(sew).toMatchObject({ status: "info" });
+    expect(sew.messages.map((m) => m.text)).toEqual([importIssueMessage({ code: "ASSEMBLY_ANGLE_GUESSED" })]);
+  });
+
+  it("summarises the assembly with the quantities of the parts", () => {
+    expect(assemblySummary(preview)).toBe("Montage: 2 Augen, 2 Teile angenäht");
+    expect(assemblySummary(preview, (i) => (i === 1 ? 3 : 1))).toBe("Montage: 2 Augen, 3 Teile angenäht");
+    expect(assemblySummary({ parts: [], assembly: [] })).toBeUndefined();
+    const embroidery = { id: "p", kind: "embroidery" as const, target: "kopf", row: "r", angle: 0 };
+    expect(assemblySummary({ parts: preview.parts, assembly: [embroidery] })).toBe("Montage: 1 Stickerei");
+  });
+
+  it("validates with the palette: the import's own colours are known", () => {
+    expect(kopf!.lines.every((l) => l.status !== "mismatch")).toBe(true);
   });
 });

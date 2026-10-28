@@ -538,6 +538,10 @@ export interface AppendPartsAction {
   pinned: readonly string[];
   /** New overview notes (the old ones plus the pasted preamble), if they change. */
   notes?: string;
+  /** The new palette (the old colours plus the pasted ones), if it grows. */
+  colors?: NonNullable<BuilderDoc["overview"]["colors"]>;
+  /** Placements to add to the assembly (part and row ids of the appended parts). */
+  assembly?: NonNullable<BuilderDoc["assembly"]>;
 }
 
 function appendParts(state: EditorState, action: AppendPartsAction): DocResult {
@@ -554,9 +558,14 @@ function appendParts(state: EditorState, action: AppendPartsAction): DocResult {
   if (action.notes !== undefined && action.notes !== (doc.overview.notes ?? "")) {
     overview = setOptionalText(doc.overview, "notes", action.notes === "" ? undefined : action.notes);
   }
+  if (action.colors && action.colors.length > 0) overview = { ...overview, colors: structuredClone(action.colors) };
+  const next: BuilderDoc = { ...doc, overview, parts: [...doc.parts, ...structuredClone(action.parts)] };
+  if (action.assembly && action.assembly.length > 0) {
+    next.assembly = [...(doc.assembly ?? []), ...structuredClone(action.assembly)];
+  }
   const known = new Set(ids);
   return {
-    doc: { ...doc, overview, parts: [...doc.parts, ...structuredClone(action.parts)] },
+    doc: next,
     pinned: [...pinned, ...action.pinned.filter((id) => known.has(id))],
     scope: state.part,
     select: doc.parts.length,

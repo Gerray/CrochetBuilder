@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { validateExport } from "@crochetbuilder/engine";
 import { demoDocument, emptyDocument, type BuilderDoc } from "../state/document.js";
 import {
   MAX_PARTS,
@@ -9,10 +10,11 @@ import {
   type EditorAction,
 } from "../state/editor.js";
 import { UNREAD_ROW_LABEL } from "../state/import-messages.js";
-import { SAMPLE_PATTERN } from "../test/samplePattern.js";
+import { SAMPLE_PATTERN, SAMPLE_V2_PATTERN } from "../test/samplePattern.js";
 import {
   applyPaste,
   effectiveMode,
+  mergePalette,
   notesWith,
   partEdit,
   pasteBlocker,
@@ -238,5 +240,82 @@ describe("pasteBlocker — limits and guidance", () => {
     const big = structuredClone(preview);
     big.parts[0]!.rows[1] = { ...big.parts[0]!.rows[1]!, ops: [{ kind: "stitch", code: "SC", count: 1000 }] };
     expect(pasteBlocker(big, replace, doc)).toMatch(/^„Kopf“, Runde 2: zu groß für den Builder/);
+  });
+});
+
+describe("applyPaste — colours, finish, stuffing and assembly (format v2)", () => {
+  const v2 = buildPastePreview(SAMPLE_V2_PATTERN);
+  /** Findings of the whole export (palette, part ids, assembly references). */
+  const problems = (d: BuilderDoc) => validateExport(d);
+
+  it("merges colours by name and keeps the ids of the colours already there", () => {
+    const existing = [
+      { id: "braun", name: "Mokka" },
+      { id: "c1", name: "creme", hex: "#eeeeee" },
+    ];
+    const { colors, ids } = mergePalette(existing, v2.colors);
+    expect(colors).toEqual([...existing, { id: "braun-2", name: "Braun", hex: "#8b5a2b" }]);
+    expect(Object.fromEntries(ids)).toEqual({ braun: "braun-2", creme: "c1" });
+    expect(mergePalette([], v2.colors).colors).toEqual(v2.colors);
+  });
+
+  it("brings palette, finish, stuffing and placements into a new pattern, with the new ids", () => {
+    const action = actionOf(v2, emptyDocument("old"), replace);
+    if (action.type !== "replaceDocument") throw new Error("expected replaceDocument");
+    const next = action.doc;
+    expect(next.overview.colors).toEqual(v2.colors);
+    expect(next.parts.map((p) => [p.id, p.content.schemaVersion, p.content.finish, p.content.stuffing])).toEqual([
+      ["kopf", 2, "gather", "firm"],
+      ["fluegel", 2, "flat", "none"],
+    ]);
+    const colorRows = next.parts.flatMap((p) => p.content.rows.filter((r) => r.color).map((r) => r.color));
+    expect(colorRows).toEqual(["braun", "creme", "braun"]);
+    const rowIds = new Set(next.parts.flatMap((p) => p.content.rows.map((r) => r.id)));
+    expect(next.assembly).toHaveLength(2);
+    for (const placement of next.assembly!) {
+      expect(rowIds.has(placement.row), placement.kind).toBe(true);
+      expect(placement.id).toMatch(/^new-\d+$/);
+    }
+    expect(next.assembly!.map((p) => [p.kind, p.part, p.target, p.spacing, p.size])).toEqual([
+      ["eyes", undefined, "kopf", 4, 8],
+      ["attach", "fluegel", "kopf", undefined, undefined],
+    ]);
+    // Round 3 of the head (the eyes sit between 3 and 4).
+    expect(next.parts[0]!.content.rows.filter((r) => r.ops.length > 0)[2]!.id).toBe(next.assembly![0]!.row);
+    expect(problems(next)).toEqual([]);
+  });
+
+  it("adds them to an existing pattern: palette merged, taken part ids renamed, placements appended", () => {
+    const base = demoDocument(ids("old"), "sphere");
+    const existing: BuilderDoc = {
+      ...base,
+      overview: { ...base.overview, colors: [{ id: "c1", name: "Braun", hex: "#7a4a2a" }] },
+      parts: [{ ...base.parts[0]!, id: "kopf" }],
+      assembly: [{ id: "p0", kind: "embroidery", target: "kopf", row: base.parts[0]!.content.rows[3]!.id, angle: 0 }],
+    };
+    const action = actionOf(v2, existing, append);
+    if (action.type !== "appendParts") throw new Error("expected appendParts");
+    expect(action.colors).toEqual([{ id: "c1", name: "Braun", hex: "#7a4a2a" }, { id: "creme", name: "Creme", hex: "#fffdd0" }]);
+    expect(action.parts.map((p) => p.id)).toEqual(["kopf-2", "fluegel"]);
+    expect(action.parts.flatMap((p) => p.content.rows.filter((r) => r.color).map((r) => r.color))).toEqual(["c1", "creme", "c1"]);
+    expect(action.assembly!.map((p) => [p.part, p.target])).toEqual([
+      [undefined, "kopf-2"],
+      ["fluegel", "kopf-2"],
+    ]);
+
+    const state = editorReducer(initEditorState(existing), action);
+    expect(state.doc.overview.colors).toEqual(action.colors);
+    expect(state.doc.assembly!.map((p) => p.id)).toEqual(["p0", ...action.assembly!.map((p) => p.id)]);
+    expect(problems(state.doc)).toEqual([]);
+    expect(editorReducer(state, { type: "undo" }).doc).toEqual(existing);
+  });
+
+  it("leaves palette and assembly alone when the text has none", () => {
+    const action = actionOf(preview, demoDocument(ids("old"), "sphere"), append);
+    if (action.type !== "appendParts") throw new Error("expected appendParts");
+    expect(action.colors).toBeUndefined();
+    expect(action.assembly).toEqual([
+      expect.objectContaining({ kind: "eyes", target: "kopf" }), // "Sicherheitsaugen zwischen Runde 6 und 7"
+    ]);
   });
 });

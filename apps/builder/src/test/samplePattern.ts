@@ -42,3 +42,31 @@ export const SAMPLE_LINES = {
   ohrenUnsupported: 26,
   ohrenUnreadable: 27,
 } as const;
+
+/**
+ * A synthetic pattern with format v2 details (also written for the tests): colour changes,
+ * finish and stuffing per part, safety eyes and a sewn-on part.
+ */
+export const SAMPLE_V2_PATTERN = [
+  "Kleine Eule",
+  "Material: Garn in Braun und Creme, Sicherheitsaugen 8 mm",
+  "",
+  "Kopf",
+  "In Braun.",
+  "Runde 1: 6 fM in den Fadenring (6)",
+  "Runde 2: 6 Zun (12)",
+  "Runde 3-5: 12 fM (12)",
+  "Sicherheitsaugen zwischen Runde 3 und 4 einsetzen, 4 M auseinander.",
+  "Kopf fest füllen.",
+  "Runde 6: 6 Abn (6)",
+  "Faden abschneiden und Öffnung schließen.",
+  "",
+  "Flügel (2x)",
+  "In Creme.",
+  "Runde 1: 5 fM in den Fadenring (5)",
+  "Runde 2: 5 Zun (10)",
+  "Farbwechsel zu Braun.",
+  "Runde 3: 10 fM (10)",
+  "Nicht füllen. Flach zusammenlegen und durch beide Lagen häkeln.",
+  "Flügel zwischen Runde 4 und 5 an den Kopf nähen.",
+].join("\n");
