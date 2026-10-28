@@ -1,0 +1,117 @@
+/* "Montage": the assembled 3D view and the placement list (assembly/AssemblyWorkspace.tsx). */
+
+.assembly-workspace {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+/* The list below the view needs room: the panel grows with it instead of clipping it. */
+.preview-slot:has(> .assembly-workspace) {
+  flex: 0 0 auto;
+}
+.assembly-workspace > .model-stage {
+  flex: none;
+  height: clamp(320px, 58vh, 620px);
+}
+.model-host.is-picking,
+.model-host.is-picking:active {
+  cursor: crosshair;
+}
+.model-stage.is-placing {
+  outline: 2px solid var(--c-accent-base);
+  outline-offset: -2px;
+}
+.assembly-hint {
+  position: absolute;
+  left: var(--sp-3);
+  right: var(--sp-3);
+  bottom: var(--sp-3);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  border: var(--bd-hairline);
+  border-radius: var(--r-input);
+  background: var(--c-surface);
+  color: var(--c-text);
+  font-size: var(--fs-sm);
+  box-shadow: var(--el-popover);
+}
+.assembly-list {
+  display: grid;
+  gap: var(--sp-2);
+  padding: var(--sp-3);
+  border-top: var(--bd-hairline);
+}
+.assembly-list .section-title {
+  margin: 0;
+}
+.assembly-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+}
+.assembly-part-pick {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  font-size: var(--fs-sm);
+}
+.placement-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: var(--sp-1);
+}
+.placement-item {
+  padding: var(--sp-1) var(--sp-2);
+  border-left: var(--bd-marker) transparent;
+  border-radius: var(--r-input);
+  background: var(--c-surface-2);
+}
+.placement-item.is-moving {
+  border-left-color: var(--c-accent-base);
+}
+.placement-line {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+.placement-text {
+  flex: 1 1 auto;
+  font-size: var(--fs-sm);
+}
+.placement-tools {
+  display: inline-flex;
+  flex: none;
+  gap: var(--sp-1);
+}
+.placement-finding {
+  margin: var(--sp-1) 0 0;
+  font-size: var(--fs-xs);
+  color: var(--c-warn-text);
+}
+.placement-fields {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: var(--sp-2) var(--sp-3);
+  padding: var(--sp-2) 0 var(--sp-1);
+}
+.placement-fields label {
+  display: grid;
+  gap: 2px;
+  font-size: var(--fs-xs);
+  color: var(--c-text-mute);
+}
+.placement-number {
+  width: 5em;
+}
+.placement-note input {
+  width: 14em;
+}

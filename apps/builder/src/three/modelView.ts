@@ -31,6 +31,7 @@ import {
   DirectionalLight,
   DoubleSide,
   GridHelper,
+  Group,
   HemisphereLight,
   Mesh,
   MeshPhysicalMaterial,
@@ -41,6 +42,7 @@ import {
   Raycaster,
   RGBAFormat,
   Scene,
+  SphereGeometry,
   Vector2,
   Vector3,
   WebGLRenderer,
@@ -135,6 +137,19 @@ export interface ModelView {
   cameraState(): { position: [number, number, number]; target: [number, number, number]; following: boolean };
   /** Release GPU resources, listeners and the WebGL context. The view is unusable after. */
   dispose(): void;
+  /**
+   * Assembly ("Montage"): small spheres on the model — safety eyes (dark, glossy) and
+   * embroidered marks. They are not picked and do not change the framing. Empty: none.
+   */
+  setSpheres(spheres: readonly ViewSphere[]): void;
+}
+
+/** A sphere drawn on the model (see `ModelView.setSpheres`). */
+export interface ViewSphere {
+  center: [number, number, number];
+  /** mm */
+  radius: number;
+  kind: "eye" | "mark";
 }
 
 export class WebGLUnavailableError extends Error {
@@ -418,7 +433,34 @@ export function createModelView(canvas: HTMLCanvasElement, opts: ModelViewOption
   const raycaster = new Raycaster();
   const ndc = new Vector2();
 
+  // --- Assembly spheres (eyes, embroidery): their own group, geometry and materials. ---
+  const sphereGroup = new Group();
+  scene.add(sphereGroup);
+  const sphereGeometry = new SphereGeometry(1, 24, 16);
+  const eyeMaterial = new MeshPhysicalMaterial({ color: 0x141414, roughness: 0.12, metalness: 0, clearcoat: 1, clearcoatRoughness: 0.05 });
+  const markMaterial = new MeshStandardMaterial({ color: 0xc9788c, roughness: 0.9, metalness: 0 });
+  function setSpheres(spheres: readonly ViewSphere[]) {
+    sphereGroup.clear();
+    for (const s of spheres) {
+      const m = new Mesh(sphereGeometry, s.kind === "eye" ? eyeMaterial : markMaterial);
+      m.position.set(...s.center);
+      m.scale.setScalar(Math.max(0.1, s.radius));
+      sphereGroup.add(m);
+    }
+    invalidate();
+  }
+  function disposeSpheres() {
+    sphereGroup.clear();
+    sphereGeometry.dispose();
+    eyeMaterial.dispose();
+    markMaterial.dispose();
+  }
+
   return {
+    setSpheres(spheres) {
+      if (!disposed) setSpheres(spheres);
+    },
+
     setMesh(next) {
       if (disposed) return;
       const hadMesh = mesh !== null;
@@ -584,6 +626,7 @@ export function createModelView(canvas: HTMLCanvasElement, opts: ModelViewOption
       surfaceMaterial.dispose();
       pointsMaterial.dispose();
       sprite.dispose();
+      disposeSpheres();
       renderer.dispose();
       renderer.forceContextLoss();
       mesh = null;

@@ -10,7 +10,7 @@ describe("placement wording", () => {
   it("describes the bunny's assembly", () => {
     expect(assemblyLines(doc)).toEqual([
       "Kopf an Körper, auf Runde 14 (Ende)",
-      "Ohr ×2 an Kopf, zwischen Runde 4 und 5, ±60° – flach annähen",
+      "Ohr ×2 an Kopf, zwischen Runde 4 und 5, ±45° – flach annähen",
       "Arm ×2 an Körper, zwischen Runde 11 und 12, ±80°",
       "Bein ×2 an Körper, zwischen Runde 3 und 4, ±35°",
       "Augen 8 mm an Kopf, zwischen Runde 8 und 9, 6 M Abstand",

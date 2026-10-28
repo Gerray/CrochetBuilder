@@ -73,7 +73,25 @@ export interface PreviewPaneProps {
   previewOptions?: PreviewOptions;
   /** Loads the 3D view component (tests: a failing loader). */
   loadView?: ViewLoader;
+  /**
+   * Assembly (B4): renders the "Montage" view with the pane's display settings. Without it
+   * the pane has no "Teil | Montage" switch.
+   */
+  renderAssembly?: (view: AssemblyViewSettings) => ReactNode;
 }
+
+/** Display settings the pane hands to the "Montage" view. */
+export interface AssemblyViewSettings {
+  style: MeshStyle;
+  showGrid: boolean;
+  /** Opacity of the fabric behind the stitches (0 = off). */
+  backing: number;
+  resetToken: number;
+}
+
+/** "Teil" shows the part in the editor, "Montage" all parts put together. */
+export type PreviewMode = "part" | "assembly";
+const MODE_KEY = "crochetbuilder:preview-mode";
 
 const mm = (value: number) => value.toLocaleString("de-DE", { maximumFractionDigits: 1 });
 const cm = (valueMm: number) => (valueMm / 10).toLocaleString("de-DE", { minimumFractionDigits: 1, maximumFractionDigits: 1 });
@@ -193,8 +211,11 @@ export function PreviewPane({
   groups = NO_GROUPS,
   previewOptions,
   loadView = loadModelCanvas,
+  renderAssembly,
 }: PreviewPaneProps) {
   const resolved = resolveGauge(gauge);
+  const [modeSetting, setMode] = useState<PreviewMode>(() => readSetting<PreviewMode>(MODE_KEY, ["part", "assembly"], "part"));
+  const mode: PreviewMode = renderAssembly ? modeSetting : "part";
   const [style, setStyle] = useState<MeshStyle>(initialPreviewStyle);
   const [showGrid, setShowGrid] = useState(() => readSetting(GRID_KEY, ["on", "off"], "on") === "on");
   const [showBacking, setShowBacking] = useState(() => readSetting(BACKING_KEY, ["on", "off"], "off") === "on");
@@ -235,6 +256,30 @@ export function PreviewPane({
     <aside className="preview-pane" aria-label="Vorschau">
       <section className="preview-slot model-panel" data-slot="3d-preview" aria-label="3D-Vorschau">
         <div className="model-toolbar">
+          {renderAssembly && (
+            <div className="segmented segmented-small" role="radiogroup" aria-label="Ansicht">
+              {(
+                [
+                  ["part", "Teil", "Das Teil, das links bearbeitet wird"],
+                  ["assembly", "Montage", "Alle Teile zusammengesetzt, mit Augen – hier wird angenäht"],
+                ] as const
+              ).map(([value, label, title]) => (
+                <button
+                  key={value}
+                  type="button"
+                  role="radio"
+                  aria-checked={mode === value}
+                  title={title}
+                  onClick={() => {
+                    setMode(value);
+                    writeSetting(MODE_KEY, value);
+                  }}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          )}
           <div className="segmented segmented-small" role="radiogroup" aria-label="Darstellung">
             {STYLES.map(([value, label, title]) => (
               <button
@@ -285,16 +330,20 @@ export function PreviewPane({
           <button
             type="button"
             className="btn btn-small"
-            disabled={!preview.model || !webgl}
+            disabled={mode === "part" && (!preview.model || !webgl)}
             onClick={() => setResetToken((t) => t + 1)}
           >
             Ansicht zurücksetzen
           </button>
           <span className="model-status" role="status" aria-live="polite">
-            {preview.computing ? "berechne …" : ""}
+            {mode === "part" && preview.computing ? "berechne …" : ""}
           </span>
         </div>
 
+        {mode === "assembly" && renderAssembly ? (
+          renderAssembly({ style, showGrid, backing: style === "stitches" && showBacking ? BACKING_OPACITY : 0, resetToken })
+        ) : (
+          <>
         <div className={`model-stage${stale ? " is-stale" : ""}`}>
           {!webgl ? (
             unavailable
@@ -325,6 +374,8 @@ export function PreviewPane({
           <p className="model-note" title="Der Browser erlaubt hier keinen Hintergrund-Thread (Web Worker).">
             Vorschau rechnet ohne Hintergrund-Thread – höchstens {count(MAIN_THREAD_MAX_STITCHES)} Maschen.
           </p>
+        )}
+          </>
         )}
       </section>
 

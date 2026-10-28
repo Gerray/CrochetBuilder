@@ -29,7 +29,7 @@ const ASSEMBLIES: Partial<Record<DemoKind, DemoAssembly>> = {
     finish: { Ohr: "flat" },
     placements: [
       { id: "kopf", kind: "attach", part: "Kopf", target: "Körper", round: 14, angle: 0 },
-      { id: "ohren", kind: "attach", part: "Ohr", target: "Kopf", round: 4, angle: 60, note: "flach annähen" },
+      { id: "ohren", kind: "attach", part: "Ohr", target: "Kopf", round: 4, angle: 45, note: "flach annähen" },
       { id: "arme", kind: "attach", part: "Arm", target: "Körper", round: 11, angle: 80 },
       { id: "beine", kind: "attach", part: "Bein", target: "Körper", round: 3, angle: 35 },
       { id: "augen", kind: "eyes", target: "Kopf", round: 8, angle: 0, spacing: 6, size: 8 },
