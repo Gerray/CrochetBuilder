@@ -118,7 +118,9 @@ export function detectNotationLocale(text: string): LocaleDetection {
   if (sc === 0 && dc > 0) uk += dc;
 
   if (de === 0 && en === 0) return { locale: "de", confidence: 0 };
-  const language = Math.abs(de - en) / (de + en);
+  // Little evidence (a single "6 sc") cannot give full confidence.
+  const evidence = Math.min(1, (de + en) / 8);
+  const language = (evidence * Math.abs(de - en)) / (de + en);
   if (de > en) return { locale: "de", confidence: round(language) };
   if (us === 0 && uk === 0) return { locale: "en_us", confidence: round(language * 0.5) };
   const dialect = Math.abs(us - uk) / (us + uk);

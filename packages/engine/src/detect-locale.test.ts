@@ -47,6 +47,10 @@ describe("detectNotationLocale", () => {
     expect(detectNotationLocale("12345 ---")).toEqual({ locale: "de", confidence: 0 });
   });
 
+  it("gives lower confidence for little evidence", () => {
+    expect(detectNotationLocale("6 sc").confidence).toBeLessThan(0.5);
+  });
+
   it("gives lower confidence for mixed text", () => {
     const mixed = detectNotationLocale("Round 1: 6 sc. Runde 2: 6 Zun und fM");
     const clear = detectNotationLocale("Round 1: 6 sc in the ring. Round 2: inc in each stitch around");
