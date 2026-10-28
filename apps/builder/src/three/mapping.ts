@@ -23,6 +23,11 @@ export interface ViewMesh {
   nodeRow: Uint32Array;
   /** Row ids, indexed by `nodeRow`. */
   rowIds: readonly string[];
+  /**
+   * Per graph node: index into the palette (format v2 colours, engine `nodeColorIndices`).
+   * Without it, or without a palette in the view's style, the piece has one yarn colour.
+   */
+  nodeColor?: ArrayLike<number>;
   /** Stitch width in mm — the size of a point in `"points"` style. Default 5. */
   stitchWidthMm?: number;
   /** Yarn diameter in mm (picking tolerance against the backing). Default 2.5. */
@@ -84,18 +89,70 @@ export function rowIndicesOf(mesh: Pick<ViewMesh, "rowIds">, rowIds: string | re
  * Writes into `out` when it has the right length.
  */
 export function vertexColors(
-  mesh: Pick<ViewMesh, "nodeIndex" | "nodeRow">,
+  mesh: Pick<ViewMesh, "nodeIndex" | "nodeRow" | "nodeColor">,
   row: number | readonly number[],
   base: Rgb,
   highlight: Rgb,
   out?: Float32Array,
 ): Float32Array {
+  return meshColors(mesh, { base, highlight, rows: typeof row === "number" ? [row] : row }, out);
+}
+
+/** Share of the highlight colour in a highlighted stitch of a coloured piece. */
+export const HIGHLIGHT_MIX = 0.7;
+
+const mix = (a: Rgb, b: Rgb, t: number): Rgb => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
+const distance = (a: Rgb, b: Rgb) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+
+/**
+ * The colour of a highlighted stitch in yarn colour `base`: mostly the highlight colour, with
+ * a trace of the yarn, so the row stands out on any palette colour while its own colour stays
+ * recognisable. A yarn colour close to the highlight itself is lightened (dark yarn) or
+ * darkened (light yarn) instead, so the row never disappears in it.
+ */
+export function highlightOn(base: Rgb, highlight: Rgb): Rgb {
+  const tinted = mix(base, highlight, HIGHLIGHT_MIX);
+  if (distance(tinted, base) >= 0.18) return tinted;
+  const luminance = 0.2126 * base[0] + 0.7152 * base[1] + 0.0722 * base[2];
+  return luminance > 0.35 ? mix(base, [0, 0, 0], 0.6) : mix(base, [1, 1, 1], 0.65);
+}
+
+export interface ColorOptions {
+  /** Yarn colour without a palette (and for palette indices outside it). */
+  base: Rgb;
+  /** Colours of the palette (linear RGB), indexed by `nodeColor`; empty: one yarn colour. */
+  palette?: readonly Rgb[];
+  /** Rows (indices into `rowIds`) to highlight; -1 entries are ignored. */
+  rows?: readonly number[];
+  highlight: Rgb;
+}
+
+/**
+ * Vertex colours (linear RGB, 3 floats per vertex) of a mesh: each stitch in its palette
+ * colour (`mesh.nodeColor` with `palette`), else in `base`; stitches of the highlighted rows
+ * in `highlight` — on a coloured piece blended with their yarn colour (`highlightOn`).
+ * Writes into `out` when it has the right length. Reusable for any view that shows a
+ * `ViewMesh` (preview, viewer, PDF image, assembled parts).
+ */
+export function meshColors(
+  mesh: Pick<ViewMesh, "nodeIndex" | "nodeRow" | "nodeColor">,
+  opts: ColorOptions,
+  out?: Float32Array,
+): Float32Array {
   const n = mesh.nodeIndex.length;
   const colors = out && out.length === 3 * n ? out : new Float32Array(3 * n);
-  const rows = new Set(typeof row === "number" ? [row] : row);
+  const rows = new Set(opts.rows ?? []);
   rows.delete(-1);
+  const palette = opts.palette ?? [];
+  const coloured = palette.length > 0 && mesh.nodeColor !== undefined;
+  // One highlight colour per palette entry (and the plain one), computed once.
+  const lit = coloured ? palette.map((c) => highlightOn(c, opts.highlight)) : [];
   for (let v = 0; v < n; v++) {
-    const c = rows.size > 0 && rows.has(mesh.nodeRow[mesh.nodeIndex[v]!]!) ? highlight : base;
+    const node = mesh.nodeIndex[v]!;
+    const index = coloured ? (mesh.nodeColor![node] ?? 0) : -1;
+    const own = coloured ? palette[index] : undefined;
+    const on = rows.size > 0 && rows.has(mesh.nodeRow[node]!);
+    const c = on ? (own ? lit[index]! : opts.highlight) : (own ?? opts.base);
     colors[3 * v] = c[0];
     colors[3 * v + 1] = c[1];
     colors[3 * v + 2] = c[2];

@@ -21,6 +21,8 @@ export interface ModelCanvasProps {
   showGrid: boolean;
   /** Opacity of the faint fabric behind the stitch lattice (0 = off; default 0). */
   backing?: number;
+  /** Palette colours (CSS) for a mesh with `nodeColor`; empty or absent: one yarn colour. */
+  palette?: readonly string[];
   /** Changing this number frames the model again ("Ansicht zurücksetzen"). */
   resetToken: number;
   onPickRow: (rowId: string) => void;
@@ -87,7 +89,7 @@ export default function ModelCanvas(props: ModelCanvasProps) {
     host.prepend(canvas);
     let view: ModelView;
     try {
-      view = createModelView(canvas, { style: { ...themeColors(host), dimmed, showGrid, backing } });
+      view = createModelView(canvas, { style: { ...themeColors(host), dimmed, showGrid, backing, palette: props.palette ?? [] } });
     } catch (err) {
       canvas.remove();
       if (err instanceof WebGLUnavailableError) {
@@ -117,6 +119,8 @@ export default function ModelCanvas(props: ModelCanvasProps) {
     [groupKey, highlightRowId, mesh],
   );
   useEffect(() => viewRef.current?.setStyle({ dimmed, showGrid, backing }), [dimmed, showGrid, backing]);
+  const paletteKey = (props.palette ?? []).join("|");
+  useEffect(() => viewRef.current?.setStyle({ palette: paletteKey ? paletteKey.split("|") : [] }), [paletteKey]);
   useEffect(() => {
     if (resetToken > 0) viewRef.current?.resetView();
   }, [resetToken]);

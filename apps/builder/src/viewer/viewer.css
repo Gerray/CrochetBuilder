@@ -136,6 +136,19 @@ body,
   margin: 0;
   padding-left: 1.2em;
 }
+.viewer-colors {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-1) var(--sp-4);
+  margin: var(--sp-2) 0 0;
+  padding: 0;
+  list-style: none;
+}
+.viewer-colors li {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
 .viewer-notes {
   white-space: pre-wrap;
 }

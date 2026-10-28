@@ -57,8 +57,8 @@ import {
   choosePick,
   pickFromBacking,
   pickFromHit,
+  meshColors,
   rowIndicesOf,
-  vertexColors,
   type Bounds,
   type Framing,
   type PickResult,
@@ -72,8 +72,13 @@ export type { SnapshotOptions } from "./viewport.js";
 export interface ModelViewStyle {
   /** Canvas background (CSS colour). */
   background: string;
-  /** Yarn colour. */
+  /** Yarn colour (the whole piece without a palette). */
   yarn: string;
+  /**
+   * Palette colours (CSS), indexed by the mesh's `nodeColor`: every stitch in its yarn
+   * colour. Empty (default) or a mesh without `nodeColor`: the piece is in `yarn`.
+   */
+  palette: readonly string[];
   /** Colour of the highlighted row. */
   highlight: string;
   /** Grid line colour. */
@@ -92,6 +97,7 @@ export interface ModelViewStyle {
 export const DEFAULT_STYLE: ModelViewStyle = {
   background: "#ffffff",
   yarn: "#e7b48f",
+  palette: [],
   // Fallbacks when no theme is available (tests, snapshots): the light tokens.
   highlight: "#2f9e96",
   grid: "#d6d6da",
@@ -270,7 +276,8 @@ export function createModelView(canvas: HTMLCanvasElement, opts: ModelViewOption
   }
 
   function applyBacking() {
-    const c = linearRgb(style.yarn);
+    // With a palette the fabric behind is in the colour the piece starts in.
+    const c = linearRgb(style.palette.length > 0 && mesh?.nodeColor ? style.palette[0]! : style.yarn);
     // A darker shade of the yarn, like the shadowed inside of the fabric.
     backingMaterial.color.setRGB(c[0] * 0.55, c[1] * 0.5, c[2] * 0.48);
     backingMaterial.opacity = Math.min(1, Math.max(0, style.backing));
@@ -293,9 +300,16 @@ export function createModelView(canvas: HTMLCanvasElement, opts: ModelViewOption
   function applyColors() {
     if (!mesh || !geometry) return;
     const attr = geometry.getAttribute("color");
-    const base = linearRgb(style.yarn);
-    const hi = linearRgb(style.highlight);
-    vertexColors(mesh, rowIndicesOf(mesh, highlightRowIds), base, hi, attr.array as Float32Array);
+    meshColors(
+      mesh,
+      {
+        base: linearRgb(style.yarn),
+        palette: style.palette.map(linearRgb),
+        rows: rowIndicesOf(mesh, highlightRowIds),
+        highlight: linearRgb(style.highlight),
+      },
+      attr.array as Float32Array,
+    );
     attr.needsUpdate = true;
     invalidate();
   }
@@ -479,9 +493,12 @@ export function createModelView(canvas: HTMLCanvasElement, opts: ModelViewOption
       const prev = style;
       style = { ...style, ...patch };
       if (prev.background !== style.background) applyBackground();
-      if (prev.yarn !== style.yarn || prev.highlight !== style.highlight) applyColors();
+      const paletteChanged = prev.palette.join() !== style.palette.join();
+      if (prev.yarn !== style.yarn || prev.highlight !== style.highlight || paletteChanged) applyColors();
       if (prev.dimmed !== style.dimmed) applyMaterials();
-      if (prev.dimmed !== style.dimmed || prev.backing !== style.backing || prev.yarn !== style.yarn) applyBacking();
+      if (prev.dimmed !== style.dimmed || prev.backing !== style.backing || prev.yarn !== style.yarn || paletteChanged) {
+        applyBacking();
+      }
       if (prev.showGrid !== style.showGrid || prev.grid !== style.grid) rebuildGrid();
       invalidate();
     },

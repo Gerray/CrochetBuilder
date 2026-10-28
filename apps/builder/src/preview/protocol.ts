@@ -11,6 +11,7 @@ import {
   buildModel,
   DEFAULT_MAX_STITCHES,
   isInstructionRow,
+  nodeColorIndices,
   stitchYarnRadius,
   toMesh,
   type Finish,
@@ -34,6 +35,11 @@ export interface PreviewRequest {
   style: MeshStyle;
   /** Stitch budget (default `DEFAULT_MAX_STITCHES`). */
   maxStitches?: number;
+  /**
+   * Palette ids (`overview.colors`, in order). When not empty the model carries the palette
+   * index of every stitch (`nodeColor`).
+   */
+  palette?: readonly string[];
 }
 
 /**
@@ -53,6 +59,8 @@ export interface PreviewModel {
   nodeRow: Uint32Array;
   /** Ids of the rows that produced stitches, in document order. */
   rowIds: string[];
+  /** Per graph node: palette index of its yarn colour; only with a palette in the request. */
+  nodeColor?: Uint16Array;
   /** Bounding size of the relaxed piece, mm. */
   size: Size;
   /** Largest round diameter, mm; 0 for pieces without closed rounds. */
@@ -91,7 +99,8 @@ export type PreviewResult =
 export function transferablesOf(result: PreviewResult): ArrayBuffer[] {
   if (result.kind !== "model") return [];
   const m = result.model;
-  const arrays = [m.positions, m.normals, m.indices, m.nodeIndex, m.nodeRow];
+  const arrays: ArrayBufferView[] = [m.positions, m.normals, m.indices, m.nodeIndex, m.nodeRow];
+  if (m.nodeColor) arrays.push(m.nodeColor);
   if (m.backing) arrays.push(m.backing.positions, m.backing.normals, m.backing.indices);
   return arrays.map((a) => a.buffer as ArrayBuffer);
 }
@@ -109,12 +118,15 @@ export function nodeRows(model: Pick<Model, "graph">): { nodeRow: Uint32Array; r
 /**
  * Cache key of a relaxed model: only what shapes the stitch graph (row ids, types, ops and
  * whether a row is a free instruction), the part's finish and stuffing, gauge and budget.
- * Labels, note texts and stitch-count targets do not change the model, so editing them does
- * not relax again.
+ * Labels, note texts, stitch-count targets and colours do not change the model, so editing
+ * them does not relax again.
  */
 export function geometryKey(content: PartContent, gauge: Gauge | undefined, maxStitches: number): string {
   const rows = content.rows.map((r) => [r.id, r.type, r.ops, isInstructionRow(r)]);
-  return JSON.stringify([rows, content.finish ?? null, content.stuffing ?? null, gauge ?? null, maxStitches]);
+  // Colour changes (`StitchOp.color`) are left out of the ops.
+  return JSON.stringify([rows, content.finish ?? null, content.stuffing ?? null, gauge ?? null, maxStitches], (k, v) =>
+    k === "color" ? undefined : v,
+  );
 }
 
 /**
@@ -154,6 +166,9 @@ export class PreviewComputer {
           indices: mesh.indices,
           nodeIndex: mesh.nodeIndex,
           ...nodeRows(model),
+          ...(req.palette && req.palette.length > 0
+            ? { nodeColor: nodeColorIndices(graph, req.content, req.palette.map((id) => ({ id }))) }
+            : {}),
           size: model.size,
           maxDiameter: model.maxDiameter,
           estimated: model.estimated,

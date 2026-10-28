@@ -61,14 +61,18 @@ export interface PreviewOptions {
 
 /**
  * The model for `content`/`gauge` in mesh `style`. The first computation and style changes
- * start at once; edits are debounced. Stale results never overwrite newer ones.
+ * start at once; edits are debounced. Stale results never overwrite newer ones. With
+ * `palette` (the palette's ids, format v2) the model carries every stitch's colour index.
  */
 export function usePreviewModel(
   content: PartContent,
   gauge: Gauge | undefined,
   style: MeshStyle,
   { debounceMs = 200, createClient = createPreviewClient }: PreviewOptions = {},
+  palette: readonly string[] = [],
 ): PreviewState {
+  // Only the ids matter (renaming or recolouring a colour needs no new model).
+  const paletteKey = palette.join("\u0000");
   const [state, setState] = useState<PreviewState>(INITIAL_PREVIEW);
   const clientRef = useRef<PreviewClient | null>(null);
   const scheduled = useRef(false);
@@ -93,8 +97,9 @@ export function usePreviewModel(
         scheduled.current = false;
         const client = clientRef.current;
         if (!client) return;
+        const ids = paletteKey === "" ? [] : paletteKey.split("\u0000");
         client
-          .compute({ content, gauge, style })
+          .compute(ids.length > 0 ? { content, gauge, style, palette: ids } : { content, gauge, style })
           .then((result) => {
             if (!result) return;
             const mainThread = client.degraded;
@@ -111,7 +116,7 @@ export function usePreviewModel(
       clearTimeout(timer);
       scheduled.current = false;
     };
-  }, [content, gauge, style, debounceMs]);
+  }, [content, gauge, style, debounceMs, paletteKey]);
 
   return state;
 }

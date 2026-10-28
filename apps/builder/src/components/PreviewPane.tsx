@@ -14,8 +14,10 @@ import {
   type Finding,
   type Gauge,
   type MeshStyle,
+  type PaletteColor,
   type PartContent,
 } from "@crochetbuilder/engine";
+import { paletteCss } from "../state/palette.js";
 import { MAIN_THREAD_MAX_STITCHES } from "../preview/protocol.js";
 import type { ModelCanvasProps } from "../three/ModelCanvas.js";
 import { usePreviewModel, type PreviewOptions, type PreviewState } from "../preview/usePreviewModel.js";
@@ -52,6 +54,8 @@ export interface PreviewPaneProps {
   content: PartContent;
   /** Gauge from the document overview (may be empty → engine defaults). */
   gauge: Gauge | undefined;
+  /** The palette (`overview.colors`, format v2): the model shows every stitch in its colour. */
+  palette?: readonly PaletteColor[];
   /** `validate(content)`, in document order. */
   findings: readonly Finding[];
   /** Row selected in the editor — highlighted in the model. */
@@ -180,6 +184,14 @@ export function ViewError({ error, onRetry }: { error: unknown; onRetry: () => v
 
 const NO_PINS: readonly string[] = [];
 const NO_GROUPS: readonly RowItem[] = [];
+const NO_PALETTE: readonly PaletteColor[] = [];
+
+/** Palette ids (for the model) and display colours (for the view), stable while unchanged. */
+export function usePaletteColors(palette: readonly PaletteColor[]): { ids: readonly string[]; css: readonly string[] } {
+  const ids = palette.map((c) => c.id).join("\u0000");
+  const css = paletteCss(palette).join("|");
+  return useMemo(() => ({ ids: ids ? ids.split("\u0000") : [], css: css ? css.split("|") : [] }), [ids, css]);
+}
 
 export function PreviewPane({
   content,
@@ -191,10 +203,12 @@ export function PreviewPane({
   onApplyFix,
   pinned = NO_PINS,
   groups = NO_GROUPS,
+  palette = NO_PALETTE,
   previewOptions,
   loadView = loadModelCanvas,
 }: PreviewPaneProps) {
   const resolved = resolveGauge(gauge);
+  const { ids: paletteIds, css: paletteColors } = usePaletteColors(palette);
   const [style, setStyle] = useState<MeshStyle>(initialPreviewStyle);
   const [showGrid, setShowGrid] = useState(() => readSetting(GRID_KEY, ["on", "off"], "on") === "on");
   const [showBacking, setShowBacking] = useState(() => readSetting(BACKING_KEY, ["on", "off"], "off") === "on");
@@ -204,7 +218,7 @@ export function PreviewPane({
   const [attempt, setAttempt] = useState(0);
   const ModelCanvas = useMemo(() => lazy(loadView), [loadView, attempt]);
   const retry = useCallback(() => setAttempt((a) => a + 1), []);
-  const preview = usePreviewModel(content, gauge, style, previewOptions);
+  const preview = usePreviewModel(content, gauge, style, previewOptions, paletteIds);
 
   const stats = useMemo(() => {
     const stitchRows = content.rows.filter((r) => r.ops.length > 0);
@@ -309,6 +323,7 @@ export function PreviewPane({
                     dimmed={stale}
                     showGrid={showGrid}
                     backing={style === "stitches" && showBacking ? BACKING_OPACITY : 0}
+                    palette={paletteColors}
                     resetToken={resetToken}
                     onPickRow={onSelectRow}
                     onUnavailable={onUnavailable}
