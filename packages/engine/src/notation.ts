@@ -10,6 +10,8 @@
  *           (and "mal"/"times") as the times sign, a count of 1 may be omitted, NBSP counts
  *           as a space, long names ("Luftmaschen", "single crochet") next to abbreviations,
  *           postfix repeats ("(1 sc, 1 inc) x6") and a trailing stitch count ("… (18)").
+ *           A second, lenient pass reads what pasted patterns write ("6 sc in MR",
+ *           "sc around", "(…) repeat 6 times", "= [36]", "BLO: …"), see `parseRowText`.
  *
  * Round trip: `parseRowText(renderOps(ops, l), l)` yields `ops` again for every locale,
  * except for the display-only `into` note (never rendered) and empty modifier arrays.
@@ -21,7 +23,7 @@
  * Pure functions, no I/O, no framework imports.
  */
 
-import { STITCH_PROPERTIES, type Mod, type Op, type Row, type StitchCode, type StitchOp } from "./schema.js";
+import { STITCH_PROPERTIES, consumesOf, type Mod, type Op, type Row, type StitchCode, type StitchOp } from "./schema.js";
 
 // ---------------------------------------------------------------------------
 // Limits and modifier rules (shared by the parser and editors)
@@ -168,6 +170,7 @@ const STITCH_ALIASES: Record<NotationLocale, Record<string, StitchCode>> = {
   de: {
     luftmaschen: "CH",
     kettmaschen: "SL_ST",
+    kettm: "SL_ST",
     "feste maschen": "SC",
     "halbe stäbchen": "HDC",
     "halbes stb": "HDC",
@@ -188,16 +191,24 @@ const STITCH_ALIASES: Record<NotationLocale, Record<string, StitchCode>> = {
   },
   en_us: {
     slst: "SL_ST",
+    "sl-st": "SL_ST",
     ss: "SL_ST",
     "magic circle": "MR",
     "magic circles": "MR",
+    "adjustable ring": "MR",
+    "inv dec": "INVDEC",
+    "invisible dec": "INVDEC",
     sts: "ST",
   },
   en_uk: {
     "sl st": "SL_ST",
+    "sl-st": "SL_ST",
     slst: "SL_ST",
     "magic circle": "MR",
     "magic circles": "MR",
+    "adjustable ring": "MR",
+    "inv dec": "INVDEC",
+    "invisible dec": "INVDEC",
     sts: "ST",
   },
 };
@@ -350,7 +361,17 @@ export type ParseRowErrorCode =
   /** A count, repeat or the row total exceeds the limits (`limit` says which maximum). */
   | "too-large"
   /** A modifier that contradicts another one or does not apply to the stitch (`term`). */
-  | "invalid-modifier";
+  | "invalid-modifier"
+  /**
+   * The text says "to the end of the round" ("sc around", "(…)*", "Zun in jede M"), but the
+   * stitch count of the previous row is not known (`ParseRowContext.previousCount`).
+   */
+  | "needs-context"
+  /**
+   * "To the end of the round" does not fit the previous row: its stitch count (`limit`)
+   * minus the rest of the row is not a whole number of repeats.
+   */
+  | "fill-mismatch";
 
 export type ParseRowResult =
   | {
@@ -366,9 +387,18 @@ export type ParseRowResult =
       term?: string;
       /** 0-based character offset of the problem in the input text. */
       position?: number;
-      /** The exceeded maximum (for `too-large`). */
+      /** The exceeded maximum (for `too-large`), the previous row's count (`fill-mismatch`). */
       limit?: number;
     };
+
+/** What the parser may know about the surroundings of the row. */
+export interface ParseRowContext {
+  /**
+   * Stitch count of the previous row. Needed to resolve "to the end of the round" phrases:
+   * `sc around`, `inc in each st`, `(1 sc, inc)*`, `fM rundherum`, `Zun in jede M`.
+   */
+  previousCount?: number;
+}
 
 type Token =
   | { t: "num"; value: number; pos: number }
@@ -377,13 +407,15 @@ type Token =
   | { t: "lp"; pos: number }
   | { t: "rp"; pos: number }
   | { t: "sep"; pos: number }
+  /** "to the end of the round" marker — only produced by the lenient pre-pass (`@`). */
+  | { t: "fill"; pos: number }
   | { t: "end"; pos: number }
   | { t: "bad"; pos: number };
 
 const WORD_CHAR = /[\p{L}.\-]/u;
-const SPACE = /[\s ]/u;
+const SPACE = /[\s ]/u;
 
-function tokenize(text: string): Token[] {
+function tokenize(text: string, lenient: boolean): Token[] {
   const tokens: Token[] = [];
   let i = 0;
   while (i < text.length) {
@@ -402,6 +434,8 @@ function tokenize(text: string): Token[] {
       tokens.push({ t: "rp", pos: i++ });
     } else if (ch === "," || ch === ";") {
       tokens.push({ t: "sep", pos: i++ });
+    } else if (lenient && ch === "@") {
+      tokens.push({ t: "fill", pos: i++ });
     } else if (WORD_CHAR.test(ch)) {
       const start = i;
       while (i < text.length && WORD_CHAR.test(text[i]!)) i++;
@@ -424,14 +458,26 @@ class ParseFailure {
   ) {}
 }
 
+/** An op whose count/times is "to the end of the round", resolved after parsing. */
+interface FillMark {
+  op: Op;
+  /** Count written before a stitch fill ("1 fM in jede M", "2 sc in each st"). */
+  explicitCount?: number;
+  depth: number;
+  pos: number;
+}
+
 class Parser {
   private i = 0;
   stitchCountTarget: number | undefined;
+  readonly fills: FillMark[] = [];
 
   constructor(
     private readonly tokens: Token[],
     private readonly text: string,
     private readonly locale: NotationLocale,
+    /** Lenient mode: postfix counts ("sc 2", "inc x 6") and fill markers. */
+    private readonly lenient = false,
   ) {}
 
   private peek(offset = 0): Token {
@@ -450,6 +496,11 @@ class Parser {
 
   private isTimes(tok: Token): boolean {
     return tok.t === "times" || (tok.t === "word" && TIMES_WORDS.has(tok.text.toLowerCase()));
+  }
+
+  /** Whether `tok` ends an item (what may follow a postfix count). */
+  private endsItem(tok: Token): boolean {
+    return tok.t === "sep" || tok.t === "end" || tok.t === "rp" || tok.t === "fill";
   }
 
   /** `( N [stitch word…] )` as the very last thing of the text — a stitch-count note. */
@@ -529,11 +580,35 @@ class Parser {
   private parseItem(depth: number): Op {
     const tok = this.peek();
 
+    // Lenient: "@ 1 fM" ("in jede M 1 fM") — a stitch worked into every stitch.
+    if (this.lenient && tok.t === "fill") {
+      this.next();
+      const counted = this.peek().t === "num" ? this.count(this.next()) : undefined;
+      const op = this.parseStitch(1, depth, false);
+      this.fills.push({ op, explicitCount: counted, depth, pos: tok.pos });
+      return op;
+    }
+
     // Postfix repeat: "(1 sc, 1 inc) x6", "(1 fM, 1 Zun) 6 mal"
     if (tok.t === "lp") {
       const ops = this.parseGroupBody(depth);
       let times: number;
-      if (this.isTimes(this.peek())) {
+      if (this.isTimes(this.peek()) && this.peek(1).t === "num") {
+        this.next();
+        times = this.times(this.next());
+      } else if (this.lenient && this.isTimes(this.peek()) && this.endsItem(this.peek(1))) {
+        // "(1 sc, inc)*" — repeat to the end of the round.
+        const at = this.next();
+        if (this.peek().t === "fill") this.next();
+        const op: Op = { kind: "repeat", times: 1, ops };
+        this.fills.push({ op, depth, pos: at.pos });
+        return op;
+      } else if (this.lenient && this.peek().t === "fill") {
+        const at = this.next();
+        const op: Op = { kind: "repeat", times: 1, ops };
+        this.fills.push({ op, depth, pos: at.pos });
+        return op;
+      } else if (this.isTimes(this.peek())) {
         this.next();
         times = this.times(this.next());
       } else if (this.peek().t === "num") {
@@ -553,27 +628,41 @@ class Parser {
         if (this.isTimes(this.peek())) this.next();
         return { kind: "repeat", times, ops: this.parseGroupBody(depth) };
       }
-      return this.parseStitch(this.count(this.next()), depth);
+      return this.parseStitch(this.count(this.next()), depth, true);
     }
 
-    if (tok.t === "word") return this.parseStitch(1, depth);
+    if (tok.t === "word") return this.parseStitch(1, depth, false);
     this.fail(tok);
   }
 
-  private parseStitch(count: number, depth: number): StitchOp {
+  /** In lenient mode a times word followed by a count ends a stitch term ("inc x 6"). */
+  private stopsTerm(tok: Token): boolean {
+    if (!this.lenient || !this.isTimes(tok)) return false;
+    const after = this.peek(1);
+    return after.t === "num" || this.endsItem(after);
+  }
+
+  private parseStitch(count: number, depth: number, explicit: boolean): Op {
     const first = this.peek();
     if (first.t !== "word") this.fail(first);
     let end = first.end;
     this.next();
-    while (this.peek().t === "word") end = (this.next() as { end: number }).end;
+    while (this.peek().t === "word" && !this.stopsTerm(this.peek())) {
+      end = (this.next() as { end: number }).end;
+    }
     const term = this.text.slice(first.pos, end);
     const code = resolveStitchTerm(term, this.locale);
     if (!code) throw new ParseFailure("unknown-term", first.pos, term);
 
     const op: StitchOp = { kind: "stitch", code, count };
-    if (this.peek().t !== "lp" || (depth === 0 && this.atTrailingCount() !== undefined)) return op;
+    if (this.peek().t === "lp" && !(depth === 0 && this.atTrailingCount() !== undefined)) {
+      this.parseModifiers(op, code);
+    }
+    return this.lenient ? this.parsePostfix(op, depth, explicit) : op;
+  }
 
-    // Modifier list: "(hMG)", "(BLO, tog)" — duplicates collapse, contradictions fail.
+  /** Modifier list: "(hMG)", "(BLO, tog)" — duplicates collapse, contradictions fail. */
+  private parseModifiers(op: StitchOp, code: StitchCode): void {
     const open = this.next();
     const modifiers: Mod[] = [];
     for (;;) {
@@ -594,20 +683,278 @@ class Parser {
       if (sep.t !== "sep") this.fail(sep.t === "end" ? open : sep);
     }
     op.modifiers = modifiers;
-    return op;
+  }
+
+  /**
+   * Lenient postfix forms after a stitch: "sc 2", "inc x 6", "Dec × 9", "sc @" (to the
+   * end of the round). A postfix count on an explicitly counted stitch ("2 sc x 3") is a
+   * repeat of that stitch.
+   */
+  private parsePostfix(op: StitchOp, depth: number, explicit: boolean): Op {
+    const tok = this.peek();
+    if (tok.t === "fill") {
+      this.next();
+      this.fills.push({ op, explicitCount: explicit ? op.count : undefined, depth, pos: tok.pos });
+      op.count = 1;
+      return op;
+    }
+    let n: Token | undefined;
+    if (this.isTimes(tok) && this.peek(1).t === "num" && this.endsItem(this.peek(2))) {
+      this.next();
+      n = this.next();
+    } else if (tok.t === "num" && this.endsItem(this.peek(1))) {
+      n = this.next();
+    }
+    if (!n) return op;
+    if (!explicit) {
+      op.count = this.count(n);
+      return op;
+    }
+    return { kind: "repeat", times: this.times(n), ops: [op] };
+  }
+}
+
+/** Stitches of the previous row an op list works into (TOG-aware). */
+function consumedByOps(ops: readonly Op[]): number {
+  let total = 0;
+  for (const op of ops) {
+    total += op.kind === "stitch" ? op.count * consumesOf(op) : op.times * consumedByOps(op.ops);
+  }
+  return total;
+}
+
+/** Resolve "to the end of the round" markers against the previous row's stitch count. */
+function resolveFills(ops: Op[], fills: readonly FillMark[], previousCount: number | undefined): void {
+  if (fills.length === 0) return;
+  const mark = fills[0]!;
+  if (fills.length > 1 || mark.depth > 0) throw new ParseFailure("syntax", (fills[1] ?? mark).pos);
+  if (previousCount === undefined) throw new ParseFailure("needs-context", mark.pos);
+  const op = mark.op;
+  if (op.kind === "stitch" && mark.explicitCount !== undefined && mark.explicitCount > 1) {
+    // "2 sc in each st" is an increase in each stitch; 3+ into one stitch is not representable.
+    if (mark.explicitCount !== 2 || op.code !== "SC" || op.modifiers?.includes("TOG")) {
+      throw new ParseFailure("syntax", mark.pos);
+    }
+    op.code = "INC";
+  }
+  const per = op.kind === "stitch" ? consumesOf(op) : consumedByOps(op.ops);
+  const rest = consumedByOps(ops) - per; // the marked op counts once so far
+  const remaining = previousCount - rest;
+  if (per <= 0 || remaining <= 0 || remaining % per !== 0) {
+    throw new ParseFailure("fill-mismatch", mark.pos, undefined, previousCount);
+  }
+  const n = remaining / per;
+  if (op.kind === "stitch") {
+    if (n > MAX_COUNT) throw new ParseFailure("too-large", mark.pos, undefined, MAX_COUNT);
+    op.count = n;
+  } else {
+    if (n > MAX_TIMES) throw new ParseFailure("too-large", mark.pos, undefined, MAX_TIMES);
+    op.times = n;
   }
 }
 
 /**
- * Parse compact row text into ops. `locale` decides terms that differ between notations
- * (UK "dc" = single crochet, US "dc" = double crochet). Errors carry the 0-based position
- * of the problem, and for `unknown-term` the term as written.
+ * Add a row-level loop modifier ("BLO: …") to every stitch it applies to. Returns how many
+ * stitch ops received it.
  */
-export function parseRowText(text: string, locale: NotationLocale = "de"): ParseRowResult {
-  if (text.replace(/[\s ]/g, "") === "") return { ok: false, code: "empty" };
-  const parser = new Parser(tokenize(text), text, locale);
+function applyRowModifier(ops: readonly Op[], mod: Mod): number {
+  let applied = 0;
+  for (const op of ops) {
+    if (op.kind === "repeat") {
+      applied += applyRowModifier(op.ops, mod);
+    } else if (modifierAllowed(op.code, mod)) {
+      const merged = normalizeModifiers(op.code, [...(op.modifiers ?? []), mod]);
+      if (merged) {
+        op.modifiers = merged;
+        applied++;
+      }
+    }
+  }
+  return applied;
+}
+
+// ---------------------------------------------------------------------------
+// Lenient pre-pass: rewrite what real patterns write into the compact notation
+// ---------------------------------------------------------------------------
+
+interface LenientText {
+  text: string;
+  stitchCountTarget?: number;
+  rowModifier?: Mod;
+}
+
+const RING_TERMS =
+  "MR|magic\\s+ring|magic\\s+circle|magic\\s+loop|adjustable\\s+ring|AR|Fadenring|magische[nr]?\\s+(?:Faden)?ring|Magic\\s+Ring";
+const ARTICLE = "(?:a|an|the|einen|den|dem|einem|ein)\\s+";
+const ST_WORD = "(?:sts?|stitch(?:es)?|M|Maschen?)";
+/** A stitch term as written (letters, dots, hyphens, inner spaces). */
+const TERM = "[\\p{L}][\\p{L}.\\-]*(?:\\s+[\\p{L}][\\p{L}.\\-]*)*?";
+
+const LOOP_PHRASE =
+  "(?:BLO|FLO|hMG|vMG|(?:back|front)\\s+loops?(?:\\s+only)?|(?:nur\\s+)?(?:(?:in|durch)\\s+)?(?:(?:das|die)\\s+)?(?:hintere|vordere)[sn]?\\s+(?:Maschenglied(?:er)?|MG))";
+const LOOP_PREFIX = new RegExp(
+  `^(?:(?:work|crochet|häkle|arbeite)\\s+)?(?:(?:in|into|through|durch)\\s+(?:the\\s+)?)?(${LOOP_PHRASE})(?:\\s+only)?\\s*[:,.\\-]?\\s*`,
+  "iu",
+);
+const LOOP_SUFFIX_BODY = `(?:(?:work(?:ed)?|crochet(?:ed)?)\\s+)?(?:(?:in|into|through|durch)\\s+(?:the\\s+)?)?(${LOOP_PHRASE})(?:\\s+only)?`;
+const LOOP_SUFFIX = new RegExp(`(?:\\(\\s*${LOOP_SUFFIX_BODY}\\s*\\)|[,;]?\\s*${LOOP_SUFFIX_BODY})$`, "iu");
+
+function loopModOf(phrase: string): Mod {
+  return /^(?:BLO|hMG|back|(?:nur\s+)?(?:(?:in|durch)\s+)?(?:(?:das|die)\s+)?hinter)/iu.test(phrase.trim()) ? "BLO" : "FLO";
+}
+
+/** Phrases meaning "into every stitch / to the end of the round" → `@`. */
+const FILL_PHRASES: RegExp[] = [
+  new RegExp(`\\b(?:in|into)\\s+(?:each|every|all(?:\\s+the)?)\\s+(?:sts?|stitch(?:es)?|sc)\\b(?:\\s+(?:all\\s+)?(?:around|across))?`, "giu"),
+  /\b(?:all\s+)?around\b|\bacross\b/giu,
+  /\b(?:to|until)\s+(?:the\s+)?end(?:\s+of\s+(?:the\s+)?(?:round|row|rnd))?\b/giu,
+  /(?:\bin\s+)?\b(?:jede|alle|jeder)\s+(?:M|Masche|Maschen)\b(?:\s+der\s+Vor(?:runde|reihe))?/giu,
+  /\brundherum\b|\bin\s+der\s+ganzen\s+Runde\b/giu,
+  /\bbis\s+(?:zum\s+)?(?:Runden|Reihen)?ende\b|\bbis\s+zum\s+Ende(?:\s+der\s+(?:Runde|Reihe))?\b/giu,
+];
+
+/**
+ * Rewrite a real-world row instruction into the compact notation the strict parser reads.
+ * Returns the trailing stitch count and a row-level loop modifier separately.
+ */
+function rewriteLenient(input: string, locale: NotationLocale): LenientText {
+  const sc = STITCH_ABBREVIATIONS.SC[locale];
+  const inc = STITCH_ABBREVIATIONS.INC[locale];
+  let s = input
+    .replace(/[   ]/g, " ")
+    .replace(/[‐-―−]/g, "-")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/\.+$/, "")
+    .trim();
+  let stitchCountTarget: number | undefined;
+  let rowModifier: Mod | undefined;
+
+  // Trailing annotations, repeatedly: "(4 rounds)", "= 18", "– 18", "[18]", "(18 sts)", "turn".
+  for (let changed = true; changed; ) {
+    changed = false;
+    const before = s;
+    s = s.replace(/\(\s*\d+\s*(?:rounds?|rows?|rnds?|rds?|runden|reihen|r)\s*\)\s*$/iu, "").trim();
+    s = s.replace(/[,;]?\s*\b(?:turn|wenden)\b\.?$/iu, "").trim();
+    const eq = /(?:^|\s|(?<=[\])\p{L}\d]))(?:=|->|→|-)\s*[[(]?\s*(\d+)\s*(?:sts?|stitches|maschen|m)?\s*[\])]?$/iu.exec(s);
+    const br = eq ? null : /[[(]\s*(\d+)\s*(?:sts?|stitches|st|maschen|m)?\s*[\])]$/iu.exec(s);
+    const hit = eq ?? br;
+    if (hit && stitchCountTarget === undefined) {
+      stitchCountTarget = Number(hit[1]);
+      s = s.slice(0, hit.index).trim();
+    }
+    s = s.replace(/\.+$/, "").trim();
+    if (s !== before) changed = true;
+  }
+
+  // Row-level loop modifier: "BLO: …", "through back loops only, …", "… in BLO".
+  const pre = LOOP_PREFIX.exec(s);
+  if (pre && pre[0].length < s.length) {
+    rowModifier = loopModOf(pre[1]!);
+    s = s.slice(pre[0].length).trim();
+  } else {
+    const post = LOOP_SUFFIX.exec(s);
+    if (post && post.index > 0 && /\d|\p{L}/u.test(s.slice(0, post.index))) {
+      rowModifier = loopModOf((post[1] ?? post[2])!);
+      s = s.slice(0, post.index).trim();
+    }
+  }
+
+  // Leading verbs and articles: "Make 6 sc …", "crochet 21 sc", "Make a magic ring, …".
+  s = s.replace(/^(?:(?:make|work|crochet|then|now|häkle|häkeln|arbeite)\s+)+/iu, "");
+  s = s.replace(/^(?:a|an|einen|ein)\s+(?=(?:MR|magic|adjustable|Fadenring|magisch))/iu, "");
+
+  // Magic ring starts.
+  let ring = false;
+  const withoutRing = s.replace(
+    new RegExp(`\\s*\\b(?:in|into|im)\\s+(?:${ARTICLE})?(?:${RING_TERMS})\\b`, "giu"),
+    "",
+  );
+  if (withoutRing !== s) {
+    ring = true;
+    s = withoutRing;
+  }
+  const ringCount = new RegExp(`^(?:${RING_TERMS})\\s*(?:[:,]|\\bmit\\b|\\bwith\\b)?\\s*(\\d+)$`, "iu").exec(s);
+  if (ringCount) {
+    s = `MR, ${ringCount[1]} ${sc}`;
+  } else {
+    s = s.replace(new RegExp(`^(?:${RING_TERMS})\\s*(?::|\\bmit\\b|\\bwith\\b|(?=\\d))\\s*`, "iu"), () => {
+      ring = true;
+      return "";
+    });
+  }
+  if (ring && !new RegExp(`(?:^|[\\s,;(])(?:${RING_TERMS})(?:$|[\\s,;)])`, "iu").test(s)) s = `MR, ${s}`;
+
+  // Foundation-chain start notes: the graph already skips the chains next to the hook.
+  s = s.replace(
+    /[,]?\s*(?:start(?:ing)?\s+)?(?:in|into|from|with)\s+(?:the\s+)?(?:2nd|second|3rd|third|\d+(?:st|nd|rd|th))\s+(?:ch|chain|loop)(?:\s+(?:from|on)\s+(?:the\s+)?hook)?/giu,
+    "",
+  );
+  s = s.replace(/[,]?\s*ab\s+der\s+\d+\.\s*(?:Lm|Luftmasche)(?:\s+von\s+der\s+Nadel(?:\s+aus)?)?/giu, "");
+
+  // "sc2tog" → "sc (tog)".
+  s = s.replace(/\b(\p{L}+)2tog\b/giu, "$1 (tog)");
+
+  // Repeats: "*A* …" → "(A) …"; "*A, rep from * N more times"; "repeat N times" → "x N".
+  s = s.replace(/\b(rep(?:eat)?\s+from)\s*\*/giu, "$1 ");
+  s = s.replace(/\*([^*]*\p{L}[^*]*)\*/gu, "($1)");
+  s = s.replace(
+    /^\*\s*(.+?)[,;]?\s*\brep(?:eat)?\s+from\s+(\d+)\s+(more\s+)?times?\b/iu,
+    (_m, body: string, n: string, more?: string) => `(${body}) x ${Number(n) + (more ? 1 : 0)}`,
+  );
+  s = s.replace(/\b(?:rep(?:eat)?|wiederholen|wdh)\.?\s*(\d+)\s*(?:times|x|×|mal)?(?=$|[\s,;)\]])/giu, "x $1");
+  s = s.replace(/(\d+)\s*(?:x|×|mal)\s*(?:wiederholen|wdh)\.?/giu, "x $1");
+
+  // "2 sc in next st" is an increase; "sc in next 5 sts" are 5 sc; "in next st" is noise.
+  s = s.replace(
+    new RegExp(
+      `\\b(?:2|two|zwei)\\s*(${TERM})\\s+(?:in|into)\\s+(?:the\\s+)?(?:next|same|one|1|a|this|eine|einer|dieselbe|die\\s+gleiche|die\\s+nächste)\\s+${ST_WORD}\\b`,
+      "giu",
+    ),
+    (m, term: string) => (resolveStitchTerm(term, locale) === "SC" ? inc : m),
+  );
+  s = s.replace(
+    new RegExp(`(?<!\\d\\s*)\\b(${TERM})\\s+(?:in|into)\\s+(?:the\\s+)?next\\s+(\\d+)\\s*${ST_WORD}\\b`, "giu"),
+    (m, term: string, n: string) => (resolveStitchTerm(term, locale) ? `${n} ${term}` : m),
+  );
+  s = s.replace(/\s+(?:in|into)\s+(?:the\s+)?next\s+(?:st|stitch)\b/giu, "");
+
+  // "to the end of the round" phrases → "@".
+  for (const re of FILL_PHRASES) s = s.replace(re, " @ ");
+  s = s.replace(/@(?:\s*@)+/g, "@").replace(/\s+/g, " ").trim();
+  s = s.replace(/@\s*(?:rep(?:eat)?|wiederholen|wdh)\.?$/iu, "@").trim();
+  const repAround = /^(.*?)[,;]?\s*\b(?:rep(?:eat)?|wiederholen|wdh)\.?\s*(?:from\s*\*?\s*)?@$/iu.exec(s);
+  if (repAround) {
+    const head = repAround[1]!.replace(/^\*\s*/, "").trim();
+    s = /^\([^()]*\)$/.test(head) ? `${head} @` : `(${head}) @`;
+  }
+  s = s.replace(/^[,;\s]+/, "").replace(/\s+/g, " ").trim();
+
+  const out: LenientText = { text: s };
+  if (stitchCountTarget !== undefined) out.stitchCountTarget = stitchCountTarget;
+  if (rowModifier) out.rowModifier = rowModifier;
+  return out;
+}
+
+function failureResult(err: ParseFailure): ParseRowResult {
+  const failure: ParseRowResult = { ok: false, code: err.code, position: err.position };
+  if (err.term !== undefined) failure.term = err.term;
+  if (err.limit !== undefined) failure.limit = err.limit;
+  return failure;
+}
+
+function runParser(
+  text: string,
+  locale: NotationLocale,
+  lenient: boolean,
+  context: ParseRowContext,
+  rowModifier?: Mod,
+): ParseRowResult {
+  const parser = new Parser(tokenize(text, lenient), text, locale, lenient);
   try {
     const ops = parser.parseRow();
+    if (rowModifier && applyRowModifier(ops, rowModifier) === 0) throw new ParseFailure("syntax", 0);
+    resolveFills(ops, parser.fills, context.previousCount);
     if (countWorkedStitches(ops) > MAX_ROW_STITCHES) {
       return { ok: false, code: "too-large", position: 0, limit: MAX_ROW_STITCHES };
     }
@@ -615,12 +962,55 @@ export function parseRowText(text: string, locale: NotationLocale = "de"): Parse
       ? { ok: true, ops }
       : { ok: true, ops, stitchCountTarget: parser.stitchCountTarget };
   } catch (err) {
-    if (err instanceof ParseFailure) {
-      const failure: ParseRowResult = { ok: false, code: err.code, position: err.position };
-      if (err.term !== undefined) failure.term = err.term;
-      if (err.limit !== undefined) failure.limit = err.limit;
-      return failure;
-    }
+    if (err instanceof ParseFailure) return failureResult(err);
     throw err;
   }
+}
+
+/**
+ * Parse row text into ops. `locale` decides terms that differ between notations (UK "dc" =
+ * single crochet, US "dc" = double crochet). Errors carry the 0-based position of the
+ * problem, and for `unknown-term` the term as written.
+ *
+ * Two passes. The strict pass reads the compact notation (`renderOps` output plus the
+ * tolerances listed at the top of this module). If it fails, a lenient pass reads what real
+ * patterns write (US/UK/DE):
+ *   - counts after the stitch: `sc 2`, `inc x 6`, `Dec × 9`
+ *   - repeats: `(…) repeat 6 times`, `*…* 6 times`, `*…, rep from * 5 more times`
+ *   - to the end of the round (needs `context.previousCount`): `(…)*`, `(…) around`,
+ *     `… rep around`, `sc around`, `sc in each st`, `inc in each st around`,
+ *     `fM rundherum`, `in jede M 1 fM`, `Zun in jede M`
+ *   - magic ring starts: `6 sc in MR`, `Make 6 sc into a magic ring`, `MR 6`,
+ *     `6 fM in einen Fadenring`
+ *   - stitch counts: `= 18`, `= [36]`, `– 18`, `(18 sts)`, `(4 rounds)` is dropped
+ *   - row-level loops: `BLO: …`, `through back loops only, …`, `… in BLO`,
+ *     `nur hinteres Maschenglied: …` (added to every stitch it applies to)
+ *   - `sl-st`, en/em dashes, a trailing period, a trailing "turn"
+ * The strict pass's error is reported when both fail, unless the lenient pass failed for
+ * a reason only it can know (`needs-context`, `fill-mismatch`).
+ */
+export function parseRowText(
+  text: string,
+  locale: NotationLocale = "de",
+  context: ParseRowContext = {},
+): ParseRowResult {
+  if (text.replace(/[\s ]/g, "") === "") return { ok: false, code: "empty" };
+  const strict = runParser(text, locale, false, context);
+  if (strict.ok) return strict;
+
+  const rewritten = rewriteLenient(text, locale);
+  if (rewritten.text === "") return strict;
+  const lenient = runParser(rewritten.text, locale, true, context, rewritten.rowModifier);
+  if (lenient.ok) {
+    const target = rewritten.stitchCountTarget ?? lenient.stitchCountTarget;
+    if (target !== undefined && target > MAX_STITCH_COUNT_TARGET) {
+      return { ok: false, code: "too-large", position: 0, limit: MAX_STITCH_COUNT_TARGET };
+    }
+    return target === undefined ? { ok: true, ops: lenient.ops } : { ok: true, ops: lenient.ops, stitchCountTarget: target };
+  }
+  if (lenient.code === "needs-context" || lenient.code === "fill-mismatch") {
+    const { position: _ignored, ...rest } = lenient;
+    return rest;
+  }
+  return strict;
 }
