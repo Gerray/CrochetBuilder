@@ -115,6 +115,11 @@ export function detectNotationLocale(text: string): LocaleDetection {
   const single = (lower.match(/\bsingle crochets?\b/g) ?? []).length;
   us += 2 * single;
   sc += single;
+  // UK patterns write "ss"; a "ch 3" turning chain belongs to a US double crochet (a UK
+  // "dc" is a US single crochet, turned with ch 1).
+  us += (lower.match(/\bsl\.?\s*st\b|\bslip\s+stitch/g) ?? []).length;
+  us += (lower.match(/\bch(?:ain)?\s*3\b/g) ?? []).length;
+  const ukStrong = uk > 0;
   if (sc === 0 && dc > 0) uk += dc;
 
   if (de === 0 && en === 0) return { locale: "de", confidence: 0 };
@@ -124,7 +129,18 @@ export function detectNotationLocale(text: string): LocaleDetection {
   if (de > en) return { locale: "de", confidence: round(language) };
   if (us === 0 && uk === 0) return { locale: "en_us", confidence: round(language * 0.5) };
   const dialect = Math.abs(us - uk) / (us + uk);
-  return { locale: uk > us ? "en_uk" : "en_us", confidence: round(Math.min(language, dialect)) };
+  const confidence = round(Math.min(language, dialect));
+  if (uk > us) {
+    // "dc" without "sc" is only a hint: US patterns with double crochets look the same.
+    return { locale: "en_uk", confidence: ukStrong ? confidence : Math.min(confidence, DC_ONLY_UK_CONFIDENCE) };
+  }
+  return { locale: "en_us", confidence };
 }
+
+/** Highest confidence of a UK guess that rests only on "dc" without "sc". */
+export const DC_ONLY_UK_CONFIDENCE = 0.4;
+
+/** Below this confidence the importer asks for the locale (`LOCALE_UNCERTAIN`). */
+export const LOCALE_CONFIDENCE_THRESHOLD = 0.5;
 
 const round = (x: number) => Math.round(x * 100) / 100;

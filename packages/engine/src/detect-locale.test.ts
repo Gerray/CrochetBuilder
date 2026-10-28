@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { detectNotationLocale } from "./detect-locale.js";
+import { DC_ONLY_UK_CONFIDENCE, LOCALE_CONFIDENCE_THRESHOLD, detectNotationLocale } from "./detect-locale.js";
 
 describe("detectNotationLocale", () => {
   it("lets an explicit mention win", () => {
@@ -36,6 +36,19 @@ describe("detectNotationLocale", () => {
     const text = "Round 1: 6 dc into the ring\nRound 2: 2 dc in each stitch (12)\nRound 3: (dc, 2 dc in next) x 6, ss to join";
     expect(detectNotationLocale(text).locale).toBe("en_uk");
     expect(detectNotationLocale("Row 1: 10 htr, turn. Row 2: ch 2, 10 htr").locale).toBe("en_uk");
+  });
+
+  it("reads a dc-only pattern with sl st and ch 3 turning chains as US", () => {
+    const text =
+      "Rnd 1: ch 3, 11 dc in the ring, sl st to top of ch 3 (12)\nRnd 2: ch 3, dc in same st, 2 dc in each st around, sl st to join (24)";
+    expect(detectNotationLocale(text).locale).toBe("en_us");
+  });
+
+  it("caps the confidence of a UK guess that rests only on dc", () => {
+    const result = detectNotationLocale("Round 1: 6 dc into the ring\nRound 2: 2 dc in each stitch around (12)\nRound 3: 12 dc");
+    expect(result.locale).toBe("en_uk");
+    expect(result.confidence).toBeLessThanOrEqual(DC_ONLY_UK_CONFIDENCE);
+    expect(result.confidence).toBeLessThan(LOCALE_CONFIDENCE_THRESHOLD);
   });
 
   it("treats dc next to sc as US double crochet", () => {
