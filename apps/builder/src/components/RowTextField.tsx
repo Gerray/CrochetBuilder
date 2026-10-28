@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type Ref } from "react";
-import { parseRowText, renderRow, type Op, type Row } from "@crochetbuilder/engine";
+import { parseRowText, renderOps, type Op, type Row } from "@crochetbuilder/engine";
 import { parseErrorMessage, parseWarningMessage, type ParseWarning } from "../state/messages.js";
 import type { RowSuggestion } from "../state/suggest.js";
 import { registerPendingEdit } from "./pendingEdits.js";
@@ -27,7 +27,8 @@ interface RowTextFieldProps {
 }
 
 /**
- * The row as editable text: shows `renderRow(row, "de")`, parses on Enter or blur. An
+ * The row as editable text: shows its ops (`renderOps`, colour changes of stitches as
+ * `[Farbe: id]` so that editing the text keeps them), parses on Enter or blur. An
  * unreadable text stays in the field with an inline error; Escape restores the row. The
  * field is registered as a pending edit, so switching parts commits it first (or stops).
  *
@@ -40,7 +41,7 @@ interface RowTextFieldProps {
  */
 export function RowTextField(props: RowTextFieldProps) {
   const { row, inputRef, previousCount, suggestion, onCommit, onEnter, label } = props;
-  const rendered = renderRow(row, "de");
+  const rendered = renderOps(row.ops, "de", { colors: [] });
   const [draft, setDraftState] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [warnings, setWarnings] = useState<readonly ParseWarning[]>([]);

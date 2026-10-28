@@ -10,6 +10,12 @@
  *   - a pole particle that closes the last round of a closed piece (the hole pulled shut when
  *     finishing), mirroring the magic ring at the other end. It is not part of the output.
  *
+ * The finish (`RelaxOptions.finish`, a part's `finish` in format v2) decides the last round:
+ * gathered at the pole, left open, or flattened into a straight seam whose two halves are
+ * joined stitch by stitch (see `RelaxOptions.finish`). Picots are carried along the yarn path
+ * only; they are not part of any round. The stitches of a stitch group lean out of their
+ * shared slot like an increase's (`StitchNode.lean`).
+ *
  * Position-based Verlet integration: each step carries the particles' momentum forward
  * (damped), then projects constraints in a fixed order:
  *
@@ -52,8 +58,9 @@
  * artefact; the classic ball with four even rounds is round.
  */
 
-import { LEG_LEAN, type StitchGraph } from "./graph.js";
+import { isFabricNode, LEG_LEAN, type StitchGraph } from "./graph.js";
 import { createRandom } from "./random.js";
+import type { Finish, PartContent, Stuffing } from "./schema.js";
 
 export interface RelaxOptions {
   /** Verlet steps. Default 300. Runtime is linear in iterations × nodes. */
@@ -78,8 +85,10 @@ export interface RelaxOptions {
   bending?: number;
   /**
    * Stuffing, 0–1: how firmly the piece is stuffed (0 = none, 1 = firm: the stitches end up
-   * stretched by about 8 % on average). `"auto"` (default) uses 1 for closed pieces (see
-   * `isClosedPiece`) and 0 otherwise — open pieces would only balloon.
+   * stretched by about 8 % on average). `"auto"` (default) uses 1 for a gathered finish
+   * (closed pieces, see `isClosedPiece`) and 0 otherwise — open pieces would only balloon,
+   * and a piece crocheted flat shut (ears, arms) is usually left unstuffed. A part's own
+   * level maps via `STUFFING_LEVELS` (none 0, light 0.5, firm 1).
    */
   stuffing?: number | "auto";
   /** Start jitter as a fraction of the stitch width. Default 0.02. */
@@ -90,8 +99,44 @@ export interface RelaxOptions {
    * Override whether the piece is closed (last round pulled shut, stuffed). Default:
    * `isClosedPiece`.
    * Use it for a piece the heuristic gets wrong, e.g. an open tube that narrows at the end.
+   * `finish` wins over it.
    */
   closed?: boolean;
+  /**
+   * How the last round is finished (the part's `finish`, format v2):
+   *   - `"gather"`: pulled shut through its front loops — a pole particle closes it, like
+   *     the magic ring at the start (what `closed: true` does);
+   *   - `"open"`: left open (what `closed: false` does);
+   *   - `"flat"`: flattened and crocheted shut through both layers — the two halves of the
+   *     last round are joined stitch by stitch (its k-th stitch to its k-th from the end, so
+   *     the folds lie at the round's start and opposite it), giving a straight seam.
+   * Default: `"gather"` or `"open"` from `closed` (see `resolveFinish`).
+   */
+  finish?: Finish;
+}
+
+/** Stuffing value (`RelaxOptions.stuffing`) of each `PartContent.stuffing` level. */
+export const STUFFING_LEVELS: Record<Stuffing, number> = { none: 0, light: 0.5, firm: 1 };
+
+/**
+ * The finish the relaxation uses: `opts.finish`, else `"gather"` / `"open"` from
+ * `opts.closed`, else from `isClosedPiece`.
+ */
+export function resolveFinish(graph: StitchGraph, opts: Pick<RelaxOptions, "finish" | "closed"> = {}): Finish {
+  if (opts.finish) return opts.finish;
+  const closed = typeof opts.closed === "boolean" ? opts.closed : isClosedPiece(graph);
+  return closed ? "gather" : "open";
+}
+
+/**
+ * Relaxation options a part asks for itself (format v2): its `finish`, and its `stuffing`
+ * level mapped by `STUFFING_LEVELS`. Empty for a part that says neither.
+ */
+export function relaxOptionsForPart(content: Pick<PartContent, "finish" | "stuffing">): Pick<RelaxOptions, "finish" | "stuffing"> {
+  const out: Pick<RelaxOptions, "finish" | "stuffing"> = {};
+  if (content.finish) out.finish = content.finish;
+  if (content.stuffing) out.stuffing = STUFFING_LEVELS[content.stuffing];
+  return out;
 }
 
 /**
@@ -122,13 +167,17 @@ export function relax(graph: StitchGraph, opts: RelaxOptions = {}): StitchGraph 
   const radialK = clamp01(num(opts.radial, 0.3));
   const repulsionK = clamp01(num(opts.repulsion, 0.3));
   const bendingK = clamp01(num(opts.bending, 1));
-  const closed = typeof opts.closed === "boolean" ? opts.closed : isClosedPiece(graph);
+  const finish = resolveFinish(graph, opts);
   const stuffing =
-    opts.stuffing === undefined || opts.stuffing === "auto" ? (closed ? 1 : 0) : clamp01(num(opts.stuffing, 0));
+    opts.stuffing === undefined || opts.stuffing === "auto"
+      ? finish === "gather"
+        ? 1
+        : 0
+      : clamp01(num(opts.stuffing, 0));
   const w = graph.gauge.stitchWidthMm;
   const h = graph.gauge.stitchHeightMm;
 
-  const model = buildParticles(graph, closed, bendingK);
+  const model = buildParticles(graph, finish, bendingK);
   const P = model.count;
 
   // Start positions with seeded jitter (graph nodes first, so a seed jitters them as before).
@@ -337,10 +386,37 @@ interface Particles {
 const POLE_STIFFNESS = 0.5;
 
 /**
+ * Rest distance of two stitches joined by a flat seam, relative to the stitch size: the two
+ * layers lie against each other, the joining stitch between them.
+ */
+const SEAM_GAP = 0.5;
+
+/**
+ * Triangles that close a flattened round of `S` stitches (indices 0 … S − 1 in working
+ * order): a strip zig-zagging between the two halves, from the fold at the round's start to
+ * the fold opposite. Every triangle lists its corners in working order, so the strip is wound
+ * like a fan over the round (the pole's cap).
+ */
+export function seamStrip(S: number): Array<[number, number, number]> {
+  const out: Array<[number, number, number]> = [];
+  let i = 0;
+  let j = S - 1;
+  while (j - i >= 2) {
+    out.push([i, i + 1, j]);
+    i++;
+    if (j - i >= 2) {
+      out.push([i, j - 1, j]);
+      j--;
+    }
+  }
+  return out;
+}
+
+/**
  * Build the particle model of a graph: particles, springs, closed rings and the surface.
  * See the module doc for what it models and why.
  */
-function buildParticles(graph: StitchGraph, closed: boolean, bendingK: number): Particles {
+function buildParticles(graph: StitchGraph, finish: Finish, bendingK: number): Particles {
   const nodes = graph.nodes;
   const n = nodes.length;
   const w = graph.gauge.stitchWidthMm;
@@ -373,17 +449,20 @@ function buildParticles(graph: StitchGraph, closed: boolean, bendingK: number): 
   // Graph rows by the document row index their nodes carry (instruction rows have no graph row).
   const graphRowOf = new Map(graph.rows.map((r, i) => [r.rowIndex, i]));
 
-  // Fabric particles of every row (no lifts, no MR), in working order.
+  // Fabric particles of every row (no lifts, no MR, no picots), in working order.
   const fabric = graph.rows.map((r) => {
     const ids: number[] = [];
     for (let id = r.firstNode; id < r.firstNode + r.nodeCount; id++) {
-      const node = nodes[id]!;
-      if (!node.lift && node.code !== "MR") ids.push(...partsOf(id));
+      if (isFabricNode(nodes[id]!)) ids.push(...partsOf(id));
     }
     return ids;
   });
-  const lastRing = closed ? fabric[fabric.length - 1] : undefined;
-  const pole = lastRing && lastRing.length >= 3 && graph.rows[graph.rows.length - 1]!.closed ? count++ : -1;
+  const lastClosed = graph.rows.length > 0 && graph.rows[graph.rows.length - 1]!.closed;
+  const lastRing = finish !== "open" && lastClosed ? fabric[fabric.length - 1] : undefined;
+  const pole = finish === "gather" && lastRing && lastRing.length >= 3 ? count++ : -1;
+  // A flat seam joins the last round's two halves; it needs two stitches on each side.
+  const seam = finish === "flat" && lastRing && lastRing.length >= 4 ? lastRing : undefined;
+  const seamRow = seam ? graph.rows.length - 1 : -1;
 
   // Start positions: nodes as laid out; the stitches of a multi-stitch node spread along the
   // row around the node's position; the pole just beyond the last round's centre.
@@ -452,7 +531,8 @@ function buildParticles(graph: StitchGraph, closed: boolean, bendingK: number): 
         const list: number[] = [];
         slots.forEach((s, j) => {
           const q = part(s.node, s.slot);
-          const dx = LEG_LEAN * (i - (mine.length - 1) / 2 - (j - (m - 1) / 2)) * w;
+          // A stitch of a stitch group leans from the shared slot by its place in the group.
+          const dx = LEG_LEAN * (i - (mine.length - 1) / 2 - (j - (m - 1) / 2) + (node.lean ?? 0)) * w;
           // Into the magic ring: the first round needs at least its own polygon's radius,
           // else the ring pulls it in and its stitches buckle out of the plane.
           const ringRadius =
@@ -505,8 +585,10 @@ function buildParticles(graph: StitchGraph, closed: boolean, bendingK: number): 
       const S = f.length;
       const ring = r.closed && S >= 4;
       // Closed rounds bend to their own circle, flat rows stay straight; a round that is
-      // not closed (worked around a foundation chain) turns where it must, so it is left out.
+      // not closed (worked around a foundation chain) turns where it must, so it is left out,
+      // as is a round flattened into a seam (it folds sharply at both ends).
       if (!ring && (r.type !== "row" || r.kind === "ring")) return;
+      if (ri === seamRow) return;
       const rest = ring ? 2 * w * Math.cos(Math.PI / S) : 2 * w;
       const last = ring ? S : S - 2;
       for (let k = 0; k < last; k++) spring(f[k]!, f[(k + 2) % S]!, rest, bendingK, false);
@@ -529,10 +611,31 @@ function buildParticles(graph: StitchGraph, closed: boolean, bendingK: number): 
     for (const id of f) spring(pole, id, rest, POLE_STIFFNESS, false);
   }
 
-  // Closed rounds for the radial stabiliser.
+  // The flat seam: the k-th stitch of the last round is crocheted to its k-th from the end,
+  // both layers lying against each other.
+  if (seam) {
+    const S = seam.length;
+    const rest = SEAM_GAP * Math.min(w, h);
+    const half = Math.floor(S / 2);
+    for (let k = 0; k < half; k++) spring(seam[k]!, seam[S - 1 - k]!, rest, 1, false);
+    // The seam runs straight: the row worked through both layers resists bending in its own
+    // plane, as a strip of fabric does. Second-neighbour springs alone only resist kinks (the
+    // seam then curls into a U where the narrower piece below holds its ends in), so each
+    // half also gets springs at 2, 4, 8 … stitches at the straight distance.
+    if (bendingK > 0) {
+      for (let j = 2; j < half; j *= 2) {
+        for (let k = 0; k + j < half; k++) {
+          spring(seam[k]!, seam[k + j]!, j * w, bendingK, false);
+          spring(seam[S - 1 - k]!, seam[S - 1 - k - j]!, j * w, bendingK, false);
+        }
+      }
+    }
+  }
+
+  // Closed rounds for the radial stabiliser (not a round that is flattened into a seam).
   const rings = graph.rows
-    .map((r, ri) => ({ r, ids: fabric[ri]! }))
-    .filter(({ r, ids }) => r.closed && ids.length >= 3)
+    .map((r, ri) => ({ r, ri, ids: fabric[ri]! }))
+    .filter(({ r, ri, ids }) => r.closed && ids.length >= 3 && ri !== seamRow)
     .map(({ r, ids }) => ({ ids: Uint32Array.from(ids), radius: (r.widthStitches * w) / (2 * Math.PI) }));
 
   // Surface: zip every row's stitches to the stitches they are worked into (as the graph's
@@ -572,6 +675,14 @@ function buildParticles(graph: StitchGraph, closed: boolean, bendingK: number): 
       const b = f[(k + 1) % f.length]!;
       if (flip) tris.push(pole, b, a);
       else tris.push(pole, a, b);
+    }
+  }
+  if (seam) {
+    // Close the surface across the seam (a strip between the halves, wound like the pole's cap).
+    const flip = graph.rows[seamRow]!.direction === -1;
+    for (const [a, b, c] of seamStrip(seam.length)) {
+      if (flip) tris.push(seam[a]!, seam[c]!, seam[b]!);
+      else tris.push(seam[a]!, seam[b]!, seam[c]!);
     }
   }
 
@@ -748,8 +859,7 @@ export function canonicalPose(graph: StitchGraph): void {
     for (const r of closedRows) {
       const ids: number[] = [];
       for (let id = r.firstNode; id < r.firstNode + r.nodeCount; id++) {
-        const node = graph.nodes[id]!;
-        if (!node.lift && node.code !== "MR") ids.push(id);
+        if (isFabricNode(graph.nodes[id]!)) ids.push(id);
       }
       const nrm = newellNormal(pos, ids);
       // The layout winds rounds so that their Newell normal points along the growth axis.
@@ -817,7 +927,7 @@ function workingDirection(graph: StitchGraph): [number, number, number] {
     let prev = -1;
     for (let id = row.firstNode; id < row.firstNode + row.nodeCount; id++) {
       const node = graph.nodes[id]!;
-      if (node.lift || node.code === "MR") continue;
+      if (!isFabricNode(node)) continue;
       if (prev >= 0) {
         x += row.direction * (pos[3 * id]! - pos[3 * prev]!);
         y += row.direction * (pos[3 * id + 1]! - pos[3 * prev + 1]!);

@@ -69,7 +69,7 @@ describe("BuilderExportSchema", () => {
       patch(doc);
       return BuilderExportSchema.safeParse(doc).success;
     };
-    expect(bad((d) => ((d as { schemaVersion: number }).schemaVersion = 2))).toBe(false);
+    expect(bad((d) => ((d as { schemaVersion: number }).schemaVersion = 3))).toBe(false);
     expect(bad((d) => ((d.rendered as { locale: string }).locale = "fr"))).toBe(false);
     expect(bad((d) => (d.parts[0]!.quantity = 0))).toBe(false);
     expect(bad((d) => ((d.parts[0]!.content.rows[0] as { stitchCountTarget: number }).stitchCountTarget = -1))).toBe(

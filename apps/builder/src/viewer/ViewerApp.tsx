@@ -346,7 +346,7 @@ function PatternText({ exp, part: index }: { exp: BuilderExport; part: number })
           Anleitung
         </h2>
         {exp.parts.map((part, i) => {
-          const rows = renderedRows(part.content, "de");
+          const rows = renderedRows(part.content, "de", exp.overview.colors ?? []);
           const heading = partHeading(part.name, part.quantity, i);
           // The part whose model is shown is marked (several parts only).
           const current = several && i === index;

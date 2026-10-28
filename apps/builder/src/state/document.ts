@@ -3,7 +3,7 @@
  * (head, body, arms ×2 …). It never holds zero parts.
  */
 
-import type { BuilderExport, Op, Row } from "@crochetbuilder/engine";
+import { CURRENT_SCHEMA_VERSION, type BuilderExport, type Op, type Row } from "@crochetbuilder/engine";
 
 export type BuilderDoc = BuilderExport;
 
@@ -34,14 +34,14 @@ export function instructionRow(id: string, type: Row["type"] = "round"): Row {
 /** A new document with one empty round. */
 export function emptyDocument(firstRowId: string = newId()): BuilderDoc {
   return {
-    schemaVersion: 1,
+    schemaVersion: CURRENT_SCHEMA_VERSION,
     title: "",
     overview: { materials: [] },
     parts: [
       {
         name: "Teil 1",
         quantity: 1,
-        content: { schemaVersion: 1, rows: [emptyRow(firstRowId)] },
+        content: { schemaVersion: CURRENT_SCHEMA_VERSION, rows: [emptyRow(firstRowId)] },
       },
     ],
   };
@@ -213,14 +213,14 @@ const DEMO_SPECS: Record<DemoKind, DemoSpec> = {
 export function demoDocument(makeId: () => string = newId, kind: DemoKind = "sphere"): BuilderDoc {
   const spec = DEMO_SPECS[kind];
   return {
-    schemaVersion: 1,
+    schemaVersion: CURRENT_SCHEMA_VERSION,
     title: spec.title,
     overview: structuredClone(spec.overview),
     parts: spec.parts.map((part) => ({
       name: part.name,
       quantity: part.quantity ?? 1,
       content: {
-        schemaVersion: 1,
+        schemaVersion: CURRENT_SCHEMA_VERSION,
         rows: part.rows.map(([ops, target]) => ({
           id: makeId(),
           type: part.type,

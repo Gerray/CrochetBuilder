@@ -30,7 +30,7 @@ test("a demo exported as JSON can be opened again", async ({ page }, testInfo) =
   await expect(panel.getByRole("status").filter({ hasText: "JSON-Datei gespeichert." })).toBeVisible();
 
   const exp = JSON.parse(await readFile(file, "utf8"));
-  expect(exp.schemaVersion).toBe(1);
+  expect(exp.schemaVersion).toBe(2);
   expect(exp.title).toBe("Amigurumi-Kugel");
   expect(exp.parts).toHaveLength(1);
   expect(exp.parts[0].content.rows).toHaveLength(8);

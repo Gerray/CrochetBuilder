@@ -124,7 +124,7 @@ describe("design tokens", () => {
   }
 
   it("leaves colour values to the tokens: no literal colours in the stylesheets", () => {
-    for (const file of ["./styles.css", "./components/export.css", "./viewer/viewer.css"]) {
+    for (const file of ["./styles.css", "./components/export.css", "./components/paste.css", "./viewer/viewer.css"]) {
       const css = stripComments(read(file));
       expect(css, file).not.toMatch(/#[0-9a-f]{3,8}\b/i);
       expect(css, file).not.toMatch(/\brgba?\(|\bhsla?\(/i);

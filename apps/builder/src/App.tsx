@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import type { Row } from "@crochetbuilder/engine";
+import { createPortal } from "react-dom";
 import type { ExportActions } from "./components/ExportMenu.js";
 import { focusLater } from "./components/focus.js";
 import { PART_PANEL_ID, PartsBar, partTabId } from "./components/PartsBar.js";
+import { PasteDialog, pasteShortcut, type PasteImport } from "./components/PasteDialog.js";
 import { commitPendingEdits } from "./components/pendingEdits.js";
 import { PreviewPane } from "./components/PreviewPane.js";
 import { RowList, type FocusRequest } from "./components/RowList.js";
@@ -10,7 +12,10 @@ import { useRowGroups } from "./components/useRowGroups.js";
 import { SplitPane } from "./components/SplitPane.js";
 import { StorageNotice } from "./components/StorageNotice.js";
 import { TopBar } from "./components/TopBar.js";
+import { isDocumentEmpty } from "./export/prepare.js";
 import { useFragmentImport } from "./export/useFragmentImport.js";
+import { looksLikePattern } from "./paste/detect.js";
+import type { PastePreviewOptions } from "./paste/usePastePreview.js";
 import { addPart, addRow, duplicatePart, duplicateRow, insertRounds, loadDemo, newDocument } from "./state/actions.js";
 import { emptyDocument, type BuilderDoc } from "./state/document.js";
 import { canRedo, canUndo, editorReducer, initEditorState, selectedPart, type EditorAction } from "./state/editor.js";
@@ -42,10 +47,23 @@ function overlayOpen(): boolean {
 export interface AppProps {
   /** Export side effects (tests replace PDF, download and clipboard). */
   exportActions?: Partial<ExportActions>;
+  /** "Anleitung einfügen" preview options (tests: no debounce). */
+  pastePreviewOptions?: PastePreviewOptions;
+}
+
+/** The notice after a pasted pattern was imported (German). */
+export function pasteNotice({ mode, parts, unread }: Pick<PasteImport, "mode" | "parts" | "unread">): string {
+  const what = `${parts} ${parts === 1 ? "Teil" : "Teile"}`;
+  const head = mode === "replace" ? `Anleitung übernommen: ${what}.` : `${what} hinzugefügt.`;
+  const rest =
+    unread === 0
+      ? ""
+      : ` ${unread === 1 ? "1 Stelle blieb" : `${unread} Stellen blieben`} Text – markiert mit „Nicht gelesen“ oder „Nicht unterstützt“, bitte prüfen.`;
+  return `${head}${rest} „Rückgängig“ holt den vorherigen Stand zurück.`;
 }
 
 /** The builder: top bar, row editor (left) and preview (right). */
-export function App({ exportActions }: AppProps = {}) {
+export function App({ exportActions, pastePreviewOptions }: AppProps = {}) {
   const [state, dispatch] = useReducer(editorReducer, undefined, () => initEditorState(emptyDocument()));
   const persistence = usePersistence(state, dispatch);
   const [selectedRowId, setSelectedRowId] = useState<string | null>(null);
@@ -56,6 +74,11 @@ export function App({ exportActions }: AppProps = {}) {
   const [linkError, setLinkError] = useState<string | null>(null);
   const [linkNotice, setLinkNotice] = useState<string | null>(null);
   const [nameFocusToken, setNameFocusToken] = useState(0);
+  // "Anleitung einfügen": the open dialog's starting text, and the text of the last dialog
+  // closed without importing (offered again next time).
+  const [paste, setPaste] = useState<{ text: string } | null>(null);
+  const [pasteDraft, setPasteDraft] = useState("");
+  const [importNotice, setImportNotice] = useState<string | null>(null);
   // The deleted part the notice offers to bring back, with the document before the deletion
   // (the notice shows while that deletion is the latest undo step).
   const [deleted, setDeleted] = useState<{ name: string; index: number; before: BuilderDoc } | null>(null);
@@ -195,9 +218,53 @@ export function App({ exportActions }: AppProps = {}) {
     [focusRow],
   );
 
+  /** Open "Anleitung einfügen"; false when typed text elsewhere could not be committed. */
+  const openPaste = useCallback(
+    (text?: string): boolean => {
+      if (!commitPendingEdits()) return false;
+      setPaste({ text: text ?? pasteDraft });
+      return true;
+    },
+    [pasteDraft],
+  );
+
+  const importPasted = useCallback(
+    (result: PasteImport) => {
+      // `result.mode`: adding parts to an empty pattern is a new pattern.
+      const first = result.mode === "replace" ? 0 : state.doc.parts.length;
+      dispatch(result.action);
+      setSelectedRowId(null);
+      setPaste(null);
+      setPasteDraft("");
+      setLinkNotice(null);
+      setImportNotice(pasteNotice(result));
+      // The first imported part is shown; its tab takes the focus, the findings come into view.
+      focusLater(partTabId(first));
+      setTimeout(() => document.getElementById("findings-title")?.scrollIntoView?.({ block: "nearest" }), 0);
+    },
+    [state.doc.parts.length],
+  );
+
+  // Pasting a pattern outside a text field opens "Anleitung einfügen" with it. The browser's
+  // own paste is only cancelled when the dialog really opens.
+  // Safari fires "paste" only where something is editable or selected, so there Ctrl/⌘+V on
+  // the page usually does nothing; the button and the offer in an empty pattern still work.
+  useEffect(() => {
+    const onPaste = (e: ClipboardEvent) => {
+      if (paste !== null || isEditable(e.target) || isEditable(document.activeElement) || overlayOpen()) return;
+      const text = e.clipboardData?.getData("text/plain") ?? "";
+      if (!looksLikePattern(text)) return;
+      if (openPaste(text)) e.preventDefault();
+    };
+    document.addEventListener("paste", onPaste);
+    return () => document.removeEventListener("paste", onPaste);
+  }, [paste, openPaste]);
+
   // Global shortcuts (by produced character, see shortcuts.ts).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      // The paste dialog owns the keyboard (undo there must not change the pattern behind it).
+      if (paste !== null) return;
       const shortcut = shortcutFor(e);
       if (shortcut === "addRow") {
         e.preventDefault();
@@ -223,7 +290,15 @@ export function App({ exportActions }: AppProps = {}) {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [rows, selectionEnd, addRowAfter, selectPart, state.doc.parts.length, state.part]);
+  }, [rows, selectionEnd, addRowAfter, selectPart, state.doc.parts.length, state.part, paste]);
+
+  const appRoot = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const root = appRoot.current;
+    if (!root) return;
+    if (paste !== null) root.setAttribute("inert", "");
+    else root.removeAttribute("inert");
+  }, [paste]);
 
   useEffect(() => {
     document.title = state.doc.title.trim() ? `${state.doc.title.trim()} – CrochetBuilder` : "CrochetBuilder";
@@ -239,94 +314,129 @@ export function App({ exportActions }: AppProps = {}) {
 
   return (
     // Leaving a field ends its typing streak: the next edit is a separate undo step.
-    <div className="app" onBlurCapture={() => dispatch({ type: "endTyping" })}>
-      {persistence.invalidStored !== undefined && (
-        <StorageNotice raw={persistence.invalidStored} onStartFresh={persistence.resume} />
-      )}
-      {linkError !== null && (
-        <div className="link-notice" role="alert">
-          <span>
-            <strong>Anleitung aus dem Link konnte nicht geöffnet werden.</strong> {linkError}
-          </span>
-          <button type="button" className="btn btn-small" onClick={() => setLinkError(null)}>
-            Schließen
-          </button>
-        </div>
-      )}
-      {linkNotice !== null && (
-        <div className="link-notice link-notice-info" role="status">
-          <span>{linkNotice}</span>
-          <button type="button" className="btn btn-small" onClick={() => setLinkNotice(null)}>
-            Schließen
-          </button>
-        </div>
-      )}
-      <TopBar
-        doc={state.doc}
-        dispatch={dispatch}
-        canUndo={canUndo(state)}
-        canRedo={canRedo(state)}
-        status={persistence.status}
-        onNew={() => dispatch(newDocument())}
-        onDemo={(kind) => dispatch(loadDemo(kind))}
-        onReplace={replaceDocument}
-        {...(exportActions ? { exportActions } : {})}
-      />
-      <main className="workspace">
-        <SplitPane
-          left={
-            <>
-              <PartsBar
-                doc={state.doc}
-                selected={state.part}
-                dispatch={dispatch}
-                onSelect={selectPart}
-                onAdd={addNewPart}
-                onDuplicate={duplicateSelectedPart}
-                onDelete={deletePart}
-                nameFocusToken={nameFocusToken}
-                onRequestNameFocus={() => setNameFocusToken((t) => t + 1)}
-                deletedName={deletedName}
-                onUndoDelete={() => {
-                  dispatch({ type: "undo" });
-                  if (deleted) focusLater(partTabId(deleted.index));
-                  setDeleted(null);
-                }}
-              />
-              <div id={PART_PANEL_ID} role="tabpanel" aria-labelledby={partTabId(state.part)}>
-                <RowList
-                  rows={rows}
-                  groups={groups}
-                  pinned={state.pinned}
-                  selectedRowId={selectedRowId}
-                  focusRequest={focusRequest}
-                  dispatch={dispatch}
-                  onSelect={selectRow}
-                  onFocusRow={focusRow}
-                  onAddRow={addRowAfter}
-                  onDuplicate={duplicate}
-                  onDelete={deleteRows}
-                  onInsertRounds={insertSnippet}
-                  severalParts={state.doc.parts.length > 1}
-                />
-              </div>
-            </>
-          }
-          right={
-            <PreviewPane
-              content={part}
-              gauge={state.doc.overview.gauge}
-              findings={findings}
-              selectedRowId={selectedRowId}
-              highlightRowIds={selectedRows}
-              onSelectRow={focusRow}
-              pinned={state.pinned}
-              groups={groups.items}
-              onApplyFix={(action) => dispatch(action)}
-            />
-          }
+    <>
+      <div ref={appRoot} className="app" onBlurCapture={() => dispatch({ type: "endTyping" })}>
+        {persistence.invalidStored !== undefined && (
+          <StorageNotice raw={persistence.invalidStored} onStartFresh={persistence.resume} />
+        )}
+        {linkError !== null && (
+          <div className="link-notice" role="alert">
+            <span>
+              <strong>Anleitung aus dem Link konnte nicht geöffnet werden.</strong> {linkError}
+            </span>
+            <button type="button" className="btn btn-small" onClick={() => setLinkError(null)}>
+              Schließen
+            </button>
+          </div>
+        )}
+        {importNotice !== null && (
+          <div className="link-notice link-notice-info" role="status">
+            <span>{importNotice}</span>
+            <button type="button" className="btn btn-small" onClick={() => setImportNotice(null)}>
+              Schließen
+            </button>
+          </div>
+        )}
+        {linkNotice !== null && (
+          <div className="link-notice link-notice-info" role="status">
+            <span>{linkNotice}</span>
+            <button type="button" className="btn btn-small" onClick={() => setLinkNotice(null)}>
+              Schließen
+            </button>
+          </div>
+        )}
+        <TopBar
+          doc={state.doc}
+          dispatch={dispatch}
+          canUndo={canUndo(state)}
+          canRedo={canRedo(state)}
+          status={persistence.status}
+          onNew={() => dispatch(newDocument())}
+          onPaste={() => openPaste()}
+          onDemo={(kind) => dispatch(loadDemo(kind))}
+          onReplace={replaceDocument}
+          {...(exportActions ? { exportActions } : {})}
         />
-      </main>
-    </div>
+        <main className="workspace">
+          <SplitPane
+            left={
+              <>
+                <PartsBar
+                  doc={state.doc}
+                  selected={state.part}
+                  dispatch={dispatch}
+                  onSelect={selectPart}
+                  onAdd={addNewPart}
+                  onDuplicate={duplicateSelectedPart}
+                  onDelete={deletePart}
+                  nameFocusToken={nameFocusToken}
+                  onRequestNameFocus={() => setNameFocusToken((t) => t + 1)}
+                  deletedName={deletedName}
+                  onUndoDelete={() => {
+                    dispatch({ type: "undo" });
+                    if (deleted) focusLater(partTabId(deleted.index));
+                    setDeleted(null);
+                  }}
+                />
+                <div id={PART_PANEL_ID} role="tabpanel" aria-labelledby={partTabId(state.part)}>
+                  {isDocumentEmpty(state.doc) && (
+                    <p className="paste-offer">
+                      Anleitung schon als Text?
+                      <button type="button" className="btn btn-small" onClick={() => openPaste()}>
+                        Ganze Anleitung einfügen…
+                      </button>
+                      <span className="muted small">oder {pasteShortcut()} außerhalb eines Eingabefelds</span>
+                    </p>
+                  )}
+                  <RowList
+                    rows={rows}
+                    groups={groups}
+                    pinned={state.pinned}
+                    selectedRowId={selectedRowId}
+                    focusRequest={focusRequest}
+                    dispatch={dispatch}
+                    onSelect={selectRow}
+                    onFocusRow={focusRow}
+                    onAddRow={addRowAfter}
+                    onDuplicate={duplicate}
+                    onDelete={deleteRows}
+                    onInsertRounds={insertSnippet}
+                    severalParts={state.doc.parts.length > 1}
+                  />
+                </div>
+              </>
+            }
+            right={
+              <PreviewPane
+                content={part}
+                gauge={state.doc.overview.gauge}
+                findings={findings}
+                selectedRowId={selectedRowId}
+                highlightRowIds={selectedRows}
+                onSelectRow={focusRow}
+                pinned={state.pinned}
+                groups={groups.items}
+                onApplyFix={(action) => dispatch(action)}
+              />
+            }
+          />
+        </main>
+      </div>
+      {/* Outside the app root, which is inert while the dialog is open. */}
+      {paste !== null &&
+        createPortal(
+          <PasteDialog
+            initialText={paste.text}
+            doc={state.doc}
+            onImport={importPasted}
+            onClose={(text) => {
+              setPaste(null);
+              setPasteDraft(text);
+            }}
+            {...(pastePreviewOptions ? { previewOptions: pastePreviewOptions } : {})}
+          />,
+          document.body,
+        )}
+    </>
   );
 }

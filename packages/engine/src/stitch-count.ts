@@ -22,14 +22,16 @@ import type { Op, PartContent, Row } from "./schema.js";
  *     display-only `into` note never change the count.
  *   - repeat group: `times × Σ(producesStitches of its ops)`, recursing so nested
  *     groups multiply through.
+ *   - stitch group: `Σ(producesStitches of its ops)` ("3 SC in one stitch" → 3).
  */
 function computeOpStitches(op: Op): number {
   if (op.kind === "stitch") {
     return op.count * STITCH_PROPERTIES[op.code].producesStitches;
   }
-  // RepeatGroup: sum the body once, then multiply by how often it repeats.
+  // RepeatGroup: sum the body once, then multiply by how often it repeats. A stitch group
+  // (format v2) produces the sum of its stitches, all worked into one stitch.
   const perIteration = op.ops.reduce((sum, inner) => sum + computeOpStitches(inner), 0);
-  return op.times * perIteration;
+  return op.kind === "group" ? perIteration : op.times * perIteration;
 }
 
 /**

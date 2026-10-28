@@ -168,7 +168,7 @@ describe("encodeShare / decodeShare", () => {
   });
 
   it("refuses to encode an invalid export", async () => {
-    const bad = { ...sphere(), schemaVersion: 2 } as unknown as BuilderExport;
+    const bad = { ...sphere(), schemaVersion: 3 } as unknown as BuilderExport;
     await expect(encodeShare(bad)).rejects.toThrow();
   });
 

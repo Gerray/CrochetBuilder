@@ -74,7 +74,9 @@ export const DEFAULT_YARN_WEIGHT: YarnWeight = "dk";
 
 /**
  * Height of one stitch relative to a single crochet. CH as a foundation chain is as tall
- * as it is wide; MR has no height of its own (it is the anchor of round 1).
+ * as it is wide; MR has no height of its own (it is the anchor of round 1). Bobble, puff
+ * and popcorn are worked from double crochets and stand as tall as one; a picot is a
+ * decorative loop on top of the row and adds no height.
  */
 export const STITCH_HEIGHT_FACTOR: Record<StitchCode, number> = {
   CH: 1,
@@ -89,6 +91,22 @@ export const STITCH_HEIGHT_FACTOR: Record<StitchCode, number> = {
   DEC: 1,
   INVDEC: 1,
   ST: 1,
+  BOBBLE: 2,
+  PUFF: 2,
+  POPCORN: 2,
+  PICOT: 0,
+};
+
+/**
+ * How far a stitch stands proud of the fabric, in stitch widths — the bobble family is
+ * several loops closed into one top and bulges out. A rendering hint carried on the graph
+ * node (`StitchNode.bulge`); the stitch mesh pushes the stitch's top outwards by it, the
+ * relaxation ignores it.
+ */
+export const STITCH_BULGE: Partial<Record<StitchCode, number>> = {
+  BOBBLE: 0.5,
+  POPCORN: 0.6,
+  PUFF: 0.3,
 };
 
 /** Stitch dimensions the graph and the mesh work with. */

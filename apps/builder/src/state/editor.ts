@@ -13,6 +13,7 @@
  */
 
 import {
+  CURRENT_SCHEMA_VERSION,
   GaugeSchema,
   MAX_STITCH_COUNT_TARGET,
   computeRowStitches,
@@ -88,6 +89,8 @@ export type EditorAction =
   | { type: "moveOp"; rowId: string; path: OpPath; delta: number }
   | { type: "wrapInRepeat"; rowId: string; path: OpPath; times?: number; length?: number }
   | { type: "unwrapRepeat"; rowId: string; path: OpPath }
+  /** Put `length` ops (default 1) into a stitch group "in dieselbe Masche" (format v2). */
+  | { type: "wrapInGroup"; rowId: string; path: OpPath; length?: number }
   // parts
   | { type: "selectPart"; index: number }
   | { type: "addPart"; rowId: string }
@@ -109,6 +112,8 @@ export type EditorAction =
   | { type: "setRunLength"; rowIds: readonly string[]; length: number; newIds: readonly string[] }
   /** Back to an automatic Soll: not pinned any more, equal to the Ist. */
   | { type: "unpinTarget"; rowId: string }
+  // pattern paste ("Anleitung einfügen", see the block at the end of `applyEdit`)
+  | AppendPartsAction
   // document
   | { type: "replaceDocument"; doc: BuilderDoc; pinned?: readonly string[] }
   | { type: "hydrate"; doc: BuilderDoc; pinned?: readonly string[]; part?: number }
@@ -481,12 +486,15 @@ function applyEdit(state: EditorState, action: EditorAction): DocResult {
     case "unwrapRepeat":
       return opsEdit(action.rowId, (ops) => tree.unwrapRepeat(ops, action.path));
 
+    case "wrapInGroup":
+      return opsEdit(action.rowId, (ops) => tree.wrapInGroup(ops, action.path, action.length ?? 1));
+
     case "addPart": {
       if (doc.parts.length >= MAX_PARTS || partOfRow(doc, action.rowId) >= 0) return same;
       const part: Part = {
         name: nextPartName(doc),
         quantity: 1,
-        content: { schemaVersion: 1, rows: [emptyRow(action.rowId)] },
+        content: { schemaVersion: CURRENT_SCHEMA_VERSION, rows: [emptyRow(action.rowId)] },
       };
       return { doc: { ...doc, parts: [...doc.parts, part] }, pinned, scope: state.part, select: doc.parts.length };
     }
@@ -518,6 +526,8 @@ function applyEdit(state: EditorState, action: EditorAction): DocResult {
       if (ids.some((id) => partOfRow(doc, id) >= 0)) return same;
       const copy: Part = structuredClone(source);
       copy.name = `${source.name.trim() || `Teil ${action.index + 1}`} (Kopie)`;
+      // A copy is a new part: placements that refer to the original keep referring to it.
+      delete copy.id;
       copy.content.rows = copy.content.rows.map((r, i) => ({ ...r, id: ids[i]! }));
       const at = action.index + 1;
       const copiedPins = rows.flatMap((r, i) => (pinned.includes(r.id) ? [ids[i]!] : []));
@@ -559,6 +569,12 @@ function applyEdit(state: EditorState, action: EditorAction): DocResult {
 
     case "hydrate":
       return withAutoTargets(action.doc, action.pinned ?? []);
+
+    case "appendParts": {
+      // Pasted rows without a declared count follow their Ist (E23).
+      const result = appendParts(state, action);
+      return result.doc === doc ? result : { ...result, ...withAutoTargets(result.doc, result.pinned) };
+    }
 
     case "selectPart":
     case "undo":
@@ -687,6 +703,44 @@ export function fanOut(action: EditorAction, rowIds: readonly string[]): EditorA
   const key = coalesceKey(action);
   const actions = rowIds.map((rowId) => ({ ...action, rowId }) as EditorAction);
   return key === undefined ? { type: "batch", actions } : { type: "batch", actions, key: `group:${rowIds[0]}:${key}` };
+}
+
+// ---------------------------------------------------------------------------
+// Pattern paste ("Anleitung einfügen"): parts from a pasted text appended in one undo step.
+// Replacing the whole document uses `replaceDocument`.
+// ---------------------------------------------------------------------------
+
+export interface AppendPartsAction {
+  type: "appendParts";
+  /** Complete parts with fresh row ids (see `paste/apply.ts`). */
+  parts: readonly Part[];
+  /** Row ids among them whose Soll is declared by the pattern. */
+  pinned: readonly string[];
+  /** New overview notes (the old ones plus the pasted preamble), if they change. */
+  notes?: string;
+}
+
+function appendParts(state: EditorState, action: AppendPartsAction): DocResult {
+  const { doc, pinned } = state;
+  const same = { doc, pinned };
+  if (action.parts.length === 0 || doc.parts.length + action.parts.length > MAX_PARTS) return same;
+  const ids = action.parts.flatMap((p) => p.content.rows.map((r) => r.id));
+  // Row ids stay unique across the document.
+  if (new Set(ids).size !== ids.length || ids.some((id) => partOfRow(doc, id) >= 0)) return same;
+  if (action.parts.some((p) => !Number.isInteger(p.quantity) || p.quantity < 1 || p.quantity > MAX_PART_QUANTITY)) {
+    return same;
+  }
+  let overview = doc.overview;
+  if (action.notes !== undefined && action.notes !== (doc.overview.notes ?? "")) {
+    overview = setOptionalText(doc.overview, "notes", action.notes === "" ? undefined : action.notes);
+  }
+  const known = new Set(ids);
+  return {
+    doc: { ...doc, overview, parts: [...doc.parts, ...structuredClone(action.parts)] },
+    pinned: [...pinned, ...action.pinned.filter((id) => known.has(id))],
+    scope: state.part,
+    select: doc.parts.length,
+  };
 }
 
 /** Edits that coalesce into one undo step while the same field is being typed into. */
