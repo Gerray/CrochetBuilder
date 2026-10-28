@@ -20,7 +20,7 @@ export function importIssueMessage(issue: Pick<ImportIssue, "code" | "message">)
     case "UNSUPPORTED_CHAIN_SPACE":
       return "Häkeln in Luftmaschenbögen geht noch nicht – bleibt als Hinweis stehen.";
     case "UNSUPPORTED_FOUNDATION_OVAL":
-      return "Ovaler Anfang um eine Luftmaschenkette geht noch nicht – bleibt als Hinweis stehen.";
+      return "Ovaler Anfang um eine Luftmaschenkette nicht verstanden (keine Luftmaschenkette davor oder unlesbare Maschen) – bleibt als Hinweis stehen. Ausschreiben als Luftmaschen-Runde und „um die Lm-Kette: …“.";
     case "COLOR_UNNAMED":
       return "Farbwechsel ohne Farbangabe – bitte die Farbe an der Runde selbst setzen.";
     case "ASSEMBLY_ANGLE_GUESSED":

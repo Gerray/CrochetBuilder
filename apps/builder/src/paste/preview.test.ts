@@ -123,6 +123,19 @@ describe("buildPastePreview — notation", () => {
   });
 });
 
+describe("buildPastePreview — oval start", () => {
+  it("shows the round around the chain with its mark, read without remarks", () => {
+    const text = "Fuß\nR1: 8 Lm\nR2: in der 2. Lm ab Nadel beginnen: 6 fM, 3 fM in die letzte Lm, auf der anderen Seite weiter: 5 fM, 2 fM in die letzte Lm (16)\nR3: 16 fM (16)";
+    const preview = buildPastePreview(text);
+    expect(view(preview, 0)).toEqual([
+      "Runde 1: 8 Lm (0) [ok @2]",
+      "Runde 2: um die Lm-Kette: 6 fM, (3 fM) in dieselbe M, 5 fM, 1 Zun (16) [ok @3]",
+      "Runde 3: 16 fM (16) [ok @4]",
+    ]);
+    expect(preview.parts[0]!.rows[1]!.around).toBe(true);
+  });
+});
+
 describe("buildPastePreview — remarks without a row", () => {
   it("lists numbering gaps and skipped page numbers with their lines", () => {
     const text = "Kopf\nRunde 1: 6 fM in den Fadenring (6)\nRunde 2: 6 Zun (12)\n12\nRunde 5: 12 fM (12)";
