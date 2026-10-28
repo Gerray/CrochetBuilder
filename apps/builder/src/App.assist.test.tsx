@@ -354,6 +354,57 @@ describe("snippets", () => {
     expect(field("Reihe 2–25").value).toBe("1 Lm, 20 fM");
   });
 
+  it("inserts an oval start: chain, the round around it, increase rounds", async () => {
+    await renderApp();
+    fireEvent.click(screen.getByRole("button", { name: "+ Baustein" }));
+    const dialog = screen.getByRole("dialog", { name: "Baustein einfügen" });
+    fireEvent.click(within(dialog).getByRole("radio", { name: "Ovaler Anfang" }));
+    expect(within(dialog).getByRole("status").textContent).toBe("7 Lm, 3 Runden: 14 → 26 M · am Ende");
+    fireEvent.click(within(dialog).getByRole("button", { name: "9" }));
+    fireEvent.change(within(dialog).getByLabelText("Anzahl Zunahmerunden"), { target: { value: "1" } });
+    expect(within(dialog).getByRole("status").textContent).toBe("9 Lm, 2 Runden: 18 → 24 M · am Ende");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Einfügen" }));
+
+    expect(field("Runde 1").value).toBe("9 Lm");
+    expect(field("Runde 2").value).toBe("um die Lm-Kette: 7 fM, (3 fM) in dieselbe M, 6 fM, 1 Zun");
+    expect(["2", "3"].map((n) => ist(`Runde ${n}`))).toEqual(["18", "24"]);
+    expect(screen.getByText(/Keine Befunde/)).toBeTruthy();
+    const chip = within(card("Runde 2")).getByRole("button", { name: "Runde 2: um die Kette herum" });
+    expect(chip.getAttribute("aria-pressed")).toBe("true");
+    // Only the round right after the chain offers it.
+    expect(within(card("Runde 3")).queryByRole("button", { name: /um die Kette herum/ })).toBeNull();
+  });
+
+  it("toggles a round around the chain with the chip or the text, and suggests it after a chain", async () => {
+    await renderApp();
+    const first = field("Runde 1");
+    act(() => first.focus());
+    type(first, "7 Lm");
+    enter(first);
+    const second = await findField("Runde 2");
+    await waitFor(() => expect(second.value).toBe("um die Lm-Kette: 5 fM, (3 fM) in dieselbe M, 4 fM, 1 Zun"));
+    enter(second);
+    await findField("Runde 3");
+    expect(ist("Runde 2")).toBe("14");
+    const chip = () => within(card("Runde 2")).getByRole("button", { name: "Runde 2: um die Kette herum" });
+    expect(chip().getAttribute("aria-pressed")).toBe("true");
+
+    // The chip turns it off: one side of the chain only, now too many stitches for it.
+    fireEvent.click(chip());
+    expect(chip().getAttribute("aria-pressed")).toBe("false");
+    expect(field("Runde 2").value).toBe("5 fM, (3 fM) in dieselbe M, 4 fM, 1 Zun");
+    expect(within(card("Runde 2")).getByText(/die Vorrunde hat nur 7/)).toBeTruthy();
+
+    // Typing the mark turns it on again.
+    const text = field("Runde 2");
+    act(() => text.focus());
+    type(text, "um die Kette herum: 5 fM, (3 fM) in dieselbe M, 4 fM, 1 Zun");
+    fireEvent.blur(text);
+    expect(chip().getAttribute("aria-pressed")).toBe("true");
+    expect(field("Runde 2").value).toBe("um die Lm-Kette: 5 fM, (3 fM) in dieselbe M, 4 fM, 1 Zun");
+    expect(screen.getByText(/Keine Befunde/)).toBeTruthy();
+  });
+
   it("explains why a snippet does not fit", async () => {
     await renderApp();
     fireEvent.click(screen.getByRole("button", { name: "+ Baustein" }));

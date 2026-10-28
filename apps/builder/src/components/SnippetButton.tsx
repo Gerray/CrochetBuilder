@@ -2,9 +2,12 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { Row } from "@crochetbuilder/engine";
 import type { RoundSpec } from "../state/rounds.js";
 import {
+  MAX_OVAL_CHAIN,
+  MAX_OVAL_INCREASES,
   MAX_SNIPPET_ROUNDS,
   MAX_SNIPPET_STITCHES,
   RING_SNIPPETS,
+  ROUND_ONLY_SNIPPETS,
   SNIPPETS,
   snippetRounds,
   snippetSummary,
@@ -24,16 +27,21 @@ interface SnippetButtonProps {
 }
 
 const SIZES = [18, 24, 30, 36, 42];
+const CHAINS = [5, 7, 9, 11];
 const KINDS_WITH_MAX: readonly SnippetKind[] = ["ballStart", "sphere", "tube"];
+
+/** Why a snippet does not fit a piece worked in rows (shown muted there). */
+const notForRows = (kind: SnippetKind) =>
+  RING_SNIPPETS.includes(kind) ? "beginnt mit einem Magischen Ring" : "wird in Runden um die Kette gehäkelt";
 
 /**
  * "+ Baustein": a small popover with typical runs of rounds (ball start, even rounds,
- * decreases, sphere, tube) inserted after the current row as one undo step.
+ * decreases, sphere, tube, oval start) inserted after the current row as one undo step.
  */
 export function SnippetButton({ currentCount, placeText, type, onInsert }: SnippetButtonProps) {
   const [open, setOpen] = useState(false);
   const [kind, setKind] = useState<SnippetKind>("ballStart");
-  const [params, setParams] = useState<SnippetParams>({ max: 36, rounds: 4, min: 6 });
+  const [params, setParams] = useState<SnippetParams>({ max: 36, rounds: 4, min: 6, chain: 7, increases: 2 });
   const wrap = useRef<HTMLDivElement>(null);
   const button = useRef<HTMLButtonElement>(null);
   const firstKind = useRef<HTMLButtonElement>(null);
@@ -70,10 +78,10 @@ export function SnippetButton({ currentCount, placeText, type, onInsert }: Snipp
         className="btn"
         aria-expanded={open}
         aria-haspopup="dialog"
-        title="Typische Rundenfolgen einfügen: Kugelanfang, gerade Runden, Abnahmen, Kugel, Röhre"
+        title="Typische Rundenfolgen einfügen: Kugelanfang, gerade Runden, Abnahmen, Kugel, Röhre, ovaler Anfang"
         onClick={() => {
-          // In a piece worked in rows the ring snippets do not apply: start with even rows.
-          if (!open && type === "row" && RING_SNIPPETS.includes(kind)) setKind("even");
+          // In a piece worked in rows the round snippets do not apply: start with even rows.
+          if (!open && type === "row" && ROUND_ONLY_SNIPPETS.includes(kind)) setKind("even");
           setOpen((o) => !o);
         }}
       >
@@ -103,11 +111,11 @@ export function SnippetButton({ currentCount, placeText, type, onInsert }: Snipp
                 role="radio"
                 aria-checked={kind === s.kind}
                 // Shown muted in a piece worked in rows; a click still explains why it does not fit.
-                className={`snippet-kind${type === "row" && RING_SNIPPETS.includes(s.kind) ? " is-unavailable" : ""}`}
-                aria-disabled={type === "row" && RING_SNIPPETS.includes(s.kind) ? true : undefined}
+                className={`snippet-kind${type === "row" && ROUND_ONLY_SNIPPETS.includes(s.kind) ? " is-unavailable" : ""}`}
+                aria-disabled={type === "row" && ROUND_ONLY_SNIPPETS.includes(s.kind) ? true : undefined}
                 title={
-                  type === "row" && RING_SNIPPETS.includes(s.kind)
-                    ? `${s.description} – nicht für Teile in Reihen (beginnt mit einem Magischen Ring)`
+                  type === "row" && ROUND_ONLY_SNIPPETS.includes(s.kind)
+                    ? `${s.description} – nicht für Teile in Reihen (${notForRows(s.kind)})`
                     : s.description
                 }
                 onClick={() => setKind(s.kind)}
@@ -172,6 +180,47 @@ export function SnippetButton({ currentCount, placeText, type, onInsert }: Snipp
                 />
                 <span className="unit">M</span>
               </div>
+            )}
+            {kind === "oval" && (
+              <>
+                <div className="snippet-param">
+                  <span className="snippet-param-label">Kette</span>
+                  <div className="snippet-sizes" role="group" aria-label="Luftmaschen wählen">
+                    {CHAINS.map((n) => (
+                      <button
+                        key={n}
+                        type="button"
+                        className="btn btn-small"
+                        aria-pressed={params.chain === n}
+                        onClick={() => set({ chain: n })}
+                      >
+                        {n}
+                      </button>
+                    ))}
+                  </div>
+                  <NumberField
+                    className="narrow"
+                    aria-label="Luftmaschen der Kette"
+                    min={1}
+                    max={MAX_OVAL_CHAIN}
+                    value={params.chain}
+                    onValue={(chain) => chain !== undefined && set({ chain })}
+                  />
+                  <span className="unit">Lm</span>
+                </div>
+                <label className="snippet-param">
+                  <span className="snippet-param-label">Dann</span>
+                  <NumberField
+                    className="narrow"
+                    aria-label="Anzahl Zunahmerunden"
+                    min={0}
+                    max={MAX_OVAL_INCREASES}
+                    value={params.increases}
+                    onValue={(increases) => increases !== undefined && set({ increases })}
+                  />
+                  <span className="unit">Zunahmerunden (je 3 Zun an beiden Enden)</span>
+                </label>
+              </>
             )}
             {(kind === "even" || kind === "tube") && (
               <label className="snippet-param">

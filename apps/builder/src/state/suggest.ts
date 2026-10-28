@@ -3,6 +3,9 @@
  *
  *   - no stitch row before it            → "1 MR, 6 fM" (magic-ring start); none for a piece
  *                                           worked in rows (it starts with a chain of any length)
+ *   - a foundation chain, in rounds      → the round around it (oval start): "um die Lm-Kette:
+ *                                           5 fM, (3 fM) in dieselbe M, 4 fM, 1 Zun" (14) on
+ *                                           7 Lm; in rows one stitch into each chain
  *   - increase progression               → the next increase round with the same number
  *     (6, 12, 18 … — two equal, evenly      of increases, spread evenly: after 6, 12, 18
  *     spread increases; a ring row counts   comes "6× (2 fM, 1 Zun)" (24)
@@ -21,11 +24,21 @@
  * turning chain ("1 Lm, …"), like the potholder demo.
  */
 
-import { anchorsConsumed, anchorsOffered, isRingRow, renderOps, type Op, type Row } from "@crochetbuilder/engine";
+import {
+  anchorsConsumed,
+  anchorsOffered,
+  AROUND_MARKS,
+  isChainRow,
+  isRingRow,
+  renderOps,
+  type Op,
+  type Row,
+} from "@crochetbuilder/engine";
 import {
   decreaseRound,
   increaseRound,
   isStitchRow,
+  ovalRound,
   plainRound,
   ringStart,
   rowCount,
@@ -33,10 +46,13 @@ import {
   type RoundSpec,
 } from "./rounds.js";
 
-export type SuggestionKind = "start" | "increase" | "decrease" | "even";
+export type SuggestionKind = "start" | "increase" | "decrease" | "even" | "oval";
 
 export interface RowSuggestion extends RoundSpec {
-  /** The ops as the row's text field shows them ("6× (2 fM, 1 Zun)"). */
+  /**
+   * The ops as the row's text field shows them ("6× (2 fM, 1 Zun)"; a round around the chain
+   * with its mark, "um die Lm-Kette: …").
+   */
   text: string;
   kind: SuggestionKind;
 }
@@ -90,7 +106,9 @@ export function evenSpread(ops: readonly Op[], code: "INC" | "DEC"): number | nu
 
 function suggestion(spec: RoundSpec, kind: SuggestionKind, flat = false): RowSuggestion {
   const ops = flat ? withTurningChain(spec.ops) : structuredClone(spec.ops);
-  return { ops, count: spec.count, text: renderOps(ops, "de"), kind };
+  const text = renderOps(ops, "de");
+  if (spec.around) return { ops, count: spec.count, around: true, text: `${AROUND_MARKS.de} ${text}`, kind };
+  return { ops, count: spec.count, text, kind };
 }
 
 /**
@@ -104,8 +122,13 @@ export function suggestNextRow(rows: readonly Row[], index: number): RowSuggesti
   if (!last) return flat ? null : suggestion(ringStart(6), "start");
 
   const count = rowCount(last);
-  // A foundation chain makes no stitches of its own but offers one per chain.
-  if (count === 0) return suggestion(plainRound(Math.max(1, anchorsOffered(last))), "even", flat);
+  // A foundation chain makes no stitches of its own but offers one per chain; in rounds the
+  // next round goes around it (oval start).
+  if (count === 0) {
+    const oval = !flat && isChainRow(last) ? ovalRound(anchorsOffered(last)) : null;
+    if (oval) return suggestion(oval, "oval");
+    return suggestion(plainRound(Math.max(1, anchorsOffered(last))), "even", flat);
+  }
 
   const before = stitchRows[stitchRows.length - 2];
   const beforeBefore = stitchRows[stitchRows.length - 3];

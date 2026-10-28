@@ -43,7 +43,11 @@ export function insertRounds(
   rounds: readonly RoundSpec[],
   type: Row["type"] = "round",
 ): Extract<EditorAction, { type: "insertRows" }> {
-  const rows: Row[] = rounds.map((r) => ({ id: newId(), type, ops: structuredClone(r.ops), stitchCountTarget: r.count }));
+  const rows: Row[] = rounds.map((r) => {
+    const row: Row = { id: newId(), type, ops: structuredClone(r.ops), stitchCountTarget: r.count };
+    if (r.around) row.around = true;
+    return row;
+  });
   return { type: "insertRows", afterId, rows };
 }
 

@@ -385,6 +385,10 @@ input[aria-invalid="true"]:focus-visible {
   opacity: 0.4;
   cursor: default;
 }
+/* "um die Kette herum" next to Runde/Reihe on a round after a chain (oval start). */
+.around-chip {
+  white-space: nowrap;
+}
 
 /* ---------------------------------------------------------------- banners */
 

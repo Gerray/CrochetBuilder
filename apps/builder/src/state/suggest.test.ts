@@ -108,8 +108,20 @@ describe("next-round suggestion", () => {
     // A plain round of another stitch is copied, as is a flat row with its turning chain.
     expect(next("24 hStb")).toMatchObject({ text: "24 hStb", count: 24 });
     expect(next("20 Lm", "1 Lm, 20 fM")).toMatchObject({ text: "1 Lm, 20 fM", count: 20 });
-    // After a foundation chain: one stitch into each chain.
-    expect(next("20 Lm")).toMatchObject({ text: "20 fM", count: 20 });
+    // After a foundation chain worked in rows: one stitch into each chain.
+    const flat = rowsOf("20 Lm").map((r) => ({ ...r, type: "row" as const }));
+    expect(suggestNextRow(flat, 1)).toMatchObject({ text: "1 Lm, 20 fM", count: 20, kind: "even" });
+  });
+
+  it("suggests the round around a foundation chain in rounds (oval start)", () => {
+    const oval = next("7 Lm");
+    expect(oval).toMatchObject({ text: "um die Lm-Kette: 5 fM, (3 fM) in dieselbe M, 4 fM, 1 Zun", count: 14, kind: "oval", around: true });
+    // The text reads back as the suggested round.
+    expect(parseRowText(oval!.text, "de")).toEqual({ ok: true, ops: oval!.ops, around: true });
+    // The shortest chain to go around: one chain per side and the end.
+    expect(next("3 Lm")).toMatchObject({ text: "um die Lm-Kette: 1 fM, (3 fM) in dieselbe M, 1 Zun", count: 6 });
+    expect(next("2 Lm")).toMatchObject({ text: "2 fM", kind: "even" });
+    expect(next("2 Lm")!.around).toBeUndefined();
   });
 
   it("looks only at the rows before the given index and skips instructions", () => {

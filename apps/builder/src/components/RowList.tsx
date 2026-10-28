@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useRef, type Dispatch } from "react";
-import type { Finding, Row } from "@crochetbuilder/engine";
+import { isChainRow, type Finding, type Row } from "@crochetbuilder/engine";
 import type { EditorAction } from "../state/editor.js";
 import type { RowItem } from "../state/grouping.js";
 import { autoRowLabels, isInstructionLike } from "../state/labels.js";
@@ -107,6 +107,11 @@ export function RowList(props: RowListProps) {
   const snippetType = rows[anchorIndex]?.type ?? previousStitchRow(rows, anchorIndex + 1)?.type ?? "round";
 
   const lastType = lastRow?.type ?? "round";
+  // A round right after a foundation chain may be worked around it (oval start).
+  const afterChain = (index: number) => {
+    const previous = previousStitchRow(rows, index);
+    return previous !== undefined && isChainRow(previous);
+  };
 
   return (
     <section className="row-list" aria-label="Runden und Reihen">
@@ -144,6 +149,7 @@ export function RowList(props: RowListProps) {
             onMerge={item.splitRun ? () => groups.merge(item.splitRun!) : undefined}
             onFocusRow={onFocusRow}
             startColor={rowColors?.[item.start]}
+            afterChain={afterChain(item.start)}
           />
         );
       })}

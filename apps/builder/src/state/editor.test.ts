@@ -52,6 +52,27 @@ describe("rows", () => {
     expect(row(s, "r3")).toEqual({ id: "r3", type: "row", ops: [], stitchCountTarget: 0 });
   });
 
+  it("works a round around the foundation chain (oval start) and back", () => {
+    let s = run(
+      fresh(),
+      { type: "setRowOps", rowId: "r1", ops: [{ kind: "stitch", code: "CH", count: 7 }] },
+      { type: "addRow", id: "r2" },
+      { type: "setRowOps", rowId: "r2", ops: [sc(11)] },
+    );
+    s = run(s, { type: "setRowAround", rowId: "r2", around: true });
+    expect(row(s, "r2").around).toBe(true);
+    expect(validate(currentPart(s.doc))).toEqual([]);
+    // Unchanged: no new state; undo takes it back.
+    expect(run(s, { type: "setRowAround", rowId: "r2", around: true })).toBe(s);
+    expect(run(s, { type: "undo" }).doc.parts[0]!.content.rows[1]).not.toHaveProperty("around");
+    // A row turns at its end: switching to "Reihe" drops it; setting it makes a round again.
+    const flat = run(s, { type: "updateRow", rowId: "r2", patch: { type: "row" } });
+    expect(row(flat, "r2")).not.toHaveProperty("around");
+    expect(row(run(flat, { type: "setRowAround", rowId: "r2", around: true }), "r2")).toMatchObject({ type: "round", around: true });
+    s = run(s, { type: "setRowAround", rowId: "r2", around: false });
+    expect(row(s, "r2")).not.toHaveProperty("around");
+  });
+
   it("adds free instruction rows with a note only", () => {
     const s = run(fresh(), { type: "addRow", id: "n1", instruction: true }, {
       type: "updateRow",
