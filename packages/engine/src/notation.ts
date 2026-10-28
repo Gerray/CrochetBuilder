@@ -373,12 +373,33 @@ export type ParseRowErrorCode =
    */
   | "fill-mismatch";
 
+/**
+ * A guess the lenient pass made where the text allows two readings:
+ *   - `repeat-scope-guessed`: "sc, inc x6 (18)" — the "x6" was applied to the whole row
+ *     because only that matches the written count.
+ *   - `repeat-scope-ambiguous`: "sc, inc x6" — read as "sc, 6 inc", but it may mean the
+ *     whole row six times (no count, or neither reading matches it).
+ *   - `repeat-count-guessed`: "*…; rep from * 5 times" — read as 6 repeats because only that
+ *     matches the written count (or as 5 when the count says so although "more" was written).
+ *   - `repeat-count-ambiguous`: "*…; rep from * 5 times" without a count that decides
+ *     between 5 and 6 repeats; read as 5 ("more times": 6).
+ */
+export type ParseRowWarning =
+  | "repeat-scope-guessed"
+  | "repeat-scope-ambiguous"
+  | "repeat-count-guessed"
+  | "repeat-count-ambiguous";
+
 export type ParseRowResult =
   | {
       ok: true;
       ops: Op[];
       /** Stitch count written at the end of the text, e.g. the `18` of `… (18)`. */
       stitchCountTarget?: number;
+      /** "(4 rounds)" written after the row: the row stands for this many rounds. */
+      rounds?: number;
+      /** Guesses of the lenient pass (see `ParseRowWarning`); absent when there were none. */
+      warnings?: ParseRowWarning[];
     }
   | {
       ok: false;
@@ -467,10 +488,15 @@ interface FillMark {
   pos: number;
 }
 
+/** Deepest nesting of repeat groups the parser accepts. */
+const MAX_NESTING = 50;
+
 class Parser {
   private i = 0;
   stitchCountTarget: number | undefined;
   readonly fills: FillMark[] = [];
+  /** A top-level stitch whose count came from a postfix "x N" ("sc, inc x6"). */
+  postfixTimes: { op: StitchOp; times: number } | undefined;
 
   constructor(
     private readonly tokens: Token[],
@@ -552,6 +578,7 @@ class Parser {
   /** `( list )` of a repeat group; `()` is an empty group (rendered as `N× ()`). */
   private parseGroupBody(depth: number): Op[] {
     const open = this.next(); // "("
+    if (depth + 1 > MAX_NESTING) this.fail(open); // no stack overflow on "((((((…"
     if (this.peek().t === "rp") {
       this.next();
       return [];
@@ -687,8 +714,8 @@ class Parser {
 
   /**
    * Lenient postfix forms after a stitch: "sc 2", "inc x 6", "Dec × 9", "sc @" (to the
-   * end of the round). A postfix count on an explicitly counted stitch ("2 sc x 3") is a
-   * repeat of that stitch.
+   * end of the round). On an explicitly counted stitch only a times sign makes a repeat
+   * ("2 sc x 3"); a bare number there ("6 inc 12", "18 sc 18") is not read.
    */
   private parsePostfix(op: StitchOp, depth: number, explicit: boolean): Op {
     const tok = this.peek();
@@ -699,15 +726,18 @@ class Parser {
       return op;
     }
     let n: Token | undefined;
+    let timesSign = false;
     if (this.isTimes(tok) && this.peek(1).t === "num" && this.endsItem(this.peek(2))) {
       this.next();
       n = this.next();
-    } else if (tok.t === "num" && this.endsItem(this.peek(1))) {
+      timesSign = true;
+    } else if (!explicit && tok.t === "num" && this.endsItem(this.peek(1))) {
       n = this.next();
     }
     if (!n) return op;
     if (!explicit) {
       op.count = this.count(n);
+      if (timesSign && depth === 0) this.postfixTimes = { op, times: op.count };
       return op;
     }
     return { kind: "repeat", times: this.times(n), ops: [op] };
@@ -781,14 +811,21 @@ interface LenientText {
   text: string;
   stitchCountTarget?: number;
   rowModifier?: Mod;
+  /** "(4 rounds)" after the row. */
+  rounds?: number;
+  /** "*…, rep from * N (more) times" was rewritten into the first repeat group. */
+  repFrom?: { n: number; more: boolean };
 }
 
 const RING_TERMS =
   "MR|magic\\s+ring|magic\\s+circle|magic\\s+loop|adjustable\\s+ring|AR|Fadenring|magische[nr]?\\s+(?:Faden)?ring|Magic\\s+Ring";
 const ARTICLE = "(?:a|an|the|einen|den|dem|einem|ein)\\s+";
 const ST_WORD = "(?:sts?|stitch(?:es)?|M|Maschen?)";
-/** A stitch term as written (letters, dots, hyphens, inner spaces). */
-const TERM = "[\\p{L}][\\p{L}.\\-]*(?:\\s+[\\p{L}][\\p{L}.\\-]*)*?";
+/**
+ * A stitch term as written (letters, dots, hyphens, inner spaces), at most four words — the
+ * bound keeps the regexes that use it linear on long texts.
+ */
+const TERM = "[\\p{L}][\\p{L}.\\-]*(?:\\s+[\\p{L}][\\p{L}.\\-]*){0,3}?";
 
 const LOOP_PHRASE =
   "(?:BLO|FLO|hMG|vMG|(?:back|front)\\s+loops?(?:\\s+only)?|(?:nur\\s+)?(?:(?:in|durch)\\s+)?(?:(?:das|die)\\s+)?(?:hintere|vordere)[sn]?\\s+(?:Maschenglied(?:er)?|MG))";
@@ -821,20 +858,27 @@ function rewriteLenient(input: string, locale: NotationLocale): LenientText {
   const sc = STITCH_ABBREVIATIONS.SC[locale];
   const inc = STITCH_ABBREVIATIONS.INC[locale];
   let s = input
-    .replace(/[   ]/g, " ")
-    .replace(/[‐-―−]/g, "-")
+    .replace(/[\u00a0\u2007\u202f]/g, " ")
+    .replace(/[\u2010-\u2015\u2212]/g, "-")
     .replace(/\s+/g, " ")
     .trim()
     .replace(/\.+$/, "")
     .trim();
   let stitchCountTarget: number | undefined;
   let rowModifier: Mod | undefined;
+  let rounds: number | undefined;
+  let repFrom: LenientText["repFrom"];
 
   // Trailing annotations, repeatedly: "(4 rounds)", "= 18", "– 18", "[18]", "(18 sts)", "turn".
   for (let changed = true; changed; ) {
     changed = false;
     const before = s;
-    s = s.replace(/\(\s*\d+\s*(?:rounds?|rows?|rnds?|rds?|runden|reihen|r)\s*\)\s*$/iu, "").trim();
+    s = s
+      .replace(/\(\s*(\d+)\s*(?:rounds?|rows?|rnds?|rds?|runden|reihen|r)\s*\)\s*$/iu, (_m, n: string) => {
+        rounds ??= Number(n);
+        return "";
+      })
+      .trim();
     s = s.replace(/[,;]?\s*\b(?:turn|wenden)\b\.?$/iu, "").trim();
     const eq = /(?:^|\s|(?<=[\])\p{L}\d]))(?:=|->|→|-)\s*[[(]?\s*(\d+)\s*(?:sts?|stitches|maschen|m)?\s*[\])]?$/iu.exec(s);
     const br = eq ? null : /[[(]\s*(\d+)\s*(?:sts?|stitches|st|maschen|m)?\s*[\])]$/iu.exec(s);
@@ -900,7 +944,10 @@ function rewriteLenient(input: string, locale: NotationLocale): LenientText {
   s = s.replace(/\*([^*]*\p{L}[^*]*)\*/gu, "($1)");
   s = s.replace(
     /^\*\s*(.+?)[,;]?\s*\brep(?:eat)?\s+from\s+(\d+)\s+(more\s+)?times?\b/iu,
-    (_m, body: string, n: string, more?: string) => `(${body}) x ${Number(n) + (more ? 1 : 0)}`,
+    (_m, body: string, n: string, more?: string) => {
+      repFrom = { n: Number(n), more: Boolean(more) };
+      return `(${body}) x ${Number(n) + (more ? 1 : 0)}`;
+    },
   );
   s = s.replace(/\b(?:rep(?:eat)?|wiederholen|wdh)\.?\s*(\d+)\s*(?:times|x|×|mal)?(?=$|[\s,;)\]])/giu, "x $1");
   s = s.replace(/(\d+)\s*(?:x|×|mal)\s*(?:wiederholen|wdh)\.?/giu, "x $1");
@@ -917,7 +964,12 @@ function rewriteLenient(input: string, locale: NotationLocale): LenientText {
     new RegExp(`(?<!\\d\\s*)\\b(${TERM})\\s+(?:in|into)\\s+(?:the\\s+)?next\\s+(\\d+)\\s*${ST_WORD}\\b`, "giu"),
     (m, term: string, n: string) => (resolveStitchTerm(term, locale) ? `${n} ${term}` : m),
   );
-  s = s.replace(/\s+(?:in|into)\s+(?:the\s+)?next\s+(?:st|stitch)\b/giu, "");
+  // Only a single stitch may lose its "in next st": "2 hdc in next st" stays unreadable.
+  s = s.replace(
+    new RegExp(`(\\b\\d+\\s*)?(${TERM})\\s+(?:in|into)\\s+(?:the\\s+)?next\\s+(?:st|stitch)\\b`, "giu"),
+    (m, count: string | undefined, term: string) =>
+      count === undefined || Number(count) === 1 ? `${count ?? ""}${term}` : m,
+  );
 
   // "to the end of the round" phrases → "@".
   for (const re of FILL_PHRASES) s = s.replace(re, " @ ");
@@ -933,7 +985,71 @@ function rewriteLenient(input: string, locale: NotationLocale): LenientText {
   const out: LenientText = { text: s };
   if (stitchCountTarget !== undefined) out.stitchCountTarget = stitchCountTarget;
   if (rowModifier) out.rowModifier = rowModifier;
+  if (rounds !== undefined) out.rounds = rounds;
+  if (repFrom) out.repFrom = repFrom;
   return out;
+}
+
+/** Fabric stitches an op list produces (as `computeRowStitches`). */
+function producedByOps(ops: readonly Op[]): number {
+  let total = 0;
+  for (const op of ops) {
+    total += op.kind === "stitch" ? op.count * STITCH_PROPERTIES[op.code].producesStitches : op.times * producedByOps(op.ops);
+  }
+  return total;
+}
+
+/** Longest text the lenient pass reads; longer text only gets the strict pass. */
+const MAX_LENIENT_TEXT = 1500;
+
+/** What the parser noticed beyond the result (for the lenient pass's ambiguity checks). */
+interface ParseInfo {
+  postfixTimes?: { op: StitchOp; times: number };
+  hadFill?: boolean;
+}
+
+/**
+ * Settle the readings the lenient pass cannot decide from the text alone, using the written
+ * stitch count: "sc, inc x6" (x6 on the last stitch or on the whole row) and
+ * "*…; rep from * 5 times" (5 or 6 repeats).
+ */
+function settleAmbiguities(
+  ops: Op[],
+  target: number | undefined,
+  info: ParseInfo,
+  repFrom: LenientText["repFrom"],
+  warnings: ParseRowWarning[],
+): Op[] {
+  const pt = info.postfixTimes;
+  if (pt && !info.hadFill && ops.length >= 2 && ops[ops.length - 1] === pt.op) {
+    const wrapped: Op[] = [{ kind: "repeat", times: pt.times, ops: [...ops.slice(0, -1), { ...pt.op, count: 1 }] }];
+    if (target === undefined) {
+      warnings.push("repeat-scope-ambiguous");
+    } else if (producedByOps(ops) !== target) {
+      if (producedByOps(wrapped) === target) {
+        warnings.push("repeat-scope-guessed");
+        return wrapped;
+      }
+      warnings.push("repeat-scope-ambiguous");
+    }
+  }
+  const first = ops[0];
+  if (repFrom && first?.kind === "repeat") {
+    const chosen = first.times;
+    const other = repFrom.more ? repFrom.n : repFrom.n + 1;
+    if (target === undefined) {
+      if (!repFrom.more) warnings.push("repeat-count-ambiguous");
+    } else if (producedByOps(ops) !== target) {
+      first.times = other;
+      if (producedByOps(ops) === target) {
+        warnings.push("repeat-count-guessed");
+      } else {
+        first.times = chosen;
+        warnings.push("repeat-count-ambiguous");
+      }
+    }
+  }
+  return ops;
 }
 
 function failureResult(err: ParseFailure): ParseRowResult {
@@ -949,12 +1065,15 @@ function runParser(
   lenient: boolean,
   context: ParseRowContext,
   rowModifier?: Mod,
+  info: ParseInfo = {},
 ): ParseRowResult {
   const parser = new Parser(tokenize(text, lenient), text, locale, lenient);
   try {
     const ops = parser.parseRow();
     if (rowModifier && applyRowModifier(ops, rowModifier) === 0) throw new ParseFailure("syntax", 0);
     resolveFills(ops, parser.fills, context.previousCount);
+    if (parser.postfixTimes) info.postfixTimes = parser.postfixTimes;
+    info.hadFill = parser.fills.length > 0;
     if (countWorkedStitches(ops) > MAX_ROW_STITCHES) {
       return { ok: false, code: "too-large", position: 0, limit: MAX_ROW_STITCHES };
     }
@@ -982,12 +1101,15 @@ function runParser(
  *     `fM rundherum`, `in jede M 1 fM`, `Zun in jede M`
  *   - magic ring starts: `6 sc in MR`, `Make 6 sc into a magic ring`, `MR 6`,
  *     `6 fM in einen Fadenring`
- *   - stitch counts: `= 18`, `= [36]`, `– 18`, `(18 sts)`, `(4 rounds)` is dropped
+ *   - stitch counts: `= 18`, `= [36]`, `– 18`, `(18 sts)`; `(4 rounds)` comes back as `rounds`
  *   - row-level loops: `BLO: …`, `through back loops only, …`, `… in BLO`,
  *     `nur hinteres Maschenglied: …` (added to every stitch it applies to)
  *   - `sl-st`, en/em dashes, a trailing period, a trailing "turn"
+ * Where the text allows two readings ("sc, inc x6", "rep from * 5 times") the written stitch
+ * count decides, and the result carries `warnings`. Text longer than 1500 characters or
+ * containing "@" only gets the strict pass.
  * The strict pass's error is reported when both fail, unless the lenient pass failed for
- * a reason only it can know (`needs-context`, `fill-mismatch`).
+ * a reason only it can know (`needs-context`, `fill-mismatch`, `too-large`).
  */
 export function parseRowText(
   text: string,
@@ -997,20 +1119,33 @@ export function parseRowText(
   if (text.replace(/[\s ]/g, "") === "") return { ok: false, code: "empty" };
   const strict = runParser(text, locale, false, context);
   if (strict.ok) return strict;
+  // "@" is the lenient pass's internal fill marker; long text is never a single row.
+  if (text.length > MAX_LENIENT_TEXT || text.includes("@")) return strict;
 
   const rewritten = rewriteLenient(text, locale);
   if (rewritten.text === "") return strict;
-  const lenient = runParser(rewritten.text, locale, true, context, rewritten.rowModifier);
+  const info: ParseInfo = {};
+  const lenient = runParser(rewritten.text, locale, true, context, rewritten.rowModifier, info);
   if (lenient.ok) {
     const target = rewritten.stitchCountTarget ?? lenient.stitchCountTarget;
     if (target !== undefined && target > MAX_STITCH_COUNT_TARGET) {
       return { ok: false, code: "too-large", position: 0, limit: MAX_STITCH_COUNT_TARGET };
     }
-    return target === undefined ? { ok: true, ops: lenient.ops } : { ok: true, ops: lenient.ops, stitchCountTarget: target };
+    const warnings: ParseRowWarning[] = [];
+    const ops = settleAmbiguities(lenient.ops, target, info, rewritten.repFrom, warnings);
+    if (countWorkedStitches(ops) > MAX_ROW_STITCHES) {
+      return { ok: false, code: "too-large", position: 0, limit: MAX_ROW_STITCHES };
+    }
+    const result: ParseRowResult = { ok: true, ops };
+    if (target !== undefined) result.stitchCountTarget = target;
+    if (rewritten.rounds !== undefined) result.rounds = rewritten.rounds;
+    if (warnings.length > 0) result.warnings = warnings;
+    return result;
   }
   if (lenient.code === "needs-context" || lenient.code === "fill-mismatch") {
     const { position: _ignored, ...rest } = lenient;
     return rest;
   }
+  if (lenient.code === "too-large") return lenient;
   return strict;
 }
