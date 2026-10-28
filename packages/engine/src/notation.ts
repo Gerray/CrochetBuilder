@@ -491,6 +491,11 @@ export type ParseRowResult =
       rounds?: number;
       /** Guesses of the lenient pass (see `ParseRowWarning`); absent when there were none. */
       warnings?: ParseRowWarning[];
+      /**
+       * The row's colour (with `ParseRowContext.rowColor`): a palette id, else the name as
+       * written. Absent when the text does not start with a colour change.
+       */
+      color?: string;
     }
   | {
       ok: false;
@@ -516,6 +521,13 @@ export interface ParseRowContext {
    * kept as written (validation then reports it as an unknown colour).
    */
   colors?: readonly { id: string; name?: string }[];
+  /**
+   * A colour change written before everything else (`[Farbe: Weiß] 6 fM`) is the row's own
+   * colour (`Row.color`): it comes back as `color` of the result instead of on the first
+   * stitch, and a text that is only the mark (`[Farbe: Weiß]`) is a row without stitches.
+   * Reads what `renderRow(row, locale, { colors })` writes. Off by default.
+   */
+  rowColor?: boolean;
 }
 
 type Token =
@@ -556,22 +568,26 @@ function applyColor(op: Op, color: string): boolean {
   return op.ops.length > 0 && applyColor(op.ops[0]!, color);
 }
 
+/** A colour as written (a palette name or id) → its palette id; else the text as written. */
+function resolveColor(written: string, palette: ParseRowContext["colors"]): string {
+  if (!palette) return written;
+  const key = (s: string) => s.trim().toLowerCase();
+  const hit =
+    palette.find((c) => c.id === written) ??
+    palette.find((c) => c.name !== undefined && key(c.name) === key(written)) ??
+    palette.find((c) => key(c.id) === key(written));
+  return hit ? hit.id : written;
+}
+
 /** Map colour changes as written (a palette name or id) to palette ids. */
 function resolveColors(ops: readonly Op[], palette: ParseRowContext["colors"]): void {
   if (!palette) return;
-  const key = (s: string) => s.trim().toLowerCase();
   for (const op of ops) {
     if (op.kind !== "stitch") {
       resolveColors(op.ops, palette);
       continue;
     }
-    if (op.color === undefined) continue;
-    const written = op.color;
-    const hit =
-      palette.find((c) => c.id === written) ??
-      palette.find((c) => c.name !== undefined && key(c.name) === key(written)) ??
-      palette.find((c) => key(c.id) === key(written));
-    if (hit) op.color = hit.id;
+    if (op.color !== undefined) op.color = resolveColor(op.color, palette);
   }
 }
 
@@ -1310,6 +1326,19 @@ export function parseRowText(
   context: ParseRowContext = {},
 ): ParseRowResult {
   if (text.replace(/[\s ]/g, "") === "") return { ok: false, code: "empty" };
+  if (context.rowColor) {
+    const { rowColor: _row, ...inner } = context;
+    const lead = /^[\s ]*/u.exec(text)![0].length;
+    const mark = COLOR_MARK.exec(text.slice(lead));
+    if (!mark) return parseRowText(text, locale, inner);
+    const color = resolveColor(mark[1]!, context.colors);
+    const offset = lead + mark[0].length;
+    const rest = text.slice(offset);
+    if (rest.replace(/[\s ]/g, "") === "") return { ok: true, ops: [], color };
+    const result = parseRowText(rest, locale, inner);
+    if (!result.ok) return result.position === undefined ? result : { ...result, position: result.position + offset };
+    return { ...result, color };
+  }
   const strict = runParser(text, locale, false, context);
   if (strict.ok) return strict;
   // "@" is the lenient pass's internal fill marker; long text is never a single row.
