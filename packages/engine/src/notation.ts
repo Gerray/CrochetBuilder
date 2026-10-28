@@ -479,7 +479,12 @@ export type ParseRowWarning =
   | "repeat-scope-guessed"
   | "repeat-scope-ambiguous"
   | "repeat-count-guessed"
-  | "repeat-count-ambiguous";
+  | "repeat-count-ambiguous"
+  /**
+   * "3 hdc inc" without a written count: read as three HDC increases (three groups of two
+   * HDC), but it may mean "3 hdc, inc".
+   */
+  | "increase-ambiguous";
 
 export type ParseRowResult =
   | {
@@ -540,7 +545,7 @@ const COLOR_MARK = /^\[\s*(?:Farbe|Farbwechsel(?:\s+zu)?|Colou?r(?:\s+change(?:\
  * st`, `in the same stitch`, `in die gleiche Masche`, `in one st`.
  */
 const GROUP_PHRASE =
-  /^in(?:to)?\s+(?:(?:the\s+)?same|dieselbe|derselben|die\s+gleiche|der\s+gleichen|one|1|eine|einer)\s+(?:sts?|stitch|M|Masche)$/iu;
+  /^in(?:to)?\s+(?:(?:the\s+)?(?:same|next|last|first)|dieselbe|derselben|die\s+gleiche|der\s+gleichen|die\s+nächste|der\s+nächsten|one|1|eine|einer)\s+(?:sts?|stitch|M|Masche)$/iu;
 
 /** Whether an op list contains a stitch group (at any depth). */
 function containsGroup(ops: readonly Op[]): boolean {
@@ -992,7 +997,40 @@ interface LenientText {
   rounds?: number;
   /** "*…, rep from * N (more) times" was rewritten into the first repeat group. */
   repFrom?: { n: number; more: boolean };
+  /** "3 hdc inc" (space, no hyphen) was read as three increases — see `increase-ambiguous`. */
+  increaseAmbiguous?: boolean;
 }
+
+/** Count words of stitch groups ("three dc in next st", "drei Stb in eine M"). */
+const GROUP_COUNT_WORDS: Record<string, number> = {
+  two: 2,
+  three: 3,
+  four: 4,
+  five: 5,
+  six: 6,
+  seven: 7,
+  zwei: 2,
+  drei: 3,
+  vier: 4,
+  fünf: 5,
+  sechs: 6,
+  sieben: 7,
+};
+const GROUP_COUNT = `(\\d+|${Object.keys(GROUP_COUNT_WORDS).join("|")})`;
+const groupCount = (word: string): number => GROUP_COUNT_WORDS[word.toLowerCase()] ?? Number(word);
+
+/**
+ * "into one stitch": the next, same, first, last, one stitch (or loop, chain) — what makes
+ * "3 sc in next st" a stitch group (format v2).
+ */
+const INTO_ONE =
+  "(?:in|into|im)\\s+(?:the\\s+)?(?:next|same|one|1|a|this|that|last|first|single|eine[rm]?|ein|dieselbe|derselben|die\\s+gleiche|der\\s+gleichen|die\\s+nächste|der\\s+nächsten|die\\s+letzte|die\\s+erste|nächste|letzte)\\s+(?:sts?|stitch(?:es)?|M|Masche|loop|ch|chain|Lm|Luftmasche|Schlinge|Einstichstelle)\\b";
+
+/** Stitches a group increase is made of: "hdc inc" = two HDC into one stitch. */
+const GROUP_INC_TERMS = "hdc|htr|dc|tr|dtr|hStb|Stb|DStb";
+/** Loops of a bobble-family stitch written in its name: "5-dc bobble", "Noppe aus 5 Stb". */
+const LOOP_SPEC_TERMS = "sc|hdc|htr|dc|tr|dtr|fM|hStb|Stb|DStb|ch|Lm";
+const BOBBLE_WORDS = "bobbles?|popcorns?|puffs?|Noppen?|Popcorns?|Büschel(?:maschen?)?|Popcornmaschen?";
 
 const RING_TERMS =
   "MR|magic\\s+ring|magic\\s+circle|magic\\s+loop|adjustable\\s+ring|AR|Fadenring|magische[nr]?\\s+(?:Faden)?ring|Magic\\s+Ring";
@@ -1124,8 +1162,40 @@ function rewriteLenient(input: string, locale: NotationLocale): LenientText {
   );
   s = s.replace(/\bR(?:elief)?Stb\s*([vh])\b\.?/gu, (_m, side: string) => `Stb (Relief ${side})`);
   s = s.replace(
-    /\bReliefstäbchen\s+(?:von\s+)?(vorne?|hinten)\b/giu,
+    /\bRelief-?(?:stäbchen|stb)\.?\s+(?:von\s+)?(vorne?|hinten|v|h)\b\.?/giu,
     (_m, side: string) => `Stb (Relief ${side.toLowerCase().startsWith("v") ? "v" : "h"})`,
+  );
+  s = s.replace(
+    /\b(vorder|hinter)e[sn]?\s+Relief-?(?:stäbchen|stb)\b\.?/giu,
+    (_m, side: string) => `Stb (Relief ${side.toLowerCase() === "vorder" ? "v" : "h"})`,
+  );
+
+  // Bobble family: the loops in the name are the stitch's definition, not stitches of the
+  // row — "5-dc bobble", "bobble of 5 dc", "Noppe aus 5 Stb", "Noppe (5 Stb)" are one BOBBLE.
+  // Only the hyphenated form is taken: "3 dc bobble" may be "3 dc, bobble".
+  s = s.replace(new RegExp(`\\b\\d+-(?:${LOOP_SPEC_TERMS})\\s+(?=(?:${BOBBLE_WORDS})\\b)`, "giu"), "");
+  s = s.replace(
+    new RegExp(`\\b(${BOBBLE_WORDS})\\s+(?:of|with|aus|mit)\\s+\\d+\\s*(?:${LOOP_SPEC_TERMS})\\b\\.?`, "giu"),
+    "$1",
+  );
+  s = s.replace(new RegExp(`\\b(${BOBBLE_WORDS})\\s*\\(\\s*\\d+\\s*(?:${LOOP_SPEC_TERMS})\\.?\\s*\\)`, "giu"), "$1");
+  // Picots: "ch-3 picot", "3-ch picot", "picot of 3 ch", "Pikot aus 3 Lm" are one PICOT.
+  s = s.replace(/\b(?:ch-?\d+|\d+-?ch|Lm-?\d+|\d+-?Lm)[\s-]+(?=(?:picots?|pikots?)\b)/giu, "");
+  s = s.replace(/\b(picots?|pikots?)\s+(?:of|with|aus|mit)\s+\d+\s*(?:ch|chains?|Lm|Luftmaschen?)\b\.?/giu, "$1");
+
+  // Increases made of taller stitches (format v2 groups): "hdc inc" = two HDC into one
+  // stitch; "3 hdc-inc" / "3hdc inc" = three of them (the counts of real patterns agree).
+  // Written with a space and a count, "3 hdc inc" might also mean "3 hdc, inc": flagged.
+  let increaseAmbiguous = false;
+  s = s.replace(
+    new RegExp(`(?<![\\p{L}\\d])(?:(\\d+)\\s*)?(${GROUP_INC_TERMS})(\\s*-\\s*|\\s+)(?:inc|increases?|Zun|Zunahmen?)(?![\\p{L}])`, "giu"),
+    (_m, n: string | undefined, term: string, sep: string) => {
+      // UK "dc inc" is a plain increase (UK dc = single crochet).
+      const group = resolveStitchTerm(term, locale) === "SC" ? inc : `(2 ${term}) in same st`;
+      if (n === undefined || Number(n) === 1) return group;
+      if (!sep.includes("-")) increaseAmbiguous = true;
+      return `${n} x (${group})`;
+    },
   );
 
   // Repeats: "*A* …" → "(A) …"; "*A, rep from * N more times"; "repeat N times" → "x N".
@@ -1141,13 +1211,26 @@ function rewriteLenient(input: string, locale: NotationLocale): LenientText {
   s = s.replace(/\b(?:rep(?:eat)?|wiederholen|wdh)\.?\s*(\d+)\s*(?:times|x|×|mal)?(?=$|[\s,;)\]])/giu, "x $1");
   s = s.replace(/(\d+)\s*(?:x|×|mal)\s*(?:wiederholen|wdh)\.?/giu, "x $1");
 
-  // "2 sc in next st" is an increase; "sc in next 5 sts" are 5 sc; "in next st" is noise.
+  // Several stitches into one stitch: "2 sc in next st" is an increase, "3 sc in one st",
+  // "2 hdc in next st", "5 dc in same st", "3 fM in 1 M" are stitch groups (format v2);
+  // "3 sc in each st" is such a group in every stitch. "sc in next 5 sts" are 5 sc.
+  const intoOne = (m: string, n: string, term: string, fill: boolean): string => {
+    const count = groupCount(n);
+    const code = resolveStitchTerm(term, locale);
+    if (!code || count < 1) return m;
+    if (count === 1) return fill ? m : term;
+    if (count === 2 && code === "SC") return fill ? m : inc;
+    return fill ? `((${count} ${term}) in same st) @` : `(${count} ${term}) in same st`;
+  };
   s = s.replace(
     new RegExp(
-      `\\b(?:2|two|zwei)\\s*(${TERM})\\s+(?:in|into)\\s+(?:the\\s+)?(?:next|same|one|1|a|this|eine|einer|dieselbe|die\\s+gleiche|die\\s+nächste)\\s+${ST_WORD}\\b`,
+      `(?<![\\p{L}\\d])${GROUP_COUNT}\\s*(${TERM})\\s+(?:(?:in|into)\\s+(?:each|every)\\s+(?:sts?|stitch(?:es)?|sc)(?:\\s+(?:all\\s+)?around)?|in\\s+jede\\s+(?:M|Masche)(?:\\s+der\\s+Vor(?:runde|reihe))?)(?![\\p{L}])`,
       "giu",
     ),
-    (m, term: string) => (resolveStitchTerm(term, locale) === "SC" ? inc : m),
+    (m, n: string, term: string) => intoOne(m, n, term, true),
+  );
+  s = s.replace(new RegExp(`(?<![\\p{L}\\d])${GROUP_COUNT}\\s*(${TERM})\\s+${INTO_ONE}`, "giu"), (m, n: string, term: string) =>
+    intoOne(m, n, term, false),
   );
   s = s.replace(
     new RegExp(`(?<!\\d\\s*)\\b(${TERM})\\s+(?:in|into)\\s+(?:the\\s+)?next\\s+(\\d+)\\s*${ST_WORD}\\b`, "giu"),
@@ -1176,6 +1259,7 @@ function rewriteLenient(input: string, locale: NotationLocale): LenientText {
   if (rowModifier) out.rowModifier = rowModifier;
   if (rounds !== undefined) out.rounds = rounds;
   if (repFrom) out.repFrom = repFrom;
+  if (increaseAmbiguous) out.increaseAmbiguous = true;
   return out;
 }
 
@@ -1298,8 +1382,14 @@ function runParser(
  *   - row-level loops: `BLO: …`, `through back loops only, …`, `… in BLO`,
  *     `nur hinteres Maschenglied: …` (added to every stitch it applies to)
  *   - `sl-st`, en/em dashes, a trailing period, a trailing "turn"
- * Where the text allows two readings ("sc, inc x6", "rep from * 5 times") the written stitch
- * count decides, and the result carries `warnings`. Text longer than 1500 characters or
+ *   - stitch groups (format v2): `3 sc in next st`, `5 dc in same st`, `3 fM in 1 M`,
+ *     `(3 dc, ch 2, 3 dc) in next st`, `3 sc in each st` (needs `previousCount`), `hdc inc`
+ *     (two HDC into one stitch), `3 hdc-inc`, `2 hStb-Zun`; `2 sc in next st` stays an INC
+ *   - bobble family and picots with their definition in the name: `5-dc bobble`,
+ *     `bobble of 5 dc`, `popcorn (5 dc)`, `Noppe aus 5 Stb`, `ch-3 picot`, `Pikot aus 3 Lm`
+ *   - relief stitches: `FPdc`, `front post dc`, `Reliefstäbchen vorne`, `Relief-Stb h`
+ * Where the text allows two readings ("sc, inc x6", "rep from * 5 times", "3 hdc inc") the
+ * written stitch count decides, and the result carries `warnings`. Text longer than 1500 characters or
  * containing "@" only gets the strict pass.
  * The strict pass's error is reported when both fail, unless the lenient pass failed for
  * a reason only it can know (`needs-context`, `fill-mismatch`, `too-large`).
@@ -1326,6 +1416,7 @@ export function parseRowText(
     }
     const warnings: ParseRowWarning[] = [];
     const ops = settleAmbiguities(lenient.ops, target, info, rewritten.repFrom, warnings);
+    if (rewritten.increaseAmbiguous && target === undefined) warnings.push("increase-ambiguous");
     if (countWorkedStitches(ops) > MAX_ROW_STITCHES) {
       return { ok: false, code: "too-large", position: 0, limit: MAX_ROW_STITCHES };
     }

@@ -155,3 +155,100 @@ describe("relief and bobble-family terms", () => {
     }
   });
 });
+
+describe("groups and special stitches as patterns write them", () => {
+  const read = (text: string, locale: NotationLocale, previousCount?: number) =>
+    parseRowText(text, locale, previousCount === undefined ? {} : { previousCount });
+
+  it("reads several stitches into one stitch in every notation", () => {
+    const cases: Array<[string, NotationLocale, Op[]]> = [
+      ["3 sc in next st, 11 sc (14)", "en_us", [grp([st("SC", 3)]), st("SC", 11)]],
+      ["3 sc in one st", "en_us", [grp([st("SC", 3)])]],
+      ["three sc into the same stitch", "en_us", [grp([st("SC", 3)])]],
+      ["2 hdc in next st, 10 sc", "en_us", [grp([st("HDC", 2)]), st("SC", 10)]],
+      ["5 dc in same st", "en_us", [grp([st("DC", 5)])]],
+      ["4 sc, 3 sc in last ch", "en_us", [st("SC", 4), grp([st("SC", 3)])]],
+      ["(3 dc, ch 2, 3 dc) in next st", "en_us", [grp([st("DC", 3), st("CH", 2), st("DC", 3)])]],
+      ["3 dc in next st", "en_uk", [grp([st("SC", 3)])]], // UK dc = single crochet
+      ["3 fM in 1 M", "de", [grp([st("SC", 3)])]],
+      ["3 fM in eine Masche", "de", [grp([st("SC", 3)])]],
+      ["2 hStb in 1 M, 4 fM", "de", [grp([st("HDC", 2)]), st("SC", 4)]],
+      ["drei Stb in die nächste M", "de", [grp([st("DC", 3)])]],
+    ];
+    for (const [text, locale, ops] of cases) {
+      expect(read(text, locale), text).toMatchObject({ ok: true, ops });
+    }
+    expect(read("3 sc in next st, 11 sc (14)", "en_us")).toMatchObject({ stitchCountTarget: 14 });
+    // Two single crochets into one stitch stay an increase; one stitch stays one stitch.
+    expect(read("2 sc in next st", "en_us")).toEqual({ ok: true, ops: [st("INC")] });
+    expect(read("2 fM in 1 M", "de")).toEqual({ ok: true, ops: [st("INC")] });
+    expect(read("hdc in next st, 5 sc", "en_us")).toEqual({ ok: true, ops: [st("HDC"), st("SC", 5)] });
+  });
+
+  it("fills a round with groups into every stitch", () => {
+    expect(read("3 sc in each st around (18)", "en_us", 6)).toEqual({
+      ok: true,
+      ops: [rep(6, [grp([st("SC", 3)])])],
+      stitchCountTarget: 18,
+    });
+    expect(read("2 hStb in jede M", "de", 6)).toEqual({ ok: true, ops: [rep(6, [grp([st("HDC", 2)])])] });
+    expect(read("2 sc in each st", "en_us", 6)).toEqual({ ok: true, ops: [st("INC", 6)] });
+  });
+
+  it("reads taller-stitch increases as groups of two", () => {
+    const hdcInc = grp([st("HDC", 2)]);
+    expect(read("(hdc, hdc inc) x 3, 3 sc = [24]", "en_us")).toEqual({
+      ok: true,
+      ops: [rep(3, [st("HDC"), hdcInc]), st("SC", 3)],
+      stitchCountTarget: 24,
+    });
+    expect(read("(3hdc inc, 3sc) x 2 = [18]", "en_us")).toEqual({
+      ok: true,
+      ops: [rep(2, [rep(3, [hdcInc]), st("SC", 3)])],
+      stitchCountTarget: 18,
+    });
+    expect(read("3 hdc-inc", "en_us")).toEqual({ ok: true, ops: [rep(3, [hdcInc])] });
+    expect(read("2 hStb-Zun, 4 fM", "de")).toEqual({ ok: true, ops: [rep(2, [hdcInc]), st("SC", 4)] });
+    expect(read("dc inc", "en_us")).toEqual({ ok: true, ops: [grp([st("DC", 2)])] });
+    // UK "dc" is a single crochet: a "dc inc" is a plain increase.
+    expect(read("dc inc, 2 dc", "en_uk")).toEqual({ ok: true, ops: [st("INC"), st("SC", 2)] });
+  });
+
+  it("flags '3 hdc inc' without a written count, as it may mean '3 hdc, inc'", () => {
+    expect(read("3hdc inc, 3 sc", "en_us")).toMatchObject({ ok: true, warnings: ["increase-ambiguous"] });
+    expect(read("3 hdc-inc, 3 sc", "en_us")).not.toHaveProperty("warnings");
+    expect(read("3hdc inc, 3 sc (9)", "en_us")).not.toHaveProperty("warnings");
+  });
+
+  it("reads bobbles, puffs, popcorns and picots with their loop count in the name", () => {
+    const cases: Array<[string, NotationLocale, Op[]]> = [
+      ["2 sc, 5-dc bobble, 2 sc", "en_us", [st("SC", 2), st("BOBBLE"), st("SC", 2)]],
+      ["bobble of 5 dc, 3 sc", "en_us", [st("BOBBLE"), st("SC", 3)]],
+      ["3 sc, popcorn (5 dc)", "en_us", [st("SC", 3), st("POPCORN")]],
+      ["4-hdc puff, sc", "en_us", [st("PUFF"), st("SC")]],
+      ["sc, ch-3 picot, sc", "en_us", [st("SC"), st("PICOT"), st("SC")]],
+      ["2 fM, Noppe aus 5 Stb, 2 fM", "de", [st("SC", 2), st("BOBBLE"), st("SC", 2)]],
+      ["1 Büschelmasche, 1 Pikot aus 3 Lm", "de", [st("PUFF"), st("PICOT")]],
+      ["1 Popcorn, 3 fM", "de", [st("POPCORN"), st("SC", 3)]],
+    ];
+    for (const [text, locale, ops] of cases) {
+      expect(read(text, locale), text).toEqual({ ok: true, ops });
+    }
+    // "3 dc bobble" may be "3 dc, bobble": not guessed.
+    expect(read("3 dc bobble", "en_us").ok).toBe(false);
+    // Clusters, bullions and the like have no code.
+    expect(read("2 sc, cluster, 2 sc", "en_us").ok).toBe(false);
+  });
+
+  it("reads relief stitches in all spellings", () => {
+    const fp = [st("DC", 4, { modifiers: ["FP"] })];
+    const bp = [st("DC", 4, { modifiers: ["BP"] })];
+    expect(read("4 FPdc", "en_us")).toEqual({ ok: true, ops: fp });
+    expect(read("4 front post double crochet", "en_us")).toEqual({ ok: true, ops: fp });
+    expect(read("4 BPdc", "en_us")).toEqual({ ok: true, ops: bp });
+    expect(read("4 Reliefstäbchen vorne", "de")).toEqual({ ok: true, ops: fp });
+    expect(read("4 Reliefstäbchen von hinten", "de")).toEqual({ ok: true, ops: bp });
+    expect(read("4 Relief-Stb v", "de")).toEqual({ ok: true, ops: fp });
+    expect(read("4 hintere Reliefstäbchen", "de")).toEqual({ ok: true, ops: bp });
+  });
+});
