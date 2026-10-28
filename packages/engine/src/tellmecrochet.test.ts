@@ -199,6 +199,35 @@ describe("toTellmeCrochetDraft — what becomes text", () => {
     ]);
   });
 
+  it("a round around a foundation chain (oval start) becomes one instruction with the full German text", () => {
+    const end: Op = { kind: "group", ops: [st("SC", 3)] };
+    const rows = [
+      round("c", [st("CH", 7)], 0),
+      round("o", [sc(5), end, sc(4), st("INC", 1)], 14, { around: true }),
+      round("p", [sc(14)], 14),
+    ];
+    const { draft, losses } = toTellmeCrochetDraft(doc([part(rows)]));
+    const out = rowsOf(draft);
+    // The chain carries over as stitches; the oval round as text, with its mark.
+    expect(out[0]).toMatchObject({ id: "c", ops: [st("CH", 7)] });
+    expect(out[1]).toEqual({
+      id: "o",
+      type: "round",
+      ops: [],
+      stitchCountTarget: 0,
+      label: "Runde 2",
+      note: "Runde 2: um die Lm-Kette: 5 fM, (3 fM) in dieselbe M, 4 fM, 1 Zun (14)",
+    });
+    expect(out[2]).toMatchObject({ id: "p", label: "Runde 3", ops: [sc(14)], stitchCountTarget: 14 });
+    expect(losses).toEqual([
+      expect.objectContaining({ code: "row-as-text", rowId: "o", features: ["around", "group"] }),
+    ]);
+    // Without groups the round still cannot be stitches in format version 1.
+    const plain = toTellmeCrochetDraft(doc([part([rows[0]!, round("o", [sc(11)], 11, { around: true })])]));
+    expect(rowsOf(plain.draft)[1]!.note).toBe("Runde 2: um die Lm-Kette: 11 fM (11)");
+    expect(summarizeTmcLosses(plain.losses)).toContain("1 Runde mit Maschen um die Luftmaschenkette herum wird in TellmeCrochet als Text-Schritt gezeigt.");
+  });
+
   it("bobbles, puffs, popcorns, picots and relief stitches make a row text; the note and own label stay in the text", () => {
     const rows = [
       round("a", [sc(6)], 6),
