@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { StrictMode } from "react";
-import { act, cleanup, render } from "@testing-library/react";
+import { act, cleanup, render, waitFor } from "@testing-library/react";
 import type { MeshStyle, PartContent } from "@crochetbuilder/engine";
 import { PreviewClient, type BackendFactory, type PreviewModel, type PreviewRequest } from "./protocol.js";
 import { usePreviewModel, type PreviewOptions, type PreviewState } from "./usePreviewModel.js";
@@ -125,7 +125,7 @@ describe("usePreviewModel", () => {
       createClient: () => new PreviewClient(factory, { mainThread: true, maxStitches: 5000 }),
     };
     render(<Probe c={content("a")} style="tube" options={options} />);
-    await act(() => new Promise((r) => setTimeout(r, 20)));
-    expect(latest!.mainThread).toBe(true);
+    // Waits for the client instead of a fixed 20 ms, which was too short on a busy machine.
+    await waitFor(() => expect(latest!.mainThread).toBe(true));
   });
 });
