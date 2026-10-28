@@ -446,6 +446,9 @@ function buildParticles(graph: StitchGraph, finish: Finish, bendingK: number): P
     return out;
   };
 
+  // Graph rows by the document row index their nodes carry (instruction rows have no graph row).
+  const graphRowOf = new Map(graph.rows.map((r, i) => [r.rowIndex, i]));
+
   // Fabric particles of every row (no lifts, no MR, no picots), in working order.
   const fabric = graph.rows.map((r) => {
     const ids: number[] = [];
@@ -533,7 +536,7 @@ function buildParticles(graph: StitchGraph, finish: Finish, bendingK: number): P
           // Into the magic ring: the first round needs at least its own polygon's radius,
           // else the ring pulls it in and its stitches buckle out of the plane.
           const ringRadius =
-            nodes[s.node]!.code === "MR" ? w / (2 * Math.sin(Math.PI / Math.max(3, fabric[node.rowIndex]!.length))) : 0;
+            nodes[s.node]!.code === "MR" ? w / (2 * Math.sin(Math.PI / Math.max(3, fabric[graphRowOf.get(node.rowIndex)!]!.length))) : 0;
           spring(q, c, Math.max(ringRadius, Math.sqrt(hc * hc + dx * dx)), 1);
           if (!list.includes(q)) list.push(q);
         });
@@ -558,7 +561,7 @@ function buildParticles(graph: StitchGraph, finish: Finish, bendingK: number): P
     // The step from one round into the next: in the piece the yarn there only carries
     // tension, and the stitch is held by its parent and the round's seam. As a spring at the
     // procedural layout's distance it shears the seam and warps flat discs into a saddle.
-    if (A.rowIndex !== B.rowIndex && !A.lift && !B.lift && graph.rows[A.rowIndex]!.closed && graph.rows[B.rowIndex]!.closed) {
+    if (A.rowIndex !== B.rowIndex && !A.lift && !B.lift && graph.rows[graphRowOf.get(A.rowIndex)!]!.closed && graph.rows[graphRowOf.get(B.rowIndex)!]!.closed) {
       continue;
     }
     let rest = e.restLength;
