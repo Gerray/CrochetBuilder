@@ -15,8 +15,13 @@ All notable changes to this project are documented here. The format follows
   1.0.0. The builder's file import accepts both versions.
 - New members of exported unions: the op kind `group`, the stitch codes `BOBBLE`, `PUFF`,
   `POPCORN`, `PICOT`, the modifiers `FP`, `BP` and the finding codes `EMPTY_GROUP`,
-  `INVALID_MODIFIER`, `UNKNOWN_COLOR`. Exhaustive `switch`es and `Record<StitchCode, …>` maps
-  in consuming code have to cover them.
+  `INVALID_GROUP`, `INVALID_MODIFIER`, `UNKNOWN_COLOR`. Exhaustive `switch`es and
+  `Record<StitchCode, …>` maps in consuming code have to cover them.
+- A document that says `schemaVersion: 1` but uses a version-2 feature is rejected by
+  `PartContentSchema` / `BuilderExportSchema` (`usesFormatV2`). `PartContentSchema` and
+  `BuilderExportSchema` are refined schemas now (no `.shape` / `.extend`).
+- `modifierAllowed` allows `FP` / `BP` only on SC, HDC, DC, TR and DTR; `normalizeModifiers`
+  refuses FP together with BP (the same rules as validation).
 
 ### Added
 
@@ -40,8 +45,24 @@ All notable changes to this project are documented here. The format follows
   `embroidery` on a row and angle of a target part). `placementAnchor(graph, rowId, angle)`
   gives the point and outward normal of a placement on a relaxed part.
 - Validation: `INVALID_MODIFIER` (FP/BP on a stitch without a post), `UNKNOWN_COLOR` (with a
-  palette), `EMPTY_GROUP`; `validateExport` checks a whole export — part findings, duplicate
-  ids and dangling assembly references.
+  palette), `EMPTY_GROUP` (a group with nothing worked into its stitch), `INVALID_GROUP` (MR,
+  DEC, INVDEC or TOG inside a group); `validateExport` checks a whole export — part findings,
+  duplicate ids and dangling assembly references. `withCurrentVersion` stamps an export and
+  its parts with version 2.
+- **Notation:** groups render as `(3 fM) in dieselbe M` / `(3 sc) in same st` and are read
+  back; with `RenderOptions.colors` colour changes render as `[Farbe: Weiß] 6 fM` and
+  `parseRowText` reads them back (`ParseRowContext.colors` maps names to ids). The parser
+  knows `Relief v/h`, `RStbv`, `FPdc`/`BPtr`, "front post dc", and bobble/puff/popcorn/picot
+  in German, US and UK spellings. `renderedRows(content, locale, palette)` shows colour
+  changes, so do `rendered`, the PDF and the viewer.
+- **Builder:** writes version 2 everywhere (new documents, demos, exports, saves; opened
+  version-1 documents are upgraded). The export keeps every v2 field (palette, part ids,
+  finish, stuffing, assembly). Bobble, puff, popcorn and picot are in the stitch picker,
+  relief chips (Relief v/h) show on post stitches, and groups are edited as a card "in
+  dieselbe Masche" (like a repeat; "in 1 M" puts a stitch into a group, "Auflösen" takes it
+  apart). The 3D preview closes a part as its finish says and relaxes again when finish or
+  stuffing change. Importing duplicate row ids renames them and moves the placements that
+  point at them; a duplicated part gets no part id of its own.
 
 ## [0.2.0] — not released separately
 

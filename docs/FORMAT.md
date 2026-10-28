@@ -183,6 +183,16 @@ Version 2 adds colours, stitch groups, four stitch codes, two modifiers, a part'
 stuffing, part ids and an assembly. Nothing was removed or renamed. Software that only knows
 version 1 rejects version-2 documents (the objects are strict); it needs engine 1.0.0.
 
+Writers write `schemaVersion: 2` on the export and on every part. A document that says
+`schemaVersion: 1` but uses anything of version 2 is **rejected by the schema**, so a
+version-1 label always means the document can be read by version-1 software:
+
+- a part with `finish`, `stuffing`, a row or stitch `color`, a stitch group, one of the codes
+  `BOBBLE`, `PUFF`, `POPCORN`, `PICOT` or one of the modifiers `FP`, `BP`;
+- an export with `overview.colors`, `assembly`, a part `id`, or a part that says version 2.
+
+A version-2 export may contain parts that say version 1.
+
 ### Colours
 
 The palette lists the yarn colours of the whole pattern in `overview.colors`. Rows and
@@ -212,12 +222,24 @@ resolves colours (`colorsOfStitches`, `nodeColorIndices`).
 
 Round 1 is white (the first colour), round 2 pink, round 3 alternates white and pink.
 
+In the rendered text (`rendered`, PDF, viewer) a colour change is written in front of the
+stitch it starts at, with the palette name: `[Farbe: Weiß] 6 fM` (US `[Color: White]`, UK
+`[Colour: White]`). The row notation reads these marks back.
+
 ### Stitch groups
 
 A group works all its stitches into **one** stitch of the previous row: "3 sc in the next
-stitch", a half-double increase, a shell, a V-stitch, a corner. It consumes one stitch (none
-if it is empty) and produces the sum of its stitches. It may contain stitches and repeats,
-not another group.
+stitch", a half-double increase, a shell, a V-stitch, a corner. It consumes one stitch and
+produces the sum of its stitches. It may contain stitches and repeats, not another group.
+
+- Chains and picots inside a group are not worked into the stitch; a group that contains
+  nothing else (or nothing at all) consumes no stitch and is reported as `EMPTY_GROUP`
+  (warning). A row that consists only of such a group of chains is a foundation chain.
+- An `INC` inside a group adds its two stitches to the group's stitch: `(INC, SC)` in one
+  stitch produces 3 and consumes 1.
+- A magic ring, `DEC`, `INVDEC` or a stitch with `TOG` cannot be worked into a single
+  stitch; inside a group they are a validation error (`INVALID_GROUP`).
+- In the row notation a group is written `(3 fM) in dieselbe M` / `(3 sc) in same st`.
 
 ```json
 { "kind": "repeat", "times": 6, "ops": [{ "kind": "group", "ops": [{ "kind": "stitch", "code": "SC", "count": 3 }] }] }
@@ -251,9 +273,22 @@ and not stuffed. A flat-finished part is not stuffed unless it says so.
 - `row`: the placement sits between this row of the target and the next one.
 - `angle`: degrees around the target's rounds. `0` is the **front**, opposite the start of the
   round (where the jogs of a spiral line up at the back); positive angles turn to the right
-  **as seen from the front**, so `90` is on the right of the picture and `-90` on the left. On a
-  flat piece the angle runs along the row instead, from `-180` (left end) to `180` (right end).
+  **as seen from the front**, so `90` is on the right of the picture and `-90` on the left.
 - `spacing` is in stitches, `size` in millimetres.
+
+The angle refers to the target part in its **own pose**, the pose the engine relaxes every
+part into:
+
+- Rounds: **up is the direction the rounds grow**, the magic ring (the first round) is at the
+  bottom. "Seen from the front" means looking at the front (angle 0) with the rounds growing
+  upwards. This holds for every part, also for one worked from the top down (a hat, a head
+  started at the crown): its angles are still counted with its first round at the bottom. Turned
+  the right way up, such a part has right and left swapped — that is up to the assembly in 3D,
+  which places the parts; the placement itself never depends on how a part is put on.
+- Flat pieces (rows): the piece lies with its rows running left to right and growing upwards,
+  the front (the side the surface normal points to) facing the viewer. The angle runs along
+  the row: `-180` is the left end, `0` the middle, `180` the right end; the normal is the
+  front's.
 
 ```json
 "assembly": [
