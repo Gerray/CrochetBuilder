@@ -159,7 +159,9 @@ export type TmcOriginHint = z.infer<typeof TmcOriginHintSchema>;
 export type TmcLossCode =
   /** A row with stitch groups, bobble-family stitches, picots or relief stitches became text. */
   | "row-as-text"
-  /** A colour change at the start of a row (or the starting colour) became an instruction. */
+  /** The colour a part starts with became an instruction (palettes of two or more colours). */
+  | "color-start"
+  /** A colour change at the start of a row became an instruction before it. */
   | "color-change"
   /** A colour change inside a row became a note on the row. */
   | "color-in-row"
@@ -196,8 +198,10 @@ export interface TmcLoss {
   rowId?: string;
   /** Placement id (`assembly`). */
   placementId?: string;
-  /** Row type (`row-as-text`). */
+  /** Row type (`row-as-text`, `color-start`, `color-change`, `color-in-row`). */
   rowType?: "row" | "round";
+  /** Name of the extra part that holds the assembly (`assembly`). */
+  partName?: string;
   /** What made the row text (`row-as-text`). */
   features?: TmcTextFeature[];
   message: string;
@@ -391,15 +395,28 @@ export function summarizeTmcLosses(losses: readonly TmcLoss[]): string[] {
     const with_ = words.length > 0 ? ` mit ${joinWords(words)}` : "";
     out.push(`${n} ${noun}${with_} ${n === 1 ? "wird" : "werden"} in TellmeCrochet als Text-Schritt gezeigt.`);
   }
-  if (of("color-change").length > 0) out.push("Farbwechsel stehen als eigener Schritt vor der Runde.");
-  if (of("color-in-row").length > 0) out.push("Farbwechsel mitten in einer Runde stehen als Notiz an der Runde.");
+  // "Runde", "Reihe" or both, after the rows the losses are about.
+  const rowWord = (list: readonly TmcLoss[], round: string, row: string) => {
+    const types = new Set(list.map((l) => l.rowType ?? "round"));
+    return types.size > 1 ? `${round} bzw. ${row}` : types.has("row") ? row : round;
+  };
+  if (of("color-start").length > 0) out.push("Die Anfangsfarbe jedes Teils steht als eigener Schritt am Anfang.");
+  const changes = of("color-change");
+  if (changes.length > 0) out.push(`Farbwechsel stehen als eigener Schritt vor der ${rowWord(changes, "Runde", "Reihe")}.`);
+  const inside = of("color-in-row");
+  if (inside.length > 0) {
+    out.push(
+      `Farbwechsel mitten in einer ${rowWord(inside, "Runde", "Reihe")} stehen als Notiz an der ${rowWord(inside, "Runde", "Reihe")}.`,
+    );
+  }
   const finish = of("finish").length > 0;
   const stuffing = of("stuffing").length > 0;
   if (finish || stuffing) {
     const what = finish && stuffing ? "Füllung und Abschluss stehen" : finish ? "Der Abschluss steht" : "Die Füllung steht";
     out.push(`${what} als Schritt am Ende des Teils.`);
   }
-  if (of("assembly").length > 0) out.push(`Die Montage wird zum Teil „${TMC_ASSEMBLY_PART_NAME}“.`);
+  const assembly = of("assembly");
+  if (assembly.length > 0) out.push(`Die Montage wird zum Teil „${assembly[0]!.partName ?? TMC_ASSEMBLY_PART_NAME}“.`);
   const notes = of("notes").length > 0;
   const gauge = of("gauge").length > 0;
   if (notes || gauge) {
@@ -461,31 +478,53 @@ function toTmcOps(ops: readonly Op[]): TmcOp[] {
   });
 }
 
-/** Colour ids of the stitches in `ops`, in working order (a repeat's body once). */
-function stitchColors(ops: readonly Op[], out: string[] = []): string[] {
-  for (const op of ops) {
-    if (op.kind === "stitch") {
-      if (op.color !== undefined) out.push(op.color);
-    } else {
-      stitchColors(op.ops, out);
-    }
-  }
-  return out;
+/**
+ * `ops` without the colour marks that only repeat the working colour (`current`), in working
+ * order (a repeat's body once). Marks with ids outside the palette (`known`) stay as they are.
+ * Returns the ops, the working colour after them and how many real changes they hold.
+ */
+function cleanColors(
+  ops: readonly Op[],
+  current: string | undefined,
+  known: ReadonlyMap<string, string>,
+): { ops: Op[]; current: string | undefined; changes: number } {
+  let cur = current;
+  let changes = 0;
+  const walk = (list: readonly Op[]): Op[] =>
+    list.map((op): Op => {
+      if (op.kind !== "stitch") return { ...op, ops: walk(op.ops) } as Op;
+      if (op.color === undefined || !known.has(op.color)) return op;
+      if (op.color === cur) {
+        const { color: _same, ...rest } = op;
+        return rest;
+      }
+      cur = op.color;
+      changes++;
+      return op;
+    });
+  const out = walk(ops);
+  return { ops: out, current: cur, changes };
 }
 
-/** Ids of one draft part, kept unique: a taken id gets "-2", "-3", … */
+/**
+ * Ids of one draft part. The source rows' ids are reserved up front, so they keep their ids;
+ * added steps and repeated source ids get a free id ("-2", "-3", … when taken).
+ */
 class IdPool {
-  private readonly used = new Set<string>();
-  take(id: string): { id: string; changed: boolean } {
+  private readonly used: Set<string>;
+  constructor(reserved: Iterable<string> = []) {
+    this.used = new Set(reserved);
+  }
+  fresh(id: string): string {
     if (!this.used.has(id)) {
       this.used.add(id);
-      return { id, changed: false };
+      return id;
     }
     for (let n = 2; ; n++) {
       const next = `${id}-${n}`;
       if (!this.used.has(next)) {
         this.used.add(next);
-        return { id: next, changed: true };
+        return next;
       }
     }
   }
@@ -557,23 +596,30 @@ export function toTellmeCrochetDraft(doc: BuilderExport, opts: TmcDraftOptions =
   const known = new Map(palette.map((c) => [c.id, c.name.trim() || c.id]));
   const colorName = (id: string) => (known.get(id) ?? id).replace(/[[\]]/g, "");
 
+  const assemblyName = opts.assemblyPartName?.trim() || TMC_ASSEMBLY_PART_NAME;
+
   const parts: TmcDraftPart[] = doc.parts.map((part, partIndex) => {
-    const ids = new IdPool();
-    const rows: TmcRow[] = [];
     const sourceRows = part.content.rows;
+    // Real rows keep their ids: they are reserved before any step id is made.
+    const ids = new IdPool(sourceRows.map((r) => r.id));
+    const emitted = new Set<string>();
+    const rows: TmcRow[] = [];
     const ordinals = rowOrdinals(sourceRows);
     const partType = sourceRows.find((r) => r.ops.length > 0)?.type ?? sourceRows[0]?.type ?? "round";
-    const take = (id: string, sourceRowId?: string) => {
-      const got = ids.take(id);
-      if (got.changed && sourceRowId !== undefined) {
-        losses.push({
-          code: "row-id-changed",
-          partIndex,
-          rowId: sourceRowId,
-          message: `Die Zeilen-ID „${sourceRowId}“ kommt mehrfach vor und heißt jetzt „${got.id}“.`,
-        });
+    const take = (id: string) => ids.fresh(id);
+    const takeSource = (sourceId: string) => {
+      if (!emitted.has(sourceId)) {
+        emitted.add(sourceId);
+        return sourceId;
       }
-      return got.id;
+      const id = ids.fresh(sourceId);
+      losses.push({
+        code: "row-id-changed",
+        partIndex,
+        rowId: sourceId,
+        message: `Die Zeilen-ID „${sourceId}“ kommt mehrfach vor und heißt jetzt „${id}“.`,
+      });
+      return id;
     };
 
     if (partIndex === 0) {
@@ -597,37 +643,40 @@ export function toTellmeCrochetDraft(doc: BuilderExport, opts: TmcDraftOptions =
       const where = row.type === "round" ? "Runde" : "Reihe";
       const label = rowLabel(row, ordinals[i] ?? 0, "de");
 
-      // Colour at the start of the row: the row's colour, or the first stitch's.
+      // Colour at the start of the row: the first stitch's colour, else the row's.
       const first = row.ops[0];
-      const firstColor = first?.kind === "stitch" ? first.color : undefined;
-      const startRaw = firstColor ?? row.color;
-      const start = startRaw !== undefined && known.has(startRaw) ? startRaw : undefined;
-      const colorChange = (text: string) => {
+      const isKnown = (id: string | undefined): id is string => id !== undefined && known.has(id);
+      const firstColor = first?.kind === "stitch" && isKnown(first.color) ? first.color : undefined;
+      const start = firstColor ?? (isKnown(row.color) ? row.color : undefined);
+      const colorStep = (code: "color-start" | "color-change", text: string) => {
         rows.push(instruction(take(`${row.id}-farbe`), row.type, text));
-        losses.push({ code: "color-change", partIndex, rowId: row.id, message: `${label}: „${text}“ steht als eigener Schritt davor.` });
+        losses.push({ code, partIndex, rowId: row.id, rowType: row.type, message: `${label}: „${text}“ steht als eigener Schritt davor.` });
       };
       if (!started && (row.ops.length > 0 || start !== undefined)) {
         started = true;
         const c = start ?? current;
-        if (palette.length >= 2 && c !== undefined) colorChange(`Farbe: ${colorName(c)}`);
+        if (palette.length >= 2 && c !== undefined) colorStep("color-start", `Farbe: ${colorName(c)}`);
         current = c;
       } else if (start !== undefined && start !== current) {
-        colorChange(`Farbwechsel: ${colorName(start)}`);
+        colorStep("color-change", `Farbwechsel: ${colorName(start)}`);
         current = start;
       }
-      // Changes inside the row.
-      const inside = stitchColors(row.ops)
-        .slice(firstColor !== undefined ? 1 : 0)
-        .filter((c) => known.has(c));
-      if (inside.length > 0) current = inside[inside.length - 1];
-      // The row's own colour is said by the instruction before it.
-      const shown: Row = row.color !== undefined && known.has(row.color) ? { ...row, color: undefined } : row;
+      // The row's own colour is said by the step before it; marks that repeat the working
+      // colour (also the start colour on the first stitch) are left out.
+      const cleaned = cleanColors(row.ops, current, known);
+      current = cleaned.current;
+      const shown: Row = { ...row, ops: cleaned.ops };
+      if (isKnown(row.color)) delete shown.color;
 
       if (row.ops.length === 0) {
         if (!instructionText(row)) return; // nothing but (at most) a colour change
-        const out: TmcRow = { id: take(row.id, row.id), type: row.type, ops: [], stitchCountTarget: 0 };
+        const out: TmcRow = { id: takeSource(row.id), type: row.type, ops: [], stitchCountTarget: 0 };
         if (row.label !== undefined) out.label = row.label;
         if (row.note !== undefined) out.note = row.note;
+        // TellmeCrochet shows the note of a free instruction, else its label: keep both.
+        const ownLabel = row.label?.trim();
+        const ownNote = row.note?.trim();
+        if (ownLabel && ownNote) out.note = `${ownLabel}: ${ownNote}`;
         rows.push(out);
         return;
       }
@@ -636,7 +685,7 @@ export function toTellmeCrochetDraft(doc: BuilderExport, opts: TmcDraftOptions =
       const features = textFeatures(row.ops);
       if (features.size > 0) {
         const line = renderedRowLine(shown, ordinals[i] ?? 0, "de", palette, target);
-        rows.push({ id: take(row.id, row.id), type: row.type, ops: [], stitchCountTarget: 0, label, note: line });
+        rows.push({ id: takeSource(row.id), type: row.type, ops: [], stitchCountTarget: 0, label, note: line });
         shifted = true;
         const list = FEATURE_ORDER.filter((f) => features.has(f));
         losses.push({
@@ -650,16 +699,22 @@ export function toTellmeCrochetDraft(doc: BuilderExport, opts: TmcDraftOptions =
         return;
       }
 
-      const out: TmcRow = { id: take(row.id, row.id), type: row.type, ops: toTmcOps(row.ops), stitchCountTarget: target };
+      const out: TmcRow = { id: takeSource(row.id), type: row.type, ops: toTmcOps(row.ops), stitchCountTarget: target };
       // TellmeCrochet numbers only rows with stitches: after a row that became text, the
       // following rows keep their numbers as labels.
       if (shifted && !row.label?.trim()) out.label = label;
       else if (row.label !== undefined) out.label = row.label;
       if (row.note !== undefined) out.note = row.note;
-      if (inside.length > 0) {
+      if (cleaned.changes > 0) {
         const colourNote = `Farbwechsel in dieser ${where}: ${renderRow(shown, "de", { colors: palette })}`;
         out.note = row.note?.trim() ? `${row.note} – ${colourNote}` : colourNote;
-        losses.push({ code: "color-in-row", partIndex, rowId: row.id, message: `${label}: der Farbwechsel mitten in der ${where} steht als Notiz da.` });
+        losses.push({
+          code: "color-in-row",
+          partIndex,
+          rowId: row.id,
+          rowType: row.type,
+          message: `${label}: der Farbwechsel mitten in der ${where} steht als Notiz da.`,
+        });
       }
       rows.push(out);
     });
@@ -686,10 +741,15 @@ export function toTellmeCrochetDraft(doc: BuilderExport, opts: TmcDraftOptions =
   if (placements.length > 0) {
     const ids = new IdPool();
     const rows = placements.map((pl) => {
-      losses.push({ code: "assembly", placementId: pl.id, message: "Die Platzierung steht im Teil „Zusammensetzen“." });
-      return instruction(ids.take(`montage-${pl.id}`).id, "round", describePlacement(pl, doc.parts));
+      losses.push({
+        code: "assembly",
+        placementId: pl.id,
+        partName: assemblyName,
+        message: `Die Platzierung steht im Teil „${assemblyName}“.`,
+      });
+      return instruction(ids.fresh(`montage-${pl.id}`), "round", describePlacement(pl, doc.parts));
     });
-    parts.push(finishPart(opts.assemblyPartName?.trim() || TMC_ASSEMBLY_PART_NAME, 1, rows));
+    parts.push(finishPart(assemblyName, 1, rows));
   }
   if (parts.length === 0) {
     // A builder export always has a part; a draft needs one.

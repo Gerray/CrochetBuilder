@@ -162,6 +162,18 @@ describe("toTellmeCrochetDraft — structure that carries over", () => {
     expect(rowsOf(draft).map((r) => r.id)).toEqual(["a", "b", "d"]);
     expect(rowsOf(draft)[1]).toEqual({ id: "b", type: "round", ops: [], stitchCountTarget: 0, note: "Augen einsetzen" });
   });
+
+  it("a free instruction with label and note shows both (TellmeCrochet shows note, else label)", () => {
+    const rows: Row[] = [
+      round("a", [sc(6)], 6),
+      round("b", [], 0, { label: " Augen ", note: " zwischen Runde 8 und 9 einsetzen " }),
+      round("c", [], 0, { label: "Füllen" }),
+    ];
+    const shown = (r: TmcRow) => (r.note?.trim() || r.label?.trim() || "");
+    const out = rowsOf(toTellmeCrochetDraft(doc([part(rows)])).draft);
+    expect(out.map(shown)).toEqual(["", "Augen: zwischen Runde 8 und 9 einsetzen", "Füllen"]);
+    expect(out[1]!.label).toBe(" Augen ");
+  });
 });
 
 describe("toTellmeCrochetDraft — what becomes text", () => {
@@ -197,7 +209,16 @@ describe("toTellmeCrochetDraft — what becomes text", () => {
     ];
     const { draft, losses } = toTellmeCrochetDraft(doc([part(rows)]));
     expect(rowsOf(draft)[1]!.note).toBe(`Zierrunde: ${renderRow(rows[1]!, "de")} (6) – locker`);
+    expect(rowsOf(draft)[1]!.note).toBe("Zierrunde: 1 Noppe, 1 Büschel, 1 Popcorn, 1 Pikot, 3 Stb (Relief v) (6) – locker");
     expect(losses[0]!.features).toEqual(["bobble", "puff", "popcorn", "picot", "relief"]);
+  });
+
+  it("rows after a text row keep their numbers; own labels stay; other parts are not shifted", () => {
+    const bobbles = round("b", [st("BOBBLE", 6)], 6);
+    const rows = [round("a", [st("MR", 1), sc(6)], 6), bobbles, round("c", [sc(6)], 6), round("d", [sc(6)], 6, { label: "Rnd 4–5" }), round("e", [sc(6)], 6)];
+    const { draft } = toTellmeCrochetDraft(doc([part(rows), part(SPHERE, { name: "Zweite" })]));
+    expect(rowsOf(draft).map((r) => r.label)).toEqual([undefined, "Runde 2", "Runde 3", "Rnd 4–5", "Runde 5"]);
+    expect(rowsOf(draft, 1).map((r) => r.label)).toEqual([undefined, undefined, undefined, undefined]);
   });
 
   it("colours: first colour, changes at the start as instructions, changes inside a row as a note", () => {
@@ -221,8 +242,48 @@ describe("toTellmeCrochetDraft — what becomes text", () => {
     expect(out[6]!.note).toBe("Farbwechsel: Rot");
     expect(out[7]!.ops).toEqual([sc(12)]);
     for (const row of out) expect(row).not.toHaveProperty("color");
-    expect(losses.map((l) => l.code)).toEqual(["color-change", "color-change", "color-in-row", "color-change", "palette"]);
+    expect(losses.map((l) => l.code)).toEqual(["color-start", "color-change", "color-in-row", "color-change", "palette"]);
     expect(draft.materials).toEqual([{ kind: "yarn", label: "Garn", colors: ["Weiß", "Rot"] }]);
+    expect(summarizeTmcLosses(losses).slice(0, 3)).toEqual([
+      "Die Anfangsfarbe jedes Teils steht als eigener Schritt am Anfang.",
+      "Farbwechsel stehen als eigener Schritt vor der Runde.",
+      "Farbwechsel mitten in einer Runde stehen als Notiz an der Runde.",
+    ]);
+  });
+
+  it("colour marks that repeat the working colour are left out, at the start and inside a row", () => {
+    const palette: PaletteColor[] = [
+      { id: "w", name: "Weiß" },
+      { id: "r", name: "Rot" },
+    ];
+    const rows = [
+      round("a", [st("SC", 6, { color: "w" })], 6), // the start colour: only "Farbe: Weiß"
+      round("b", [st("SC", 3, { color: "w" }), st("SC", 3, { color: "r" }), st("SC", 6, { color: "r" })], 12),
+      round("c", [st("SC", 6, { color: "r" }), st("BOBBLE", 6, { color: "r" })], 12), // all red already
+      round("d", [st("SC", 6), st("BOBBLE", 6, { color: "w" })], 12),
+    ];
+    const { draft, losses } = toTellmeCrochetDraft(doc([part(rows)], { overview: { colors: palette } }));
+    expect(rowsOf(draft).map((r) => r.note)).toEqual([
+      "Farbe: Weiß",
+      undefined,
+      "Farbwechsel in dieser Runde: 3 fM, [Farbe: Rot] 3 fM, 6 fM",
+      "Runde 3: 6 fM, 6 Noppe (12)",
+      "Runde 4: 6 fM, [Farbe: Weiß] 6 Noppe (12)",
+    ]);
+    expect(losses.filter((l) => l.code === "color-in-row").map((l) => l.rowId)).toEqual(["b"]);
+  });
+
+  it("rows worked in rows say „Reihe“ in the notice", () => {
+    const palette: PaletteColor[] = [
+      { id: "w", name: "Weiß" },
+      { id: "r", name: "Rot" },
+    ];
+    const flat = (id: string, ops: Op[], extra: Partial<Row> = {}): Row => ({ id, type: "row", ops, stitchCountTarget: 6, ...extra });
+    const rows = [flat("a", [st("CH", 7)]), flat("b", [sc(6)], { color: "r" }), flat("c", [sc(3), st("SC", 3, { color: "w" })])];
+    const { draft, losses } = toTellmeCrochetDraft(doc([part(rows)], { overview: { colors: palette } }));
+    expect(rowsOf(draft).find((r) => r.id === "c")!.note).toBe("Farbwechsel in dieser Reihe: 3 fM, [Farbe: Weiß] 3 fM");
+    expect(summarizeTmcLosses(losses)).toContain("Farbwechsel stehen als eigener Schritt vor der Reihe.");
+    expect(summarizeTmcLosses(losses)).toContain("Farbwechsel mitten in einer Reihe stehen als Notiz an der Reihe.");
   });
 
   it("a single palette colour and unknown colour ids give no colour steps", () => {
@@ -270,6 +331,16 @@ describe("toTellmeCrochetDraft — what becomes text", () => {
     ]);
     expect(last.content.rows.map((r) => r.id)).toEqual(["montage-p1", "montage-p2"]);
     expect(losses.filter((l) => l.code === "assembly").map((l) => l.placementId)).toEqual(["p1", "p2"]);
+    expect(losses.find((l) => l.code === "assembly")!.message).toBe("Die Platzierung steht im Teil „Zusammensetzen“.");
+  });
+
+  it("a renamed assembly part is named so in the draft, the losses and the notice", () => {
+    const head = part(SPHERE, { id: "kopf", name: "Kopf" });
+    const assembly: Placement[] = [{ id: "p1", kind: "eyes", target: "kopf", row: "r2", angle: 0 }];
+    const { draft, losses } = toTellmeCrochetDraft(doc([head], { assembly }), { assemblyPartName: "Montage" });
+    expect(draft.parts.at(-1)!.name).toBe("Montage");
+    expect(losses.find((l) => l.code === "assembly")!.message).toBe("Die Platzierung steht im Teil „Montage“.");
+    expect(summarizeTmcLosses(losses)).toContain("Die Montage wird zum Teil „Montage“.");
   });
 });
 
@@ -300,7 +371,7 @@ describe("toTellmeCrochetDraft — names, materials, ids", () => {
       { kind: "hook", label: "3 mm", amount: "1" },
     ]);
     // Two named colours: the part says which colour it starts with.
-    expect(losses.map((l) => l.code)).toEqual(["color-change", "material-dropped", "palette"]);
+    expect(losses.map((l) => l.code)).toEqual(["color-start", "material-dropped", "palette"]);
   });
 
   it("with several yarns the palette becomes its own yarn line", () => {
@@ -316,12 +387,37 @@ describe("toTellmeCrochetDraft — names, materials, ids", () => {
     expect(draft.materials).toEqual([...materials, { kind: "yarn", label: "Garnfarben", colors: ["Grün"] }]);
   });
 
-  it("row ids stay unique per part", () => {
+  it("row ids stay unique per part; real rows keep theirs, a repeated id gets a free one", () => {
     const rows = [round("a", [sc(6)], 6), round("a", [sc(6)], 6), round("a-2", [sc(6)], 6)];
     const { draft, losses } = toTellmeCrochetDraft(doc([part(rows), part(rows)]));
     for (const p of draft.parts) expect(new Set(p.content.rows.map((r) => r.id)).size).toBe(p.content.rows.length);
-    expect(rowsOf(draft).map((r) => r.id)).toEqual(["a", "a-2", "a-2-2"]);
-    expect(losses.filter((l) => l.code === "row-id-changed")).toHaveLength(4);
+    expect(rowsOf(draft).map((r) => r.id)).toEqual(["a", "a-3", "a-2"]);
+    expect(losses.filter((l) => l.code === "row-id-changed")).toHaveLength(2);
+  });
+
+  it("added steps never take the id of a real row", () => {
+    const palette: PaletteColor[] = [
+      { id: "w", name: "Weiß" },
+      { id: "r", name: "Rot" },
+    ];
+    const rows = [
+      round("tmc-hinweise", [], 0, { note: "eigener Hinweis" }),
+      round("a", [sc(6)], 6),
+      round("a-farbe", [sc(6)], 6),
+      round("tmc-fuellung", [sc(6)], 6),
+    ];
+    const { draft, losses } = toTellmeCrochetDraft(doc([part(rows, { stuffing: "firm" })], { overview: { colors: palette, notes: "x" } }));
+    const out = rowsOf(draft);
+    expect(out.map((r) => [r.id, r.note])).toEqual([
+      ["tmc-hinweise-2", "Hinweise: x"],
+      ["tmc-hinweise", "eigener Hinweis"],
+      ["a-farbe-2", "Farbe: Weiß"],
+      ["a", undefined],
+      ["a-farbe", undefined],
+      ["tmc-fuellung", undefined],
+      ["tmc-fuellung-2", "Füllung: fest mit Füllwatte füllen."],
+    ]);
+    expect(losses.some((l) => l.code === "row-id-changed")).toBe(false);
   });
 
   it("an empty title is left out", () => {
@@ -568,16 +664,54 @@ describe("toTellmeCrochetDraft — property (seeded)", () => {
         expect(new Set(out.content.rows.map((r) => r.id)).size, ctx).toBe(out.content.rows.length);
         expect(out.stitchCheck.map((c) => c.rowId), ctx).toEqual(out.content.rows.map((r) => r.id));
         const texts = out.content.rows.map((r) => `${r.label ?? ""}\u0000${r.note ?? ""}`).join("\u0000");
+        // What TellmeCrochet shows of a free instruction: its note, else its label.
+        const shown = (r: TmcRow) => r.note?.trim() || r.label?.trim() || "";
+        const withoutMarks = (s: string) => s.replace(/\[Farbe: [^\]]*\] /g, "");
 
         let stitchRows = 0;
         for (const row of p.content.rows) {
           if (row.label?.trim()) expect(texts.includes(row.label.trim()), `${ctx} label of ${row.id}`).toBe(true);
           if (row.note?.trim()) expect(texts.includes(row.note.trim()), `${ctx} note of ${row.id}`).toBe(true);
-          if (row.ops.length === 0) continue;
+          if (row.ops.length === 0) {
+            // A free instruction shows all its text in TellmeCrochet.
+            if (!row.label?.trim() && !row.note?.trim()) continue;
+            const visible = out.content.rows.filter((r) => r.ops.length === 0).map(shown).join("\u0000");
+            for (const t of [row.label?.trim(), row.note?.trim()]) {
+              if (t) expect(visible.includes(t), `${ctx} shown text of ${row.id}`).toBe(true);
+            }
+            continue;
+          }
           stitchRows++;
           if (needsText(row.ops)) {
-            const ops = renderRow({ ...row, color: undefined }, "de", { colors: palette });
-            expect(texts.includes(ops), `${ctx} text of ${row.id}`).toBe(true);
+            // The stitches as text (colour marks aside: those that repeat the colour drop out).
+            const ops = renderRow({ ...row, color: undefined }, "de");
+            expect(withoutMarks(texts).includes(ops), `${ctx} text of ${row.id}`).toBe(true);
+          }
+        }
+
+        // Colour changes survive: with two or more colours every colour a part uses is named
+        // in it (as its first colour, a change step, a note or a mark in a text row).
+        if (palette.length >= 2) {
+          const ids = new Set(palette.map((c) => c.id));
+          const used = new Set<string>();
+          const collect = (ops: readonly Op[]) => {
+            for (const op of ops) {
+              if (op.kind === "stitch") {
+                if (op.color && ids.has(op.color)) used.add(op.color);
+              } else collect(op.ops);
+            }
+          };
+          for (const row of p.content.rows) {
+            // A row colour that the first stitch's own colour replaces at once is never worked.
+            const first = row.ops[0];
+            const overridden = first?.kind === "stitch" && first.color !== undefined && ids.has(first.color);
+            if (row.color && ids.has(row.color) && !overridden) used.add(row.color);
+            collect(row.ops);
+          }
+          for (const id of used) {
+            const c = palette.find((x) => x.id === id)!;
+            const name = (c.name.trim() || c.id).replace(/[[\]]/g, "");
+            expect(texts.includes(name), `${ctx} colour ${id} in part ${i}`).toBe(true);
           }
         }
         // Every row with stitches is still there: structured or as its text.
