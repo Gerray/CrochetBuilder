@@ -2,13 +2,17 @@ import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import type { ExportActions } from "./components/ExportMenu.js";
 import { focusLater } from "./components/focus.js";
 import { PART_PANEL_ID, PartsBar, partTabId } from "./components/PartsBar.js";
+import { PasteDialog, type PasteImport } from "./components/PasteDialog.js";
 import { commitPendingEdits } from "./components/pendingEdits.js";
 import { PreviewPane } from "./components/PreviewPane.js";
 import { RowList, type FocusRequest } from "./components/RowList.js";
 import { SplitPane } from "./components/SplitPane.js";
 import { StorageNotice } from "./components/StorageNotice.js";
 import { TopBar } from "./components/TopBar.js";
+import { isDocumentEmpty } from "./export/prepare.js";
 import { useFragmentImport } from "./export/useFragmentImport.js";
+import { looksLikePattern } from "./paste/detect.js";
+import type { PastePreviewOptions } from "./paste/usePastePreview.js";
 import { addPart, addRow, duplicatePart, duplicateRow, loadDemo, newDocument } from "./state/actions.js";
 import { emptyDocument, type BuilderDoc } from "./state/document.js";
 import { canRedo, canUndo, editorReducer, initEditorState, selectedPart } from "./state/editor.js";
@@ -39,10 +43,23 @@ function overlayOpen(): boolean {
 export interface AppProps {
   /** Export side effects (tests replace PDF, download and clipboard). */
   exportActions?: Partial<ExportActions>;
+  /** "Anleitung einfügen" preview options (tests: no debounce). */
+  pastePreviewOptions?: PastePreviewOptions;
+}
+
+/** The notice after a pasted pattern was imported (German). */
+export function pasteNotice({ mode, parts, unread }: Pick<PasteImport, "mode" | "parts" | "unread">): string {
+  const what = `${parts} ${parts === 1 ? "Teil" : "Teile"}`;
+  const head = mode === "replace" ? `Anleitung übernommen: ${what}.` : `${what} hinzugefügt.`;
+  const rest =
+    unread === 0
+      ? ""
+      : ` ${unread === 1 ? "1 Stelle blieb" : `${unread} Stellen blieben`} Text – markiert mit „Nicht gelesen“ oder „Nicht unterstützt“, bitte prüfen.`;
+  return `${head}${rest} „Rückgängig“ holt den vorherigen Stand zurück.`;
 }
 
 /** The builder: top bar, row editor (left) and preview (right). */
-export function App({ exportActions }: AppProps = {}) {
+export function App({ exportActions, pastePreviewOptions }: AppProps = {}) {
   const [state, dispatch] = useReducer(editorReducer, undefined, () => initEditorState(emptyDocument()));
   const persistence = usePersistence(state, dispatch);
   const [selectedRowId, setSelectedRowId] = useState<string | null>(null);
@@ -51,6 +68,11 @@ export function App({ exportActions }: AppProps = {}) {
   const [linkError, setLinkError] = useState<string | null>(null);
   const [linkNotice, setLinkNotice] = useState<string | null>(null);
   const [nameFocusToken, setNameFocusToken] = useState(0);
+  // "Anleitung einfügen": the open dialog's starting text, and the text of the last dialog
+  // closed without importing (offered again next time).
+  const [paste, setPaste] = useState<{ text: string } | null>(null);
+  const [pasteDraft, setPasteDraft] = useState("");
+  const [importNotice, setImportNotice] = useState<string | null>(null);
   // The deleted part the notice offers to bring back, with the document before the deletion
   // (the notice shows while that deletion is the latest undo step).
   const [deleted, setDeleted] = useState<{ name: string; index: number; before: BuilderDoc } | null>(null);
@@ -164,9 +186,48 @@ export function App({ exportActions }: AppProps = {}) {
     [rows, focusRow],
   );
 
+  const openPaste = useCallback(
+    (text?: string) => {
+      if (!commitPendingEdits()) return;
+      setPaste({ text: text ?? pasteDraft });
+    },
+    [pasteDraft],
+  );
+
+  const importPasted = useCallback(
+    (result: PasteImport) => {
+      const first = result.mode === "replace" ? 0 : state.doc.parts.length;
+      dispatch(result.action);
+      setSelectedRowId(null);
+      setPaste(null);
+      setPasteDraft("");
+      setLinkNotice(null);
+      setImportNotice(pasteNotice(result));
+      // The first imported part is shown; its tab takes the focus, the findings come into view.
+      focusLater(partTabId(first));
+      setTimeout(() => document.getElementById("findings-title")?.scrollIntoView?.({ block: "nearest" }), 0);
+    },
+    [state.doc.parts.length],
+  );
+
+  // Pasting a pattern outside a text field opens "Anleitung einfügen" with it.
+  useEffect(() => {
+    const onPaste = (e: ClipboardEvent) => {
+      if (paste !== null || isEditable(e.target) || isEditable(document.activeElement) || overlayOpen()) return;
+      const text = e.clipboardData?.getData("text/plain") ?? "";
+      if (!looksLikePattern(text)) return;
+      e.preventDefault();
+      openPaste(text);
+    };
+    document.addEventListener("paste", onPaste);
+    return () => document.removeEventListener("paste", onPaste);
+  }, [paste, openPaste]);
+
   // Global shortcuts (by produced character, see shortcuts.ts).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      // The paste dialog owns the keyboard (undo there must not change the pattern behind it).
+      if (paste !== null) return;
       const shortcut = shortcutFor(e);
       if (shortcut === "addRow") {
         e.preventDefault();
@@ -192,7 +253,7 @@ export function App({ exportActions }: AppProps = {}) {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [rows, selectedRowId, addRowAfter, selectPart, state.doc.parts.length, state.part]);
+  }, [rows, selectedRowId, addRowAfter, selectPart, state.doc.parts.length, state.part, paste]);
 
   useEffect(() => {
     document.title = state.doc.title.trim() ? `${state.doc.title.trim()} – CrochetBuilder` : "CrochetBuilder";
@@ -222,6 +283,14 @@ export function App({ exportActions }: AppProps = {}) {
           </button>
         </div>
       )}
+      {importNotice !== null && (
+        <div className="link-notice link-notice-info" role="status">
+          <span>{importNotice}</span>
+          <button type="button" className="btn btn-small" onClick={() => setImportNotice(null)}>
+            Schließen
+          </button>
+        </div>
+      )}
       {linkNotice !== null && (
         <div className="link-notice link-notice-info" role="status">
           <span>{linkNotice}</span>
@@ -237,6 +306,7 @@ export function App({ exportActions }: AppProps = {}) {
         canRedo={canRedo(state)}
         status={persistence.status}
         onNew={() => dispatch(newDocument())}
+        onPaste={() => openPaste()}
         onDemo={(kind) => dispatch(loadDemo(kind))}
         onReplace={replaceDocument}
         {...(exportActions ? { exportActions } : {})}
@@ -263,6 +333,15 @@ export function App({ exportActions }: AppProps = {}) {
                 }}
               />
               <div id={PART_PANEL_ID} role="tabpanel" aria-labelledby={partTabId(state.part)}>
+                {isDocumentEmpty(state.doc) && (
+                  <p className="paste-offer">
+                    Anleitung schon als Text?
+                    <button type="button" className="btn btn-small" onClick={() => openPaste()}>
+                      Ganze Anleitung einfügen…
+                    </button>
+                    <span className="muted small">oder Strg+V außerhalb eines Eingabefelds</span>
+                  </p>
+                )}
                 <RowList
                   rows={rows}
                   findings={findings}
@@ -290,6 +369,18 @@ export function App({ exportActions }: AppProps = {}) {
           }
         />
       </main>
+      {paste !== null && (
+        <PasteDialog
+          initialText={paste.text}
+          doc={state.doc}
+          onImport={importPasted}
+          onClose={(text) => {
+            setPaste(null);
+            setPasteDraft(text);
+          }}
+          {...(pastePreviewOptions ? { previewOptions: pastePreviewOptions } : {})}
+        />
+      )}
     </div>
   );
 }
