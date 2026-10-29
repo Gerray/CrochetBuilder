@@ -14,8 +14,9 @@ All notable changes to this project are documented here. The format follows
   rejects version-2 documents (the objects are strict). Consumers of the schema need engine
   1.0.0. The builder's file import accepts both versions.
 - New members of exported unions: the op kind `group`, the stitch codes `BOBBLE`, `PUFF`,
-  `POPCORN`, `PICOT`, the modifiers `FP`, `BP` and the finding codes `EMPTY_GROUP`,
-  `INVALID_GROUP`, `INVALID_MODIFIER`, `UNKNOWN_COLOR`. Exhaustive `switch`es and
+  `POPCORN`, `PICOT`, the modifiers `FP`, `BP`, the finding codes `EMPTY_GROUP`,
+  `INVALID_GROUP`, `INVALID_MODIFIER`, `UNKNOWN_COLOR`, `AROUND_WITHOUT_CHAIN`, `AROUND_ON_ROW` and the
+  `TmcTextFeature` `around`. `Row` gains the optional `around`. Exhaustive `switch`es and
   `Record<StitchCode, …>` maps in consuming code have to cover them.
 - A document that says `schemaVersion: 1` but uses a version-2 feature is rejected by
   `PartContentSchema` / `BuilderExportSchema` (`usesFormatV2`). `PartContentSchema` and
@@ -133,6 +134,35 @@ All notable changes to this project are documented here. The format follows
   einfügen"), for documents opened from a file or a link and in the viewer, and
   `self_created` only for "Neu" and demos. It is remembered next to the stored document, not
   in the format; undo and redo restore it, undoing a paste keeps `imported`.
+- **Oval starts** (`Row.around: true`, format v2): a round worked around both sides of the
+  foundation chain right before it — feet, muzzles, hands, fins. It may work into up to twice
+  the chain length; validation reports more as `CONSUMES_OVERFLOW`, fewer than the usual
+  2 × length − 2 × skip − 1 (the chains next to the hook skipped on both sides — 1 for sc, 2
+  for hdc/dc, 3 for tr, `hookSkipOf` — and one group around the far end) as
+  `CONSUMES_UNDERFLOW`, the new finding `AROUND_WITHOUT_CHAIN` when no chain comes before it
+  and `AROUND_ON_ROW` on a row that turns (both are then built as plain rows); copies made by
+  duplicating or "×N" are plain rounds. In the stitch graph the round walks the chain
+  out and back, both sides attached to it, closed at its start; its surface is closed across
+  the chain. The relaxation treats a chain plus such a round as a closed start (gathered and
+  stuffed when it is decreased at the end), keeps the oval rounds out of the circular start-up
+  stabiliser, and the pose lays the chain along X. New helpers `isChainRow`,
+  `aroundCapacity`, `worksAroundChain`, `anchorsAvailable`; `GraphRow.around`. Documented in
+  docs/FORMAT.md, "Rounds around a foundation chain".
+- **Oval starts in text:** rows render with a leading `um die Lm-Kette:` / `around the chain:`
+  (`AROUND_MARKS`), and `parseRowText` reads it back as `result.around` (also "um die Kette
+  herum:", "working around the chain:"). The whole-pattern import reads oval starts ("working
+  on the other side of the chain", "on the opposite side", "on the back of the chain",
+  "crochet around the ch", "unroll" right after a chain, "auf der anderen Seite der
+  Luftmaschenkette weiter", "um die Kette herum"), also when the second half is on a line of
+  its own, and its own export ("around the chain: …") reads back in every locale. "Unroll" and
+  "the back of the chain" count only when the round works more places than the chain has;
+  otherwise "unroll" turns the work. `UNSUPPORTED_FOUNDATION_OVAL` remains for ovals after a
+  chain whose stitches do not read; without a chain, "on the other side" raises none. "Ab der
+  2. Lm" is no longer split as a round label "2.". The
+  TellmeCrochet hand-off sends such rounds as text steps (`TmcTextFeature` `around`).
+- **Oval starts in the builder:** a chip "um die Kette herum" on a round after a chain, the
+  snippet "Ovaler Anfang" (chain, the round around it, increase rounds with three increases
+  at each end), and after a chain worked in rounds the Enter suggestion is that round.
 
 
 ### Changed

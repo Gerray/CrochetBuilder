@@ -173,8 +173,9 @@ export function quickFixes(finding: Finding, rows: readonly Row[], pinned: reado
         title: `Soll-Maschenzahl auf ${computeRowStitches(row)} setzen`,
         action: { type: "adoptTarget", rowId: row.id },
       };
-      // The previous row's offer, if the row is worked into one (not a ring start).
-      const anchor = isRingRow(row) ? undefined : previousCountAt(rows, rows.indexOf(row));
+      // The previous row's offer, if the row is worked into one (not a ring start, and not
+      // around a chain: both sides of it, with the usual skips at the ends).
+      const anchor = isRingRow(row) || row.around ? undefined : previousCountAt(rows, rows.indexOf(row));
       const candidates = repeatCandidates(row, (path) => {
         const times = solve(linear(row, path, computeRowStitches), target);
         if (times === null) return null;
@@ -196,6 +197,9 @@ export function quickFixes(finding: Finding, rows: readonly Row[], pinned: reado
         const times = solve(linear(row, path, anchorsConsumed), offered);
         return times === null ? null : repeatCandidate(row, path, times);
       });
+      // Around a chain the places left are at the ends: single crochets at the end of the
+      // round would not fill them.
+      if (row.around) return finish(row, repeats, explicit, MAX_REPEAT_FIXES);
       return finish(row, [fill, ...repeats], explicit, 1 + MAX_REPEAT_FIXES);
     }
     case "CONSUMES_OVERFLOW": {

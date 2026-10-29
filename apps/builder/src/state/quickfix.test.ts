@@ -72,6 +72,14 @@ describe("quick fixes", () => {
     expect(findingsOf(apply(plain, fill.action))).toEqual([]);
   });
 
+  it("underflow around a chain: never 'Rest mit fM auffüllen' (the places left are at the ends)", () => {
+    const rows = part(["7 Lm"], ["4 fM, (3 fM) in dieselbe M, 3 fM, 1 Zun"]);
+    rows[1] = { ...rows[1]!, around: true };
+    const finding = findingsOf(rows).find((f) => f.code === "CONSUMES_UNDERFLOW")!;
+    expect(finding).toMatchObject({ expected: 11, actual: 9 });
+    expect(quickFixes(finding, rows).map((f) => f.label)).toEqual([]);
+  });
+
   it("overflow: the nearest repeat count that fits, else a shorter last stitch", () => {
     const over = part(["18 fM (18)"], ["7× (2 fM, 1 Zun)"]);
     const overFix = quickFixes(findingsOf(over).find((f) => f.code === "CONSUMES_OVERFLOW")!, over);

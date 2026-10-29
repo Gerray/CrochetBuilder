@@ -41,8 +41,9 @@ function groupKey(row: Row, findings: readonly Finding[] | undefined): string | 
   const checks = (findings ?? []).map((f) => [f.code, f.expected ?? null, f.actual ?? null]);
   // Ops compared structurally (stitch groups and colour changes included). The row's own colour
   // is not part of the key: a colour change belongs to the first row of a run (E26), and a later
-  // row with a colour of its own starts a new run (see `naturalRuns`).
-  return JSON.stringify([row.type, row.ops, row.stitchCountTarget, row.note ?? null, checks]);
+  // row with a colour of its own starts a new run (see `naturalRuns`). A round around a chain
+  // never joins the plain rounds after it.
+  return JSON.stringify([row.type, row.ops, row.stitchCountTarget, row.note ?? null, row.around ?? false, checks]);
 }
 
 const sameIds = (a: readonly string[], b: readonly Row[]) => a.length === b.length && a.every((id, i) => b[i]!.id === id);

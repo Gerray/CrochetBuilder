@@ -117,6 +117,8 @@ export type EditorAction =
   | { type: "setRowOps"; rowId: string; ops: Op[]; target?: number; color?: string | null }
   /** Colour change at the start of the row ("Farbwechsel ab dieser Runde"); null removes it. */
   | { type: "setRowColor"; rowId: string; color: string | null }
+  /** The round is worked around the foundation chain before it (`Row.around`, oval start). */
+  | { type: "setRowAround"; rowId: string; around: boolean }
   // ops inside a row
   | { type: "updateStitch"; rowId: string; path: OpPath; patch: StitchPatch }
   | { type: "setRepeatTimes"; rowId: string; path: OpPath; times: number }
@@ -448,6 +450,8 @@ function applyEdit(state: EditorState, action: EditorAction): DocResult {
         doc: withRows(doc, rowScope, (rows) => {
           const at = rows.findIndex((r) => r.id === action.rowId) + 1;
           const copy: Row = { ...structuredClone(source), id: action.newId };
+          // Only the round right after the chain goes around it.
+          delete copy.around;
           return [...rows.slice(0, at), copy, ...rows.slice(at)];
         }),
         pinned: pinned.includes(source.id) ? [...pinned, action.newId] : pinned,
@@ -467,6 +471,8 @@ function applyEdit(state: EditorState, action: EditorAction): DocResult {
             const drop = value === "" && (key === "label" || (key === "note" && row.ops.length > 0));
             next = drop ? setOptionalText(next, key, undefined) : { ...next, [key]: value };
           }
+          // A row turns at its end: it cannot go around a chain.
+          if (next.type === "row" && next.around) next = setOptionalText(next, "around", undefined);
           return next;
         }),
         pinned,
@@ -508,6 +514,17 @@ function applyEdit(state: EditorState, action: EditorAction): DocResult {
     case "setRowColor":
       if (rowScope < 0) return same;
       return scoped({ doc: withRow(doc, action.rowId, (row) => withRowColor(row, action.color)), pinned });
+
+    case "setRowAround":
+      if (rowScope < 0) return same;
+      return scoped({
+        doc: withRow(doc, action.rowId, (row) => {
+          if ((row.around === true) === action.around) return row;
+          // Around a chain is a round.
+          return action.around ? { ...row, type: "round", around: true } : setOptionalText(row, "around", undefined);
+        }),
+        pinned,
+      });
 
     case "setOpColor":
       return opsEdit(action.rowId, (ops) =>
@@ -861,6 +878,7 @@ function applyAssist(state: EditorState, action: AssistAction): DocResult {
       const copies = newIds.map((id): Row => {
         const copy: Row = { ...structuredClone(source), id };
         delete copy.color;
+        delete copy.around;
         return copy;
       });
       const end = start + rowIds.length;

@@ -15,6 +15,12 @@ export interface RowTextExtras {
    * the text was not typed (an accepted suggestion keeps the row's colour).
    */
   color?: string | null;
+  /**
+   * Whether the text starts with "um die Lm-Kette:" (`Row.around`, a round around the chain
+   * before it); null when it does not. Absent when unchanged (an accepted suggestion says
+   * `true` when it is such a round).
+   */
+  around?: true | null;
 }
 
 interface RowTextFieldProps {
@@ -36,7 +42,8 @@ interface RowTextFieldProps {
 /**
  * The row as editable text: shows the row (`renderRow`, colour changes as `[Farbe: Weiß]`
  * with the palette's names — the row's own colour first — so that editing the text keeps
- * them; names are read back to palette ids), parses on Enter or blur. An
+ * them; names are read back to palette ids; a round around the foundation chain starts with
+ * „um die Lm-Kette:“, and the mark sets or clears it), parses on Enter or blur. An
  * unreadable text stays in the field with an inline error; Escape restores the row. The
  * field is registered as a pending edit, so switching parts commits it first (or stops).
  *
@@ -141,7 +148,7 @@ export function RowTextField(props: RowTextFieldProps) {
         dropSuggestion();
         return row.ops.length > 0;
       }
-      onCommit(structuredClone(suggestion.ops), undefined, {});
+      onCommit(structuredClone(suggestion.ops), undefined, suggestion.around ? { around: true } : {});
       dropSuggestion();
       setWarnings([]);
       return suggestion.ops.length > 0;
@@ -164,7 +171,7 @@ export function RowTextField(props: RowTextFieldProps) {
       setError(parseErrorMessage(result));
       return null;
     }
-    const extras: RowTextExtras = { color: result.color ?? null };
+    const extras: RowTextExtras = { color: result.color ?? null, around: result.around ?? null };
     if (result.rounds !== undefined && result.rounds > 1) extras.rounds = result.rounds;
     if (text !== rendered || result.stitchCountTarget !== undefined || extras.rounds !== undefined) {
       onCommit(result.ops, result.stitchCountTarget, extras);

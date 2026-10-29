@@ -58,6 +58,8 @@ export interface RowCardProps {
   onFocusRow: (rowId: string) => void;
   /** The colour at the start of the card's first row (format v2); absent without colours. */
   startColor?: RowColor | undefined;
+  /** The stitch row before the card is a foundation chain (a round may go around it). */
+  afterChain?: boolean;
 }
 
 /** A finding as the card shows it: once for the whole group, or for one row of it. */
@@ -155,6 +157,10 @@ function RowCardImpl(props: RowCardProps) {
     const edit: EditorAction = { type: "setRowOps", rowId: row.id, ops, ...(target === undefined ? {} : { target }) };
     const actions: EditorAction[] = [...before, fanOut(edit, rowIds)];
     if (color !== undefined) actions.push({ type: "setRowColor", rowId: row.id, color });
+    // "um die Lm-Kette:" in the text (or an accepted oval suggestion), like the chip.
+    if (extras.around !== undefined && (extras.around === true) !== (row.around === true)) {
+      actions.push({ type: "setRowAround", rowId: row.id, around: extras.around === true });
+    }
     const rounds = extras.rounds;
     if (rounds === undefined || rounds === rowIds.length) {
       runEnd.current = null;
@@ -214,6 +220,22 @@ function RowCardImpl(props: RowCardProps) {
               </button>
             ))}
           </div>
+        )}
+        {!instruction && row.type === "round" && (props.afterChain || row.around) && (
+          <button
+            type="button"
+            className="chip around-chip"
+            aria-pressed={row.around === true}
+            aria-label={`${title}: um die Kette herum`}
+            title={
+              row.around
+                ? "Um die Kette herum: erst an der einen Seite der Luftmaschenkette entlang, um das Ende herum, dann an der anderen Seite zurück (ovaler Anfang). Klick: nur in eine Seite häkeln"
+                : "Um die Kette herum häkeln: an beiden Seiten der Luftmaschenkette entlang (ovaler Anfang)"
+            }
+            onClick={() => dispatch({ type: "setRowAround", rowId: row.id, around: !row.around })}
+          >
+            um die Kette herum
+          </button>
         )}
         {!instruction && props.startColor && (
           <RowColorChip

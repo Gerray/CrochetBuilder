@@ -12,7 +12,7 @@ import {
   DEFAULT_MAX_STITCHES,
   detectNotationLocale,
   parsePatternText,
-  renderOps,
+  renderRow,
   rowLabel,
   rowOrdinals,
   validate,
@@ -260,7 +260,10 @@ function sameRow(a: Row, b: Row): boolean {
     b.note === undefined &&
     a.label === undefined &&
     b.label === undefined &&
-    // A colour change starts a line of its own (it shows as a chip there).
+    // A colour change starts a line of its own (it shows as a chip there), as does a round
+    // worked around a chain.
+    !a.around &&
+    !b.around &&
     b.color === undefined &&
     JSON.stringify(a.ops) === JSON.stringify(b.ops)
   );
@@ -319,7 +322,7 @@ export function previewLines(
       last: i,
       kind: stitches ? "stitches" : "note",
       label: rowLabel(row, ordinals[i] ?? 0, "de"),
-      text: stitches ? `${renderOps(row.ops, "de")} (${row.stitchCountTarget})` : (row.note ?? ""),
+      text: stitches ? `${renderRow(row, "de")} (${row.stitchCountTarget})` : (row.note ?? ""),
       status,
       messages,
     };

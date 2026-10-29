@@ -52,6 +52,42 @@ describe("rows", () => {
     expect(row(s, "r3")).toEqual({ id: "r3", type: "row", ops: [], stitchCountTarget: 0 });
   });
 
+  it("works a round around the foundation chain (oval start) and back", () => {
+    let s = run(
+      fresh(),
+      { type: "setRowOps", rowId: "r1", ops: [{ kind: "stitch", code: "CH", count: 7 }] },
+      { type: "addRow", id: "r2" },
+      { type: "setRowOps", rowId: "r2", ops: [sc(11)] },
+    );
+    s = run(s, { type: "setRowAround", rowId: "r2", around: true });
+    expect(row(s, "r2").around).toBe(true);
+    expect(validate(currentPart(s.doc))).toEqual([]);
+    // Unchanged: no new state; undo takes it back.
+    expect(run(s, { type: "setRowAround", rowId: "r2", around: true })).toBe(s);
+    expect(run(s, { type: "undo" }).doc.parts[0]!.content.rows[1]).not.toHaveProperty("around");
+    // A row turns at its end: switching to "Reihe" drops it; setting it makes a round again.
+    const flat = run(s, { type: "updateRow", rowId: "r2", patch: { type: "row" } });
+    expect(row(flat, "r2")).not.toHaveProperty("around");
+    expect(row(run(flat, { type: "setRowAround", rowId: "r2", around: true }), "r2")).toMatchObject({ type: "round", around: true });
+    s = run(s, { type: "setRowAround", rowId: "r2", around: false });
+    expect(row(s, "r2")).not.toHaveProperty("around");
+  });
+
+  it("copies of a round around the chain (duplicate, ×N) are plain rounds", () => {
+    let s = run(
+      fresh(),
+      { type: "setRowOps", rowId: "r1", ops: [{ kind: "stitch", code: "CH", count: 7 }] },
+      { type: "addRow", id: "r2" },
+      { type: "setRowOps", rowId: "r2", ops: [sc(11)] },
+      { type: "setRowAround", rowId: "r2", around: true },
+    );
+    const dup = run(s, { type: "duplicateRow", rowId: "r2", newId: "d" });
+    expect(row(dup, "r2").around).toBe(true);
+    expect(row(dup, "d")).not.toHaveProperty("around");
+    s = run(s, { type: "setRunLength", rowIds: ["r2"], length: 3, newIds: ["x", "y"] });
+    expect(rows(s).map((r) => r.around ?? false)).toEqual([false, true, false, false]);
+  });
+
   it("adds free instruction rows with a note only", () => {
     const s = run(fresh(), { type: "addRow", id: "n1", instruction: true }, {
       type: "updateRow",
@@ -312,6 +348,15 @@ describe("messages", () => {
       findingMessage({ rowId: "a", severity: "warning", code: "CONSUMES_UNDERFLOW", message: "", expected: 6, actual: 5 }, { ...r, type: "row" }),
     ).toBe("Wird nur in 5 von 6 Maschen gearbeitet – 1 bleibt frei.");
     expect(findingMessage({ rowId: "a", severity: "error", code: "NO_ANCHOR_ROW", message: "", actual: 6 }, r)).toContain("keine Runde");
+    // Rounds around a foundation chain (oval start).
+    const oval: Row = { ...r, around: true };
+    expect(findingMessage({ rowId: "a", severity: "error", code: "AROUND_WITHOUT_CHAIN", message: "" }, oval)).toContain("nach einer Luftmaschenkette");
+    expect(findingMessage({ rowId: "a", severity: "error", code: "CONSUMES_OVERFLOW", message: "", expected: 14, actual: 15 }, oval)).toContain(
+      "um die Luftmaschenkette herum gibt es nur 14 Einstichstellen",
+    );
+    expect(findingMessage({ rowId: "a", severity: "warning", code: "CONSUMES_UNDERFLOW", message: "", expected: 11, actual: 9 }, oval)).toBe(
+      "Wird nur in 9 Einstichstellen um die Luftmaschenkette gearbeitet, üblich sind 11 – 2 bleiben frei.",
+    );
     expect(parseErrorMessage(parseRowText("6 Quatsch"))).toBe("Unbekannter Begriff: „Quatsch“");
     expect(parseErrorMessage(parseRowText("6× (1 fM"))).toContain("Zeichen 9");
     expect(parseErrorMessage(parseRowText("6 fM"))).toBeNull();

@@ -41,13 +41,21 @@
  *   - Stitch groups ("3 sc in next st", "hdc inc"), bobbles, puffs, popcorns, picots and relief
  *     stitches are read into format v2 rows (`parseRowText`).
  *   - Text the format cannot represent yet becomes an instruction row with the raw text and
- *     an issue: `UNSUPPORTED_FOUNDATION_OVAL` (rounds around a foundation chain — the stitch
- *     graph only works one side of a chain), `UNSUPPORTED_JOIN`, `UNSUPPORTED_SPECIAL_STITCH`
- *     (clusters, bullions, shells …), `UNSUPPORTED_CHAIN_SPACE`; a round closed with a slip
- *     stitch is `UNSUPPORTED_ROUND_JOIN` (info, imported as a spiral round), a colour change
- *     without a name `COLOR_UNNAMED` (info). Unreadable stitch text is `UNREADABLE`.
+ *     an issue: `UNSUPPORTED_JOIN`, `UNSUPPORTED_SPECIAL_STITCH` (clusters, bullions, shells
+ *     …), `UNSUPPORTED_CHAIN_SPACE`; a round closed with a slip stitch is
+ *     `UNSUPPORTED_ROUND_JOIN` (info, imported as a spiral round), a colour change without a
+ *     name `COLOR_UNNAMED` (info). Unreadable stitch text is `UNREADABLE`.
  *   - A first row "ch 10, 9 sc …" is split into the foundation chain and the row worked
  *     into it (that is how the stitch graph represents a foundation chain).
+ *   - Oval starts — a round worked around both sides of a foundation chain ("sc in 2nd ch
+ *     from hook, 4 sc, 3 sc in last ch, working on the other side of the chain: 4 sc, inc",
+ *     "on the opposite side", "on the back of the chain", "crochet around the ch", "unroll"
+ *     right after a chain, "auf der anderen Seite der Luftmaschenkette weiter", "um die Kette
+ *     herum") — become one round with `Row.around` after the chain: the side-switch phrases
+ *     are dropped, a second half on a line of its own is added to the first. One that names
+ *     the other side but has no chain before it or does not read stays an instruction with
+ *     `UNSUPPORTED_FOUNDATION_OVAL`; a mere mention without stitches is a plain note.
+ *     Elsewhere "unroll the crochet" between stitches turns the work.
  *   - The declared stitch count is kept as `stitchCountTarget` even when it is wrong, so
  *     `validate` reports the author's mistake. Without a declared count the computed count
  *     is used.
@@ -78,6 +86,7 @@ import {
 } from "./pattern-details.js";
 import type { Finish, Op, Row, Stuffing } from "./schema.js";
 import { computeRowStitches } from "./stitch-count.js";
+import { anchorsConsumed, anchorsOffered, isChainRow } from "./validate.js";
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -97,7 +106,10 @@ export type ImportIssueCode =
   | "UNSUPPORTED_JOIN"
   /** Working into chain spaces. */
   | "UNSUPPORTED_CHAIN_SPACE"
-  /** Rounds worked around both sides of a foundation chain (oval start). */
+  /**
+   * An oval start (a round worked around both sides of a foundation chain) that could not be
+   * read: no chain before it, or stitches that do not read.
+   */
   | "UNSUPPORTED_FOUNDATION_OVAL"
   /** A colour change without a colour the importer can name ("change colour"); informational. */
   | "COLOR_UNNAMED"
@@ -311,8 +323,72 @@ const INSTRUCTION_START =
 const INSTRUCTION_WORDS =
   /\b(?:insert|place|eyes?|nose|stuff(?:ing)?|fill|sew|embroider|fasten|attach|fold|flatten|leave|cut|weave|pull|close|between|apart|tail|yarn|thread|needle|layers|füllen|annähen|nähen|Augen?|Nase|zwischen|auseinander|Faden|abketten|zusammennähen|schließen|sticken)\b/iu;
 
-const OVAL =
-  /\b(?:other|opposite|back|second)\s+side\s+of\s+(?:the\s+)?(?:foundation\s+)?(?:ch|chain|chains)\b|\b(?:work(?:ing)?|crochet(?:ing)?)\s+(?:around|along\s+both\s+sides\s+of)\s+(?:the\s+)?(?:foundation\s+)?(?:ch|chain)\b|\bboth\s+sides\s+of\s+(?:the\s+)?(?:foundation\s+)?(?:ch|chain)\b|\bunroll|\bunfold|\banderen\s+Seite\s+der\s+(?:Lm|Luftmasche)|\bum\s+die\s+(?:Lm|Luftmaschen)-?kette\b|\bauf\s+der\s+anderen\s+Seite\b/iu;
+const OVAL_CHAIN = String.raw`(?:the\s+)?(?:foundation\s+)?(?:chains|chain|ch)(?![\p{L}-])`;
+const OVAL_THEN = String.raw`(?:\b(?:then|now|and)\s+)?`;
+const OVAL_VERB = String.raw`(?:\b(?:continue|work(?:ing)?|crochet(?:ing)?)\s+)?`;
+/**
+ * Phrases that name an oval start — a round worked around both sides of a foundation chain:
+ * "working on the other side of the chain", "on the opposite side", "crochet around the ch",
+ * "around the chain:" (the builder's own mark), "both sides of the chain", "auf der anderen
+ * Seite der Luftmaschenkette weiter", "um die Kette herum". Not "the back (side) of the
+ * chain": that is also where a flat row is worked into the back bumps (`OVAL_WEAK`).
+ */
+const OVAL_STRONG = new RegExp(
+  [
+    String.raw`${OVAL_THEN}${OVAL_VERB}\b(?:on|along|into|in|down|up)\s+(?:the\s+)?(?:other|opposite|second|reverse)\s+side(?:\s+of\s+${OVAL_CHAIN})?`,
+    String.raw`${OVAL_THEN}(?:\b(?:work(?:ing)?|crochet(?:ing)?)\s+)?\ba?round\s+(?:both\s+sides\s+of\s+)?${OVAL_CHAIN}`,
+    String.raw`${OVAL_THEN}${OVAL_VERB}\balong\s+both\s+sides\s+of\s+${OVAL_CHAIN}`,
+    String.raw`${OVAL_THEN}${OVAL_VERB}(?:\bon\s+)?\bboth\s+sides\s+of\s+${OVAL_CHAIN}`,
+    String.raw`(?:\bund\s+)?\b(?:auf|an)\s+der\s+(?:anderen|gegenüberliegenden)\s+Seite(?:\s+der\s+(?:Lm-?|Luftmaschen-?)?kette)?(?:\s+weiter(?:häkeln)?)?`,
+    String.raw`(?:\brund\s+)?\bum\s+die\s+(?:Lm-?|Luftmaschen-?)?Kette(?:\s+herum)?(?:\s+(?:weiter)?häkeln)?`,
+  ].join("|"),
+  "iu",
+);
+/**
+ * "On the back of the chain": the other side of the chain in an oval start, but also the back
+ * bumps a flat row is worked into — an oval only when the round works more places than the
+ * chain has.
+ */
+const OVAL_WEAK = new RegExp(String.raw`${OVAL_THEN}${OVAL_VERB}\b(?:on|along|into|in)\s+the\s+back\s+of\s+${OVAL_CHAIN}`, "iu");
+/** A page reference ("pg. 11", "page 3", "Seite 4", "S. 2"). */
+const PAGE_REF = /\b(?:pages?|pg|p|seiten?|s)\.?\s*\d+/giu;
+/** A foundation chain written in a row's text: "ch 7", "chain 7", "7 ch", "8 Lm". */
+const CHAIN_IN_TEXT = /\b(?:ch|chain)\s*\d+|\b\d+\s*(?:ch|chains?|Lm|Luftmaschen?)(?![\p{L}])|\bLm\s*\d+/iu;
+/** All oval phrases (`OVAL_STRONG`, `OVAL_WEAK`); global: `ovalText` removes them all. */
+const OVAL_PHRASES = new RegExp(`${OVAL_STRONG.source}|${OVAL_WEAK.source}`, "giu");
+/** Whether a text names an oval start for sure (`OVAL_STRONG`). */
+const OVAL = OVAL_STRONG;
+/**
+ * "Unroll / unfold (the crochet)": translated patterns say so for turning the chain over to
+ * its other side (an oval start, right after a foundation chain) — and for turning the work.
+ */
+const OVAL_TURN = /\b(?:unroll|unfold)(?:ing)?(?:\s+(?:the\s+)?(?:crochet(?:ing)?|knit(?:ting)?|work(?:ing)?|piece))?(?![\p{L}])/iu;
+
+/**
+ * The text of an oval round as one stitch list: the side-switch phrases (`OVAL_PHRASES`,
+ * "unroll") and the sentence breaks and colons between the two halves become commas
+ * ("Ch 6. Crochet around the ch. 4 sc, 3 sc in last ch. Working on the other side: 3 sc,
+ * inc" → "Ch 6, 4 sc, 3 sc in last ch, 3 sc, inc"). German ordinals ("2. Lm") stay.
+ */
+function ovalText(text: string): string {
+  // A count after the first half ("… 3 sc in last ch (8). On the other side: …") is no row end.
+  let s = text;
+  const counts = [...text.matchAll(COUNT_TERMINATOR)];
+  for (const m of counts.slice(0, -1).reverse()) s = `${s.slice(0, m.index)},${s.slice(m.index + m[0].length)}`;
+  return s
+    .replace(OVAL_PHRASES, ",")
+    .replace(new RegExp(OVAL_TURN.source, "giu"), ",")
+    .replace(/\n/g, ", ")
+    .replace(/(\d*)\.(?=\s)/gu, (m: string, digits: string, at: number, s: string) =>
+      digits && /^\s+(?:Lm|Luftmasche|M\b|Masche)/u.test(s.slice(at + m.length)) ? m : `${digits},`,
+    )
+    .replace(/:(?=\s)/g, ",")
+    .replace(/\s*,(?:\s*,)+/g, ",")
+    .replace(/^[\s,]+|[\s,]+$/g, "")
+    .replace(/\s*,\s*/g, ", ")
+    .replace(/,\s*(?=[[(]\s*\d+\s*(?:sts?|stitches|maschen|m)?\s*[\])]\s*$)/iu, " ")
+    .replace(/,\s*(?=(?:=|->|→)\s*\d)/u, " ");
+}
 const JOIN =
   /\b\d+\s*(?:sc|fM|sts?|hdc|dc|M|sl\s*st)\s+(?:with|on|onto|at|to|into|from|of|mit|am|an|auf)\s+(?:the\s+|dem\s+|der\s+|den\s+)?(?:(?:left|right|first|second|other|next|1st|2nd|linken|rechten|ersten|zweiten|anderen)\s+)?(?:legs?|arms?|handles?|ears?|foot|feet|fingers?|toes?|body|head|parts?|pieces?|paws?|Bein|Beine|Beinen|Arm|Arme|Armen|Fuß|Körper|Kopf|Teil)\b|\bjoin(?:ing)?\s+(?:the\s+)?(?:two\s+|both\s+)?(?:legs?|arms?|parts?|pieces?)\b|\b(?:Beine|Teile)\s+(?:verbinden|zusammenhäkeln)\b/iu;
 /**
@@ -390,6 +466,10 @@ function rejectedByContext(line: string, index: number, end: number, kind: Label
   if (lastChar && "=×*([/".includes(lastChar)) return true;
   const word = /([\p{L}]+)\.?$/u.exec(before)?.[1]?.toLowerCase();
   if (word && REJECT_BEFORE.has(word)) return true;
+  // "ab der 2. Lm", "in die 3. Masche": a German ordinal, not a label.
+  if (line.slice(index, end).trimEnd().endsWith(".") && /^\s*(?:Lm|Luftmaschen?|M|Maschen?)(?![\p{L}])/u.test(line.slice(end, end + 20))) {
+    return true;
+  }
   if (kind === "bare" || kind === "suffix") {
     // "3.25 mm", "2. 5 cm": a measurement, not a label.
     if (/^\s*(?:\d+(?:[.,]\d+)?\s*)?(?:(?:mm|cm|g|m|inch|in)(?![\p{L}])|%|"|')/iu.test(line.slice(end, end + 40))) return true;
@@ -561,6 +641,15 @@ function looksLikeStitches(text: string, locale: NotationLocale): boolean {
   return (stitch + numbers) / (words.length + numbers) >= 0.35;
 }
 
+/** Whether `text` has a counted stitch ("3 sc", "6 fM", "2 inc"): stitch text, never a plain note. */
+function hasCountedStitch(text: string, locale: NotationLocale): boolean {
+  for (const m of text.matchAll(/\b\d+\s*([\p{L}][\p{L}.\-]*)/gu)) {
+    const word = m[1]!.replace(/\.$/, "");
+    if (resolveStitchTerm(word, locale) || /^(?:inc|dec)$/iu.test(word)) return true;
+  }
+  return false;
+}
+
 /** Count of the last count terminator in `text`, if any. */
 function declaredCount(text: string): number | undefined {
   let value: number | undefined;
@@ -683,6 +772,8 @@ class Importer {
   readonly colors: ImportedColor[] = [];
   private readonly statements: PartStatement[] = [];
   private readonly placements: PlacementNote[] = [];
+  /** The next stitch row `stitchRows` adds is an oval round (`Row.around`). */
+  private aroundNext = false;
 
   constructor(
     private readonly locale: NotationLocale,
@@ -1037,7 +1128,12 @@ class Importer {
   /** Issues for stitch-like text that cannot be represented (empty: nothing found). */
   private unsupported(text: string, blockingOnly: boolean): ImportIssueCode[] {
     const codes: ImportIssueCode[] = [];
-    if (OVAL.test(text)) codes.push("UNSUPPORTED_FOUNDATION_OVAL");
+    // An oval start that is read never gets here (`ovalRound`); a mere mention ("see page 11
+    // for working on the other side of the chain") is no stitch text, and without a chain to
+    // work around "on the other side" means something else.
+    if (OVAL.test(text) && looksLikeStitches(text, this.locale) && this.chainContext(text)) {
+      codes.push("UNSUPPORTED_FOUNDATION_OVAL");
+    }
     if (JOIN.test(text)) codes.push("UNSUPPORTED_JOIN");
     if (blockingOnly) return codes;
     if (SPECIAL.test(text)) codes.push("UNSUPPORTED_SPECIAL_STITCH");
@@ -1082,8 +1178,15 @@ class Importer {
       ops = ops.slice(1);
     }
     const firstIndex = part.rows.length;
+    // An oval round: read by `ovalRound`, or written with the mark ("around the chain: …").
+    const around = this.aroundNext || result.around === true;
+    this.aroundNext = false;
     for (let n = first; n <= last; n++) {
       const row: Omit<Row, "id"> = { type, ops: JSON.parse(JSON.stringify(ops)) as Op[], stitchCountTarget: 0 };
+      if (around && n === first) {
+        row.around = true;
+        row.type = "round";
+      }
       row.stitchCountTarget = result.stitchCountTarget ?? computeRowStitches({ id: "", ...row });
       if (part.pendingColor) row.color = part.pendingColor;
       part.pendingColor = undefined;
@@ -1135,6 +1238,86 @@ class Importer {
       if (!fill && result.code === "fill-mismatch") fill = "FILL_MISMATCH";
     }
     return fill ? { fill } : {};
+  }
+
+  // -- oval start -------------------------------------------------------------
+
+  /** The current part's rows with stitches. */
+  private stitchRowsOfPart(): Row[] {
+    return this.part().rows.filter((r) => r.ops.length > 0);
+  }
+
+  /**
+   * Whether `text` has a chain to work around: the part's last stitch row is a foundation
+   * chain, or the part has no stitch rows yet and the text names a chain ("ch 7", "8 Lm").
+   */
+  private chainContext(text: string): boolean {
+    const rows = this.stitchRowsOfPart();
+    if (rows.length > 0) return isChainRow(rows[rows.length - 1]!);
+    return CHAIN_IN_TEXT.test(text);
+  }
+
+  /**
+   * An oval round (worked around both sides of a foundation chain) in `text`: it names one
+   * (`OVAL_STRONG`; or `OVAL_WEAK` / "unroll" when the round works more places than the chain
+   * has and its label is no "Row" — else they are back bumps or a turn), and there is a chain
+   * to work around — the part's last stitch row, or a chain at the start of the text in a part
+   * without stitch rows (`stitchRows` splits it off). Returns the round read as one stitch
+   * list (`ovalText`) and the text after its count; `"unread"` when it is one but cannot be
+   * read; null when the text is no oval round.
+   */
+  private ovalRound(text: string, rowLabel = false): { result: Split["result"]; rest: string } | "unread" | null {
+    const named = OVAL.test(text);
+    if (!named && !OVAL_WEAK.test(text) && !OVAL_TURN.test(text)) return null;
+    const rows = this.stitchRowsOfPart();
+    const afterChain = rows.length > 0 && isChainRow(rows[rows.length - 1]!);
+    if (!afterChain && rows.length > 0) return null;
+    const counts = [...text.matchAll(COUNT_TERMINATOR)];
+    const lastCount = counts[counts.length - 1];
+    const end = lastCount ? lastCount.index + lastCount[0].length : text.length;
+    const body = ovalText(text.slice(0, end));
+    const result = body.length <= MAX_ROW_TEXT ? parseRowText(body, this.locale) : null;
+    if (!result?.ok || result.ops.length === 0 || this.unsupported(body, false).length > 0) {
+      return named && afterChain && looksLikeStitches(text, this.locale) ? "unread" : null;
+    }
+    const head = result.ops[0]!;
+    const ownChain = !afterChain && head.kind === "stitch" && head.code === "CH" && head.count >= 2 && result.ops.length > 1;
+    if (!afterChain && !ownChain) return null;
+    if (!named) {
+      // Back bumps or a turn, unless the round works into both sides of the chain.
+      const chain = ownChain ? (head as { count: number }).count : anchorsOffered(rows[rows.length - 1]!);
+      const consumed = anchorsConsumed({ id: "", type: "round", ops: ownChain ? result.ops.slice(1) : result.ops, stitchCountTarget: 0 });
+      if (rowLabel || consumed <= chain) return null;
+    }
+    return { result, rest: text.slice(end) };
+  }
+
+  /**
+   * The second half of an oval round on a line of its own ("Working on the other side of the
+   * chain: 4 sc, 2 sc in last ch (14)") after its first half, a row worked straight into a
+   * foundation chain: added to that row, which becomes the oval round. Returns the text after
+   * the half's count, or null when `text` is no such half.
+   */
+  private ovalSecondHalf(text: string): string | null {
+    const rows = this.stitchRowsOfPart();
+    const half = rows[rows.length - 1];
+    const chain = rows[rows.length - 2];
+    if (!half || !chain || !isChainRow(chain) || isChainRow(half) || half.around) return null;
+    if (!new RegExp(`^[\\s,;.:]*(?:${OVAL_PHRASES.source}|${OVAL_TURN.source})`, "iu").test(text)) return null;
+    const counts = [...text.matchAll(COUNT_TERMINATOR)];
+    const lastCount = counts[counts.length - 1];
+    const end = lastCount ? lastCount.index + lastCount[0].length : text.length;
+    const body = ovalText(text.slice(0, end));
+    if (body.length > MAX_ROW_TEXT || this.unsupported(body, false).length > 0) return null;
+    const result = parseRowText(body, this.locale);
+    if (!result.ok || result.ops.length === 0) return null;
+    half.ops.push(...result.ops);
+    half.around = true;
+    half.type = "round";
+    half.stitchCountTarget = result.stitchCountTarget ?? computeRowStitches(half);
+    this.part().lastCount = half.stitchCountTarget;
+    this.part().lastType = "round";
+    return text.slice(end);
   }
 
   // -- pending text ---------------------------------------------------------
@@ -1266,7 +1449,6 @@ class Importer {
     const firstRow = part.rows.length;
     if (rangeMismatch) this.issue("RANGE_MISMATCH", line, noteText, rangeMismatch, firstRow);
 
-    const type: Row["type"] = label.rowWord || /\b(?:turn|wenden)\b/iu.test(raw) ? "row" : "round";
     for (const m of raw.matchAll(COUNT_NOTE)) {
       this.issue("IGNORED", line, m[0], "Note on what counts as a stitch removed; check the stitch count.");
     }
@@ -1281,6 +1463,30 @@ class Importer {
       this.instruction(noteText, line);
       return;
     }
+
+    // An oval start: the round around both sides of the foundation chain.
+    const oval = this.ovalRound(raw, label.rowWord);
+    if (oval === "unread") {
+      this.instruction(noteText, line, ["UNSUPPORTED_FOUNDATION_OVAL"]);
+      part.lastCount = declaredCount(raw) ?? part.lastCount;
+      return;
+    }
+    if (oval) {
+      this.aroundNext = true;
+      this.stitchRows(oval.result, first, last, "round", line, raw, true);
+      if (roundJoin) this.issue("UNSUPPORTED_ROUND_JOIN", line, noteText, undefined, part.rows.length - 1);
+      if (oval.rest.trim() !== "") this.freeAfter(oval.rest, pieces, line);
+      return;
+    }
+    // A mention of the other side of the chain without stitches ("see page 11 for …") is a
+    // note; anything with stitches or counts goes on to be read (or reported unreadable).
+    if (OVAL.test(raw) && !looksLikeStitches(raw, this.locale) && !/\d/.test(raw.replace(PAGE_REF, ""))) {
+      this.instruction(noteText, line);
+      return;
+    }
+    // Anywhere else "unroll the crochet" between stitches turns the work.
+    if (looksLikeStitches(raw, this.locale)) raw = raw.replace(new RegExp(OVAL_TURN.source, "giu"), "turn");
+    const type: Row["type"] = label.rowWord || /\b(?:turn|wenden)\b/iu.test(raw) ? "row" : "round";
 
     const blocking = this.unsupported(raw, true);
     if (blocking.length > 0) {
@@ -1327,7 +1533,7 @@ class Importer {
       const suffix = this.suffixRow(raw);
       if (suffix) {
         const before = raw.slice(0, suffix.cut);
-        if (looksLikeStitches(before, this.locale) || this.unsupported(before, false).length > 0) {
+        if (looksLikeStitches(before, this.locale) || hasCountedStitch(before, this.locale) || this.unsupported(before, false).length > 0) {
           const beforeCodes = this.unsupported(before, false);
           this.instruction(noteText, line, beforeCodes.length > 0 ? beforeCodes : ["UNREADABLE"]);
           part.lastCount = declaredCount(raw) ?? part.lastCount;
@@ -1384,6 +1590,27 @@ class Importer {
     let s = text.trim();
     let guard = 0;
     while (s !== "" && guard++ < 50) {
+      if (OVAL.test(s) || OVAL_WEAK.test(s) || OVAL_TURN.test(s)) {
+        // An oval start: its second half on a line of its own, or the whole round.
+        const after = this.ovalSecondHalf(s);
+        if (after !== null) {
+          s = after.trim();
+          continue;
+        }
+        const oval = this.ovalRound(s);
+        if (oval === "unread") {
+          this.instruction(s, line, ["UNSUPPORTED_FOUNDATION_OVAL"]);
+          return;
+        }
+        if (oval) {
+          this.aroundNext = true;
+          this.stitchRows(oval.result, 1, 1, "round", line, s);
+          s = oval.rest.trim();
+          continue;
+        }
+        // Anywhere else "unroll the crochet" between stitches turns the work.
+        if (looksLikeStitches(s, this.locale)) s = s.replace(new RegExp(OVAL_TURN.source, "giu"), "turn");
+      }
       const stitchy = looksLikeStitches(s, this.locale);
       const unsupported = stitchy ? this.unsupported(s, false) : [];
       if (unsupported.length > 0) {
@@ -1405,7 +1632,7 @@ class Importer {
       const suffix = this.suffixRow(s);
       if (suffix) {
         const before = s.slice(0, suffix.cut);
-        if (looksLikeStitches(before, this.locale)) {
+        if (looksLikeStitches(before, this.locale) || hasCountedStitch(before, this.locale)) {
           // "skip 2 sts, sc 4": the part before the row is stitches we cannot read.
           this.instruction(s, line, ["UNREADABLE"]);
           return;

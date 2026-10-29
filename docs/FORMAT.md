@@ -30,6 +30,7 @@ type Row = {
   stitchCountTarget: number;  // stitches on the fabric after this row, as the author declares
   note?: string;              // free text shown with the row
   color?: string;             // v2: palette id, working colour from the start of this row
+  around?: true;              // v2: worked around both sides of the chain before it (oval start)
 };
 
 type Op = StitchOp | RepeatGroup | StitchGroup;
@@ -181,16 +182,19 @@ repaired.
 
 ## Format version 2
 
-Version 2 adds colours, stitch groups, four stitch codes, two modifiers, a part's finish and
-stuffing, part ids and an assembly. Nothing was removed or renamed. Software that only knows
-version 1 rejects version-2 documents (the objects are strict); it needs engine 1.0.0.
+Version 2 adds colours, stitch groups, four stitch codes, two modifiers, rounds worked around
+a foundation chain, a part's finish and stuffing, part ids and an assembly. Nothing was
+removed or renamed. Software that only knows version 1 rejects version-2 documents (the
+objects are strict); it needs engine 1.0.0. `Row.around` came later within version 2: a
+strict reader built before it rejects rows that have it.
 
 Writers write `schemaVersion: 2` on the export and on every part. A document that says
 `schemaVersion: 1` but uses anything of version 2 is **rejected by the schema**, so a
 version-1 label always means the document can be read by version-1 software:
 
-- a part with `finish`, `stuffing`, a row or stitch `color`, a stitch group, one of the codes
-  `BOBBLE`, `PUFF`, `POPCORN`, `PICOT` or one of the modifiers `FP`, `BP`;
+- a part with `finish`, `stuffing`, a row or stitch `color`, a row with `around`, a stitch
+  group, one of the codes `BOBBLE`, `PUFF`, `POPCORN`, `PICOT` or one of the modifiers `FP`,
+  `BP`;
 - an export with `overview.colors`, `assembly`, a part `id`, or a part that says version 2.
 
 A version-2 export may contain parts that say version 1.
@@ -252,6 +256,59 @@ Worked into a round of 6, this round consumes 6 and produces 18. A V-stitch is
 for nothing, as everywhere). In the 3D model the stitches of a group fan out of their shared
 stitch like the two stitches of an increase.
 
+### Rounds around a foundation chain (oval start)
+
+Feet, muzzles, hands and fins start oval: a chain, then a round worked **around** it — along
+one side of the chain, around its far end, and back along the other side. `Row.around: true`
+marks such a round. It must come right after a foundation chain (a row of only chains; free
+instructions in between do not count); otherwise validation reports `AROUND_WITHOUT_CHAIN`
+(error) and the round is built as a plain round. Only a round goes around: on a row
+(`type: "row"`, it turns at its end) `around` is the error `AROUND_ON_ROW`, and the row is
+built as a plain row.
+
+```json
+[
+  { "id": "c", "type": "round", "ops": [{ "kind": "stitch", "code": "CH", "count": 7 }], "stitchCountTarget": 0 },
+  { "id": "r1", "type": "round", "around": true, "ops": [
+    { "kind": "stitch", "code": "SC", "count": 5 },
+    { "kind": "group", "ops": [{ "kind": "stitch", "code": "SC", "count": 3 }] },
+    { "kind": "stitch", "code": "SC", "count": 4 },
+    { "kind": "stitch", "code": "INC", "count": 1 }
+  ], "stitchCountTarget": 14 },
+  { "id": "r2", "type": "round", "ops": [
+    { "kind": "stitch", "code": "INC", "count": 1 }, { "kind": "stitch", "code": "SC", "count": 4 },
+    { "kind": "stitch", "code": "INC", "count": 3 }, { "kind": "stitch", "code": "SC", "count": 4 },
+    { "kind": "stitch", "code": "INC", "count": 2 }
+  ], "stitchCountTarget": 20 }
+]
+```
+
+"Ch 7. Round 1: sc in the 2nd ch from the hook, 4 sc, 3 sc in the last ch; on the other side
+of the chain: 4 sc, 2 sc in the last ch (14). Round 2: inc, 4 sc, 3 inc, 4 sc, 2 inc (20)."
+
+- **What it works into.** Both sides of every chain: up to twice the chain length. A round
+  that works into more is `CONSUMES_OVERFLOW`. Patterns skip the chains next to the hook on
+  both sides — as many as the first stitch is tall: 1 for sc ("in the 2nd ch from the hook"),
+  2 for hdc and dc ("in the 3rd ch"), 3 for tr — and turn around the far end with one stitch
+  group ("3 sc in the last ch"). So a round usually works into 2 × length − 2 × skip − 1
+  places: 2n − 3 for sc (11 on 7 chains), 2n − 5 for hdc and dc, 2n − 7 for tr. Only fewer
+  than that is `CONSUMES_UNDERFLOW` (its `expected` is that usual number).
+- **In the stitch graph** the round walks the chain from the hook end to the far end (side 1)
+  and back (side 2): the stitches of side 2 have the same chain nodes as parents, so the
+  chain lies inside the oval. With fewer stitches than places, the places are skipped in
+  this order: the chain next to the hook on side 1, the far chain on side 2 (the group turns
+  there), the chain next to the hook on side 2, then inwards from the hook end, side by side.
+  The round is closed (its last stitch sits next to its first); the rounds after it work into
+  it like into any round.
+- **Shape.** The relaxation treats such a piece as starting closed (like a magic ring): with
+  decreases at the end it is gathered and stuffed. Its rounds keep their oval; the canonical
+  pose lays the chain along X, so `measure` gives the oval's length as `width`. A lone first
+  round is too short for a flat oval around its chain and cups slightly; the rounds after it
+  flatten it.
+- **Notation.** The row text starts with a mark: `um die Lm-Kette: 5 fM, (3 fM) in dieselbe
+  M, 4 fM, 1 Zun` (US/UK `around the chain: …`), after a row colour if there is one. The row
+  notation reads it back, also as `um die Kette herum:` or `working around the chain:`.
+
 ### Finish and stuffing
 
 `PartContent.finish` says how the last round is closed:
@@ -263,9 +320,10 @@ stitch like the two stitches of an increase.
 | `"flat"` | flattened and crocheted shut through both layers (an ear, a flat arm) |
 
 `PartContent.stuffing` is `"none"`, `"light"` or `"firm"`. Without these fields the engine
-guesses: a piece that starts with a magic ring, consists of rounds and ends with fewer than
-half the stitches of its widest round is gathered and stuffed firmly; anything else is open
-and not stuffed. A flat-finished part is not stuffed unless it says so.
+guesses: a piece that starts with a magic ring (or with a chain and a round around it),
+consists of rounds and ends with fewer than half the stitches of its widest round is gathered
+and stuffed firmly; anything else is open and not stuffed. A flat-finished part is not stuffed
+unless it says so.
 
 ### Assembly
 
@@ -477,7 +535,7 @@ JSON is validated against `TmcEnvelope` instead of `BuilderExport`. The saved fi
 | `title` | `title` (trimmed; left out when empty) |
 | part `name`, `quantity` | `name` (empty → `Teil n`), `quantity` |
 | row without version-2 features | same row (colours removed); `stitchCountTarget` 0 on a row with stitches ("no number given") → the counted stitches |
-| row with stitch groups, BOBBLE/PUFF/POPCORN/PICOT or FP/BP | **text**: free instruction, `label` = "Runde 3", `note` = the full German line, e.g. `Runde 3: 6× ((3 fM) in dieselbe M) (18)` |
+| row with stitch groups, BOBBLE/PUFF/POPCORN/PICOT or FP/BP, or with `around` | **text**: free instruction, `label` = "Runde 3", `note` = the full German line, e.g. `Runde 3: 6× ((3 fM) in dieselbe M) (18)`, `Runde 2: um die Lm-Kette: 5 fM, (3 fM) in dieselbe M, 4 fM, 1 Zun (14)` |
 | rows after such a row | keep their number as `label` ("Runde 4"), because the receiver numbers only rows with stitches |
 | free instruction (no stitches, with text) | same row; with both label and note the note reads `Label: note` (the receiver shows the note, else the label); rows with neither stitches nor text are left out |
 | colour at the start of a row | **text**: an instruction before the row, `Farbwechsel: Weiß`, when the colour really changes; with two or more palette colours each part first states its starting colour, `Farbe: …` |

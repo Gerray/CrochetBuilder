@@ -18,9 +18,55 @@ import {
 export interface RoundSpec {
   ops: Op[];
   count: number;
+  /** Worked around the foundation chain before it (`Row.around`, oval start). */
+  around?: true;
 }
 
 const stitch = (code: StitchCode, count: number): Op => ({ kind: "stitch", code, count });
+
+/** Shortest foundation chain an oval start works around (one chain on each side, one at the end). */
+export const MIN_OVAL_CHAIN = 3;
+
+/** "7 Lm": a foundation chain of `length` chains. */
+export function chainRow(length: number): RoundSpec {
+  return { ops: [stitch("CH", length)], count: 0 };
+}
+
+/**
+ * The first round of an oval start around a chain of `chain` chains, starting in the 2nd
+ * chain from the hook: along one side, 3 fM in the last chain, back along the other side and
+ * 2 fM into the first chain worked — "5 fM, (3 fM) in dieselbe M, 4 fM, 1 Zun" (14) on 7 Lm.
+ * Null for a chain shorter than `MIN_OVAL_CHAIN`.
+ */
+export function ovalRound(chain: number): RoundSpec | null {
+  if (!Number.isInteger(chain) || chain < MIN_OVAL_CHAIN) return null;
+  const side = chain - 3;
+  const ops: Op[] = [stitch("SC", chain - 2), { kind: "group", ops: [{ kind: "stitch", code: "SC", count: 3 }] }];
+  if (side > 0) ops.push(stitch("SC", side));
+  ops.push(stitch("INC", 1));
+  return { ops, count: 2 * chain, around: true };
+}
+
+/**
+ * Increase round `k` (2, 3, …) of an oval start around `chain` chains: six increases, three
+ * at each end, the sides plain — "1 Zun, 4 fM, 3 Zun, 4 fM, 2 Zun" (20) after `ovalRound(7)`,
+ * then "1 fM, 1 Zun, 4 fM, 3× (1 fM, 1 Zun), 4 fM, 2× (1 fM, 1 Zun)" (26). The round starts
+ * at the hook end, so that end's increases are split: one at the start, two at the end.
+ */
+export function ovalIncreaseRound(chain: number, k: number): RoundSpec | null {
+  if (ovalRound(chain) === null || !Number.isInteger(k) || k < 2) return null;
+  const between = k - 2;
+  const section = (): Op[] => (between > 0 ? [stitch("SC", between), stitch("INC", 1)] : [stitch("INC", 1)]);
+  const fan = (times: number): Op[] => {
+    if (between === 0) return [stitch("INC", times)];
+    if (times === 1) return section();
+    return [{ kind: "repeat", times, ops: section() }];
+  };
+  const side = chain - 3;
+  const sides: Op[] = side > 0 ? [stitch("SC", side)] : [];
+  const ops: Op[] = [...fan(1), ...sides, ...fan(3), ...sides, ...fan(2)];
+  return { ops, count: 2 * chain + 6 * (k - 1) };
+}
 
 /** "1 MR, 6 fM": a magic ring with `count` single crochets. */
 export function ringStart(count = 6): RoundSpec {

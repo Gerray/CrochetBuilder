@@ -13,11 +13,21 @@ export function findingMessage(finding: Finding, row: Row | undefined): string {
     case "STITCH_COUNT_MISMATCH":
       return `Maschenzahl stimmt nicht: Soll ${expected}, Ist ${actual}.`;
     case "CONSUMES_OVERFLOW":
+      if (row?.around) {
+        return `Wird in ${actual} Maschen gearbeitet, aber um die Luftmaschenkette herum gibt es nur ${expected} Einstichstellen (beide Seiten).`;
+      }
       return `Wird in ${actual} Maschen gearbeitet, aber ${previous} hat nur ${expected}.`;
     case "CONSUMES_UNDERFLOW": {
       const left = (expected ?? 0) - (actual ?? 0);
+      if (row?.around) {
+        return `Wird nur in ${actual} Einstichstellen um die Luftmaschenkette gearbeitet, üblich sind ${expected} – ${left} ${left === 1 ? "bleibt" : "bleiben"} frei.`;
+      }
       return `Wird nur in ${actual} von ${expected} Maschen gearbeitet – ${left} ${left === 1 ? "bleibt" : "bleiben"} frei.`;
     }
+    case "AROUND_ON_ROW":
+      return "Eine Reihe wird am Ende gewendet und geht nicht „um die Lm-Kette“ – als Runde häkeln.";
+    case "AROUND_WITHOUT_CHAIN":
+      return "„Um die Lm-Kette“ geht nur direkt nach einer Luftmaschenkette – davor steht keine.";
     case "NO_ANCHOR_ROW":
       return `Wird in ${actual} Maschen gearbeitet, aber davor gibt es keine Runde, Luftmaschenkette oder keinen Magischen Ring.`;
     case "EMPTY_REPEAT":

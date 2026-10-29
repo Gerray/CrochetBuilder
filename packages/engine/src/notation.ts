@@ -13,6 +13,10 @@
  *           A second, lenient pass reads what pasted patterns write ("6 sc in MR",
  *           "sc around", "(…) repeat 6 times", "= [36]", "BLO: …"), see `parseRowText`.
  *
+ * A round worked around a foundation chain (`Row.around`, oval start) renders with a leading
+ * mark — "um die Lm-Kette: 1 fM, 4 fM, …", "around the chain: …" — that the parser reads
+ * back (`ParseRowResult.around`).
+ *
  * Round trip: `parseRowText(renderOps(ops, l), l)` yields `ops` again for every locale,
  * except for the display-only `into` note (never rendered) and empty modifier arrays.
  *
@@ -384,6 +388,24 @@ export interface RenderOptions {
   colors?: readonly { id: string; name?: string }[];
 }
 
+/**
+ * Mark of a round worked around a foundation chain (`Row.around`): written before the
+ * stitches (after a row colour), read back by `parseRowText`.
+ */
+export const AROUND_MARKS: Record<NotationLocale, string> = {
+  de: "um die Lm-Kette:",
+  en_us: "around the chain:",
+  en_uk: "around the chain:",
+};
+
+/**
+ * A leading "around the chain" mark: the rendered marks and what people write for them
+ * ("um die Luftmaschenkette herum:", "rund um die Kette", "working around the foundation
+ * chain:", "around both sides of the ch:", "on both sides of the chain").
+ */
+const AROUND_MARK =
+  /^(?:(?:rund\s+)?um\s+die\s+(?:Lm-?|Luftmaschen-?)?kette(?:\s+herum)?|(?:(?:work(?:ing|ed)?|crochet(?:ing|ed)?)\s+)?(?:(?:a?round|on)\s+both\s+sides\s+of|a?round)\s+the\s+(?:foundation\s+)?(?:ch|chain))(?=[\s:,;]|$)\s*[:,;]?/iu;
+
 /** A rendered colour change (with a trailing space), or "" when there is none to render. */
 function colorMark(id: string | undefined, locale: NotationLocale, opts: RenderOptions): string {
   if (id === undefined || !opts.colors) return "";
@@ -414,10 +436,12 @@ export function renderOps(ops: readonly Op[], locale: NotationLocale, opts: Rend
 
 /**
  * Render a row's ops. A row without ops (free instruction) renders to "". With
- * `opts.colors` a row colour comes first: `[Farbe: Weiß] 6 fM`.
+ * `opts.colors` a row colour comes first: `[Farbe: Weiß] 6 fM`. A round worked around a
+ * foundation chain says so before its stitches: `um die Lm-Kette: 1 fM, …` (`AROUND_MARKS`).
  */
 export function renderRow(row: Row, locale: NotationLocale, opts: RenderOptions = {}): string {
-  const text = renderOps(row.ops, locale, opts);
+  let text = renderOps(row.ops, locale, opts);
+  if (row.around && text) text = `${AROUND_MARKS[locale]} ${text}`;
   const mark = colorMark(row.color, locale, opts);
   if (!mark) return text;
   return text ? `${mark}${text}` : mark.trim();
@@ -501,6 +525,11 @@ export type ParseRowResult =
        * written. Absent when the text does not start with a colour change.
        */
       color?: string;
+      /**
+       * `true` when the text starts with an "around the chain" mark (`AROUND_MARKS`, after a
+       * leading colour change, if any): the round is worked around a foundation chain.
+       */
+      around?: true;
     }
   | {
       ok: false;
@@ -1166,10 +1195,14 @@ function rewriteLenient(input: string, locale: NotationLocale, separateIncrease 
 
   // Foundation-chain start notes: the graph already skips the chains next to the hook.
   s = s.replace(
-    /[,]?\s*(?:start(?:ing)?\s+)?(?:in|into|from|with)\s+(?:the\s+)?(?:2nd|second|3rd|third|\d+(?:st|nd|rd|th))\s+(?:ch|chain|loop)(?:\s+(?:from|on)\s+(?:the\s+)?hook)?/giu,
+    /[,]?\s*(?:start(?:ing)?\s+)?(?:in|into|from|with)\s+(?:the\s+)?(?:2nd|second|3rd|third|\d+(?:st|nd|rd|th))\s+(?:chain|ch|loop)(?![\p{L}])(?:\s+(?:from|on)\s+(?:the\s+)?hook)?/giu,
     "",
   );
   s = s.replace(/[,]?\s*ab\s+der\s+\d+\.\s*(?:Lm|Luftmasche)(?:\s+von\s+der\s+Nadel(?:\s+aus)?)?/giu, "");
+  s = s.replace(
+    /[,]?\s*(?:beginnend\s+)?in\s+(?:die|der)\s+(?:\d+\.|zweiten?|dritten?)\s*(?:Lm|Luftmasche)\s+(?:ab|von)\s+(?:der\s+)?(?:Häkel)?nadel(?:\s+aus)?(?:\s+beginnen(?:d)?)?\s*:?/giu,
+    "",
+  );
 
   // "sc2tog" → "sc (tog)".
   s = s.replace(/\b(\p{L}+)2tog\b/giu, "$1 (tog)");
@@ -1424,6 +1457,19 @@ export function parseRowText(
   context: ParseRowContext = {},
 ): ParseRowResult {
   if (text.replace(/[\s ]/g, "") === "") return { ok: false, code: "empty" };
+  // "um die Lm-Kette: …" at the start, or after a leading colour change: blanked out (so error
+  // positions still point into the text as written) and reported as `around`.
+  const lead = /^[\s ]*/u.exec(text)![0].length;
+  const color = COLOR_MARK.exec(text.slice(lead));
+  const markAt = color ? lead + color[0].length + /^[\s ]*/u.exec(text.slice(lead + color[0].length))![0].length : lead;
+  const around = AROUND_MARK.exec(text.slice(markAt));
+  if (around) {
+    const blanked = text.slice(0, markAt) + " ".repeat(around[0].length) + text.slice(markAt + around[0].length);
+    const result = parseRowText(blanked, locale, context);
+    if (!result.ok) return result;
+    if (result.ops.length === 0) return { ok: false, code: "empty" };
+    return { ...result, around: true };
+  }
   if (context.rowColor) {
     const { rowColor: _row, ...inner } = context;
     const lead = /^[\s ]*/u.exec(text)![0].length;

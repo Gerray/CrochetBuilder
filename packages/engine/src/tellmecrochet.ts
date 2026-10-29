@@ -158,7 +158,10 @@ export type TmcOriginHint = z.infer<typeof TmcOriginHintSchema>;
 // ---------------------------------------------------------------------------
 
 export type TmcLossCode =
-  /** A row with stitch groups, bobble-family stitches, picots or relief stitches became text. */
+  /**
+   * A row with stitch groups, bobble-family stitches, picots or relief stitches, or a round
+   * worked around a foundation chain, became text.
+   */
   | "row-as-text"
   /** The colour a part starts with became an instruction (palettes of two or more colours). */
   | "color-start"
@@ -187,8 +190,11 @@ export type TmcLossCode =
   /** A row id that occurs twice in a part got a new id. */
   | "row-id-changed";
 
-/** What became text in a row: stitch groups, the bobble family, picots, relief stitches. */
-export type TmcTextFeature = "group" | "bobble" | "puff" | "popcorn" | "picot" | "relief";
+/**
+ * What became text in a row: stitch groups, the bobble family, picots, relief stitches, a
+ * round worked around a foundation chain (`around`).
+ */
+export type TmcTextFeature = "group" | "bobble" | "puff" | "popcorn" | "picot" | "relief" | "around";
 
 /** Something the draft carries differently from the builder export (German `message`). */
 export interface TmcLoss {
@@ -375,8 +381,9 @@ const FEATURE_WORDS: Record<TmcTextFeature, string> = {
   popcorn: "Popcornmaschen",
   picot: "Pikots",
   relief: "Reliefmaschen",
+  around: "Maschen um die Luftmaschenkette herum",
 };
-const FEATURE_ORDER: readonly TmcTextFeature[] = ["group", "bobble", "puff", "popcorn", "picot", "relief"];
+const FEATURE_ORDER: readonly TmcTextFeature[] = ["around", "group", "bobble", "puff", "popcorn", "picot", "relief"];
 
 function joinWords(words: readonly string[]): string {
   if (words.length <= 1) return words[0] ?? "";
@@ -585,8 +592,9 @@ function draftMaterials(materials: readonly Material[], palette: readonly Palett
  * The builder export `doc` as a TellmeCrochet draft (format version 1), plus what was carried
  * over differently (`losses`):
  *   - parts keep name ("Teil n" when empty) and quantity; row ids stay unique per part;
- *   - rows with stitch groups, bobble-family stitches, picots or relief stitches become free
- *     instructions holding the row's full German text ("Runde 3: 6× (3 fM in dieselbe M) (18)");
+ *   - rows with stitch groups, bobble-family stitches, picots or relief stitches, and rounds
+ *     worked around a foundation chain, become free instructions holding the row's full German
+ *     text ("Runde 3: 6× (3 fM in dieselbe M) (18)", "Runde 2: um die Lm-Kette: 1 fM, …");
  *     the rows after such a row keep their numbers as labels ("Runde 4");
  *   - colour changes at the start of a row become an instruction before it ("Farbwechsel: Weiß"),
  *     changes inside a row a note on it; with two or more colours each part says its first colour;
@@ -691,6 +699,8 @@ export function toTellmeCrochetDraft(doc: BuilderExport, opts: TmcDraftOptions =
 
       const target = row.stitchCountTarget === 0 ? computeRowStitches(row) : row.stitchCountTarget;
       const features = textFeatures(row.ops);
+      // Format version 1 has no rounds around a chain (oval start).
+      if (row.around) features.add("around");
       if (features.size > 0) {
         const line = renderedRowLine(shown, ordinals[i] ?? 0, "de", palette, target);
         rows.push({ id: takeSource(row.id), type: row.type, ops: [], stitchCountTarget: 0, label, note: line });

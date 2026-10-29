@@ -31,6 +31,15 @@
  * so the next row consumes the anchors in reverse order; after a round it continues in the
  * same order (spiral).
  *
+ * A round worked around a foundation chain (`Row.around`, oval start) walks the chain's slots
+ * from the hook end to the far end (side 1, as a row into the chain would), then back along
+ * the other side (side 2): its parents on side 2 are the same chain nodes, so the chain ends
+ * up inside the oval, both sides attached to it. The round is closed (its last stitch next to
+ * its first), and the rounds after it are worked into it as into any round. With fewer
+ * stitches than both sides offer, the slots are skipped as patterns count: the chain next to
+ * the hook on side 1 (as for a row), the far chain's second side (the stitch group there turns
+ * around the end), the hook chain on side 2, then alternately inwards from the hook end.
+ *
  * The graph never throws on an invalid pattern — `validate` reports problems. Here: a
  * stitch with no anchor left attaches to the last available anchor, surplus anchors stay
  * free, a row with nothing to work into gets no parents. When a row works into a foundation
@@ -140,8 +149,13 @@ export interface GraphRow {
   reversed: boolean;
   /** Working direction relative to the first row: flips at every turn. */
   direction: 1 | -1;
-  /** `true` when the row forms a closed ring (a round worked into a round or a magic ring). */
+  /**
+   * `true` when the row forms a closed ring (a round worked into a round or a magic ring, or a
+   * round worked around a foundation chain).
+   */
   closed: boolean;
+  /** `true` for a round worked around both sides of the foundation chain before it (`Row.around`). */
+  around?: true;
   /** Anchor slots this row offers to the next row. */
   anchorsOffered: number;
   /** Total width of the row in stitch widths (Σ span); for rounds this is the circumference. */
@@ -245,6 +259,8 @@ export function buildGraph(content: PartContent, gauge?: Gauge, opts: BuildGraph
     const allChain = atoms.every((a) => a.code === "CH");
     const hasRing = atoms.some((a) => a.code === "MR");
     const kind: GraphRowKind = allChain ? "chain" : hasRing ? "ring" : "stitch";
+    // Around a foundation chain (oval start); without a chain before it, a plain round.
+    const around = row.around === true && row.type === "round" && kind === "stitch" && prevRow?.kind === "chain";
     const firstNode = nodes.length;
 
     // Nodes.
@@ -322,7 +338,7 @@ export function buildGraph(content: PartContent, gauge?: Gauge, opts: BuildGraph
         }
       }
     } else if (kind === "stitch" && prevSlots.length > 0) {
-      const slots = reversed
+      let slots = reversed
         ? prevSlots.map((s) => ({ node: s.node, index: s.index, offset: -s.offset })).reverse()
         : prevSlots;
       // A stitch group takes one slot, at its first stitch that is worked into something; a group
@@ -340,8 +356,9 @@ export function buildGraph(content: PartContent, gauge?: Gauge, opts: BuildGraph
           counted = true;
         }
       }
+      if (around) slots = aroundSlots(slots, prevSlots, total);
       // Working into a foundation chain with fewer stitches than chains: skip from the hook.
-      let cursor = prevRow!.kind === "chain" && total < slots.length ? slots.length - total : 0;
+      let cursor = !around && prevRow!.kind === "chain" && total < slots.length ? slots.length - total : 0;
       let groupSlot: Slot | null = null;
       for (let id = firstNode; id < firstNode + nodeCount; id++) {
         if (groupPos[id]! >= 0) {
@@ -400,6 +417,7 @@ export function buildGraph(content: PartContent, gauge?: Gauge, opts: BuildGraph
     const closed =
       row.type === "round" &&
       (kind === "ring" ||
+        around ||
         (kind === "stitch" && prevRow !== null && !reversed && prevRow.kind !== "chain" && prevRow.type === "round"));
     let widthStitches = 0;
     for (let id = firstNode; id < firstNode + nodeCount; id++) {
@@ -419,6 +437,7 @@ export function buildGraph(content: PartContent, gauge?: Gauge, opts: BuildGraph
       anchorsOffered: slots.length,
       widthStitches,
     };
+    if (around) graphRow.around = true;
     rows.push(graphRow);
     prevRow = graphRow;
     prevSlots = slots;
@@ -439,6 +458,27 @@ export function buildGraph(content: PartContent, gauge?: Gauge, opts: BuildGraph
     stitchCount,
     overBudget: false,
   };
+}
+
+/**
+ * The slots of a round worked around a foundation chain: side 1 (`side1`, the chain from the
+ * hook end) followed by side 2 (`chain`, the chain in its own order), less the slots patterns
+ * skip when the round works into fewer (`total`) — see the module doc for the order.
+ */
+function aroundSlots(side1: Slot[], chain: Slot[], total: number): Slot[] {
+  const n = chain.length;
+  const full = [...side1, ...chain];
+  const drop = Math.max(0, 2 * n - total);
+  if (drop === 0) return full;
+  // Indices into `full`: chain k is at n − 1 − k on side 1 and at n + k on side 2.
+  const order: number[] = [0, n, 2 * n - 1];
+  for (let k = n - 2; k >= 0; k--) order.push(n - 1 - k, n + k);
+  const skipped = new Set<number>();
+  for (const i of order) {
+    if (skipped.size >= drop) break;
+    if (i >= 0 && i < full.length) skipped.add(i);
+  }
+  return full.filter((_, i) => !skipped.has(i));
 }
 
 // ---------------------------------------------------------------------------
@@ -559,9 +599,30 @@ function triangulate(nodes: StitchNode[], rows: GraphRow[]): Uint32Array {
 // ---------------------------------------------------------------------------
 
 /**
+ * A point at arc length `s` on a stadium (two straight sides of length 2·`half` joined by half
+ * circles of radius `r`) centred on the origin of the XZ plane: starting at (half, −r), along
+ * the side z = −r towards −x, around the −x end, back along z = +r and around the +x end —
+ * the same sense as the circles of `layout`.
+ */
+function stadiumPoint(s: number, half: number, r: number): [number, number] {
+  const perimeter = 4 * half + 2 * Math.PI * r;
+  if (!(perimeter > 1e-9)) return [0, 0];
+  let t = ((s % perimeter) + perimeter) % perimeter;
+  if (t < 2 * half) return [half - t, -r];
+  t -= 2 * half;
+  if (t < Math.PI * r) return [-half - r * Math.sin(t / r), -r * Math.cos(t / r)];
+  t -= Math.PI * r;
+  if (t < 2 * half) return [-half + t, r];
+  t -= 2 * half;
+  return r > 1e-9 ? [half + r * Math.sin(t / r), r * Math.cos(t / r)] : [half, 0];
+}
+
+/**
  * Initial positions: rounds on circles around the Y axis whose circumference is the row's
  * width in stitches × stitch width, stacked so that consecutive rounds are one stitch height
- * apart along the surface; rows as a flat grid in the XY plane, turning at each row.
+ * apart along the surface; rows as a flat grid in the XY plane, turning at each row. A round
+ * worked around a foundation chain and the closed rounds after it lie on stadiums (ovals)
+ * around the chain instead, which runs along X.
  */
 function layout(nodes: StitchNode[], rows: GraphRow[], g: ResolvedGauge): Float64Array {
   const w = g.stitchWidthMm;
@@ -574,8 +635,11 @@ function layout(nodes: StitchNode[], rows: GraphRow[], g: ResolvedGauge): Float6
   let prevRadius: number | null = null; // radius of the previous round, null after a flat row
   let baseY = 0; // y of the previous row
   let placedAny = false;
+  // Oval rounds (worked around a chain, and the closed rounds after it): the straight part of
+  // their stadium, centred at `cx` along X; `sgn` mirrors it for a chain laid out towards −X.
+  let oval: { cx: number; half: number; sgn: 1 | -1 } | null = null;
 
-  for (const row of rows) {
+  rows.forEach((row, rowIndex) => {
     const ids: number[] = [];
     for (let id = row.firstNode; id < row.firstNode + row.nodeCount; id++) ids.push(id);
     const real = ids.filter((id) => !nodes[id]!.lift && nodes[id]!.code !== "MR");
@@ -593,7 +657,47 @@ function layout(nodes: StitchNode[], rows: GraphRow[], g: ResolvedGauge): Float6
       ids.forEach((id, i) => set(id, x + row.direction * i * w, y, 0));
       baseY = y;
       prevRadius = null;
+      oval = null;
+    } else if (row.around || (oval && row.closed && row.kind !== "ring")) {
+      // A stadium around the chain: its straight part spans the chains worked into.
+      let r0 = prevRadius ?? 0;
+      if (row.around) {
+        let xmin = Infinity;
+        let xmax = -Infinity;
+        for (const id of real) {
+          for (const p of nodes[id]!.parents) {
+            xmin = Math.min(xmin, pos[3 * p]!);
+            xmax = Math.max(xmax, pos[3 * p]!);
+          }
+        }
+        if (!Number.isFinite(xmin)) xmin = xmax = pos[3 * (row.firstNode - 1)]!;
+        oval = { cx: (xmin + xmax) / 2, half: (xmax - xmin) / 2, sgn: rows[rowIndex - 1]!.direction };
+        r0 = 0;
+      }
+      const o = oval!;
+      const S = Math.max(1, row.widthStitches);
+      const C = S * w;
+      // A round too short for the straight part shortens it (keeping a small turn radius).
+      const half = Math.max(0, Math.min(o.half, (C - 2 * Math.PI * 0.25 * w) / 4));
+      const r = Math.max(0, (C - 4 * half) / (2 * Math.PI));
+      const y0 = placedAny ? baseY : 0;
+      const dR = r - r0;
+      const dy = Math.sqrt(Math.max(0, hv * hv - dR * dR));
+      const place = (id: number, s: number, t = 1) => {
+        const [lx, lz] = stadiumPoint(s, half, r * t);
+        set(id, o.cx + o.sgn * lx, y0 + dy * t, o.sgn * lz);
+      };
+      let cum = 0;
+      for (const id of real) {
+        const n = nodes[id]!;
+        place(id, (cum + n.span / 2) * w);
+        cum += n.span;
+      }
+      lifts.forEach((id, i) => place(id, 0, (i + 1) / (lifts.length + 1)));
+      baseY = y0 + dy;
+      prevRadius = r;
     } else if (row.type === "round" || row.kind === "ring") {
+      oval = null;
       const S = Math.max(1, row.widthStitches);
       const R = (S * w) / (2 * Math.PI);
       let y0 = placedAny ? baseY : 0;
@@ -644,9 +748,10 @@ function layout(nodes: StitchNode[], rows: GraphRow[], g: ResolvedGauge): Float6
       }
       baseY = y0 + hv;
       prevRadius = null;
+      oval = null;
     }
     placedAny = true;
-  }
+  });
   return pos;
 }
 

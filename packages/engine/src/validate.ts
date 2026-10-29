@@ -11,6 +11,15 @@
  *      which offers one anchor per chain. A row opened by a magic ring takes its anchors
  *      from the ring and is not checked against a previous row.
  *
+ * A round worked around a foundation chain (`Row.around`, oval start) works along both sides
+ * of the chain: up to twice as many anchors as the chain has (`aroundCapacity`). Patterns
+ * skip the chains next to the hook on both sides — as many as the first stitch is tall
+ * (`hookSkipOf`: 1 for sc, 2 for hdc/dc, 3 for tr) — and turn around the far end in one
+ * stitch group, so such a round usually leaves 2 × skip + 1 anchors unworked; only fewer than
+ * that is reported as `CONSUMES_UNDERFLOW`. A round marked `around` whose previous stitch row
+ * is not a chain is `AROUND_WITHOUT_CHAIN`, a row (`type: "row"`, it turns) marked `around` is
+ * `AROUND_ON_ROW`; both are checked (and built) like a plain row.
+ *
  * Consuming more anchors than exist is an error (the pattern cannot be worked). Consuming
  * fewer is a warning (stitches left unworked — legitimate for shaping, often a mistake).
  * A stitch group (format v2) consumes one anchor, whatever its stitches.
@@ -33,6 +42,7 @@ import {
   type Op,
   type PartContent,
   type Row,
+  type StitchCode,
   type StitchOp,
 } from "./schema.js";
 import { checkPart, computeRowStitches } from "./stitch-count.js";
@@ -47,7 +57,9 @@ export type FindingCode =
   | "EMPTY_GROUP"
   | "INVALID_GROUP"
   | "INVALID_MODIFIER"
-  | "UNKNOWN_COLOR";
+  | "UNKNOWN_COLOR"
+  | "AROUND_WITHOUT_CHAIN"
+  | "AROUND_ON_ROW";
 
 export interface Finding {
   rowId: string;
@@ -87,12 +99,69 @@ function containsRing(op: Op): boolean {
   return (op.kind === "group" || op.times > 0) && op.ops.some(containsRing);
 }
 
+/** Whether a row is a foundation chain: it has stitches, and all of them are chains. */
+export function isChainRow(row: Row): boolean {
+  return !isInstructionRow(row) && countRowAtoms(row) > 0 && row.ops.every(onlyChains);
+}
+
 /** Anchors a row offers to the next row. */
 export function anchorsOffered(row: Row): number {
   if (isInstructionRow(row)) return 0;
-  const atoms = countRowAtoms(row);
-  if (atoms > 0 && row.ops.every(onlyChains)) return atoms; // foundation chain
+  if (isChainRow(row)) return countRowAtoms(row); // foundation chain
   return computeRowStitches(row);
+}
+
+/**
+ * What a round worked around a chain of `chainLength` chains can work into (`Row.around`):
+ * at most both sides of every chain (`max`, 2 × length), and in the usual oval start the
+ * `skip` chains next to the hook skipped on both sides and the far end turned in one stitch
+ * group (`usual`, 2 × length − 2 × skip − 1, at least 1: 2n − 3 for sc, 2n − 5 for hdc and
+ * dc, 2n − 7 for tr). Fewer than `usual` leaves stitches unworked.
+ */
+export function aroundCapacity(chainLength: number, skip = 1): { max: number; usual: number } {
+  const n = Math.max(0, Math.floor(chainLength));
+  const k = Math.max(1, Math.floor(skip));
+  return { max: 2 * n, usual: Math.max(Math.min(1, n), 2 * n - 2 * k - 1) };
+}
+
+/** Chains a stitch skips at the hook when it is the first one worked into a chain. */
+const HOOK_SKIP: Partial<Record<StitchCode, number>> = { HDC: 2, DC: 2, BOBBLE: 2, PUFF: 2, POPCORN: 2, TR: 3, DTR: 4 };
+
+/**
+ * Chains skipped at the hook before the first stitch of `row` that is worked into something
+ * ("sc in 2nd ch from hook": 1, "hdc / dc in 3rd ch": 2, "tr in 4th ch": 3, "dtr": 4); 1 when
+ * the row has no such stitch.
+ */
+export function hookSkipOf(row: Row): number {
+  const first = (ops: readonly Op[]): StitchOp | undefined => {
+    for (const op of ops) {
+      if (op.kind === "stitch") {
+        if (consumesOf(op) > 0) return op;
+      } else {
+        const inner = first(op.ops);
+        if (inner) return inner;
+      }
+    }
+    return undefined;
+  };
+  const op = first(row.ops);
+  return (op && HOOK_SKIP[op.code]) ?? 1;
+}
+
+/**
+ * Whether `row` is worked around the foundation chain `previous` (its previous stitch row):
+ * it is a round that says `around`, is not opened by a magic ring, and `previous` is a chain.
+ */
+export function worksAroundChain(row: Row, previous: Row | undefined): boolean {
+  return row.around === true && row.type === "round" && previous !== undefined && isChainRow(previous) && !isRingRow(row);
+}
+
+/**
+ * Anchors `row` can work into after its previous stitch row `previous`: twice the chain for
+ * a round worked around it (`aroundCapacity(…).max`), else `anchorsOffered(previous)`.
+ */
+export function anchorsAvailable(row: Row, previous: Row): number {
+  return worksAroundChain(row, previous) ? aroundCapacity(anchorsOffered(previous)).max : anchorsOffered(previous);
 }
 
 /** Anchors a row consumes from the previous row. */
@@ -119,6 +188,22 @@ export function checkConsumes(content: PartContent): Finding[] {
   for (const row of content.rows) {
     if (!isStitchRow(row)) continue;
 
+    if (row.around && row.type === "row") {
+      findings.push({
+        rowId: row.id,
+        severity: "error",
+        code: "AROUND_ON_ROW",
+        message: "A row turns at its end and cannot be worked around a foundation chain; make it a round.",
+      });
+    } else if (row.around && !worksAroundChain(row, previous)) {
+      findings.push({
+        rowId: row.id,
+        severity: "error",
+        code: "AROUND_WITHOUT_CHAIN",
+        message: "Round is marked as worked around a foundation chain, but the stitch row before it is not a chain (or it opens with a magic ring).",
+      });
+    }
+
     if (!isRingRow(row)) {
       const consumed = anchorsConsumed(row);
       if (consumed > 0) {
@@ -131,7 +216,11 @@ export function checkConsumes(content: PartContent): Finding[] {
             actual: consumed,
           });
         } else {
-          const offered = anchorsOffered(previous);
+          const around = worksAroundChain(row, previous);
+          const capacity = aroundCapacity(anchorsOffered(previous), hookSkipOf(row));
+          const offered = around ? capacity.max : anchorsOffered(previous);
+          // Around a chain, the usual skips at both ends are not "left unworked".
+          const enough = around ? capacity.usual : offered;
           if (consumed > offered) {
             findings.push({
               rowId: row.id,
@@ -141,13 +230,13 @@ export function checkConsumes(content: PartContent): Finding[] {
               expected: offered,
               actual: consumed,
             });
-          } else if (consumed < offered) {
+          } else if (consumed < enough) {
             findings.push({
               rowId: row.id,
               severity: "warning",
               code: "CONSUMES_UNDERFLOW",
-              message: `Row works into ${consumed} of ${offered} stitches; ${offered - consumed} left unworked.`,
-              expected: offered,
+              message: `Row works into ${consumed} of ${enough} stitches; ${enough - consumed} left unworked.`,
+              expected: enough,
               actual: consumed,
             });
           }

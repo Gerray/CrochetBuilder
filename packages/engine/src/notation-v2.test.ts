@@ -299,3 +299,68 @@ describe("groups and special stitches as patterns write them", () => {
     expect(read("4 hintere Reliefstäbchen", "de")).toEqual({ ok: true, ops: bp });
   });
 });
+
+describe("rounds around a foundation chain in the notation", () => {
+  const ops: Op[] = [st("SC"), st("SC", 4), grp([st("SC", 3)]), st("SC", 4), st("INC")];
+  const row = { id: "r", type: "round" as const, around: true as const, ops, stitchCountTarget: 14 };
+
+  it("renders the mark before the stitches, after a row colour", () => {
+    expect(renderRow(row, "de")).toBe("um die Lm-Kette: 1 fM, 4 fM, (3 fM) in dieselbe M, 4 fM, 1 Zun");
+    expect(renderRow(row, "en_us")).toBe("around the chain: 1 sc, 4 sc, (3 sc) in same st, 4 sc, 1 inc");
+    expect(renderRow(row, "en_uk")).toBe("around the chain: 1 dc, 4 dc, (3 dc) in same st, 4 dc, 1 inc");
+    expect(renderRow({ ...row, color: "c1" }, "de", { colors: PALETTE })).toBe(
+      "[Farbe: Weiß] um die Lm-Kette: 1 fM, 4 fM, (3 fM) in dieselbe M, 4 fM, 1 Zun",
+    );
+    // A row without stitches has nothing to work around the chain.
+    expect(renderRow({ ...row, ops: [] }, "de")).toBe("");
+    const content: PartContent = { schemaVersion: 2, rows: [{ id: "c", type: "round", ops: [st("CH", 7)], stitchCountTarget: 0 }, row] };
+    expect(renderedRows(content, "de")).toEqual([
+      "Runde 1: 7 Lm (0)",
+      "Runde 2: um die Lm-Kette: 1 fM, 4 fM, (3 fM) in dieselbe M, 4 fM, 1 Zun (14)",
+    ]);
+  });
+
+  it("reads the mark back in every locale, also after a row colour", () => {
+    for (const locale of NOTATION_LOCALES) {
+      const text = renderRow(row, locale);
+      expect(parseRowText(text, locale), text).toEqual({ ok: true, ops, around: true });
+      const coloured = renderRow({ ...row, color: "c2" }, locale, { colors: PALETTE });
+      expect(parseRowText(coloured, locale, { colors: PALETTE, rowColor: true }), coloured).toEqual({
+        ok: true,
+        ops,
+        color: "c2",
+        around: true,
+      });
+    }
+  });
+
+  it("reads what people write for it, and leaves other text alone", () => {
+    const forms: Array<[string, NotationLocale]> = [
+      ["um die Kette herum: 5 fM", "de"],
+      ["Um die Luftmaschenkette herum 5 fM", "de"],
+      ["rund um die Lm-Kette: 5 fM", "de"],
+      ["around the chain: 5 sc", "en_us"],
+      ["Working around the foundation chain: 5 sc", "en_us"],
+      ["around both sides of the ch: 5 sc", "en_us"],
+      ["on both sides of the chain, 5 sc", "en_us"],
+    ];
+    for (const [text, locale] of forms) {
+      expect(parseRowText(text, locale), text).toEqual({ ok: true, ops: [st("SC", 5)], around: true });
+    }
+    expect(parseRowText("6 fM", "de")).toEqual({ ok: true, ops: [st("SC", 6)] });
+    // "sc around" fills the round, it is no mark; the mark needs stitches after it.
+    expect(parseRowText("sc around", "en_us", { previousCount: 6 })).toEqual({ ok: true, ops: [st("SC", 6)] });
+    expect(parseRowText("um die Lm-Kette:", "de")).toMatchObject({ ok: false, code: "empty" });
+    // Error positions count from the start of the text as written.
+    expect(parseRowText("um die Lm-Kette: 6 xyz", "de")).toMatchObject({ ok: false, code: "unknown-term", position: 19 });
+  });
+
+  it("reads the chain start notes of an oval round", () => {
+    expect(parseRowText("inc in 2nd chain from hook, 4 sc, inc", "en_us")).toEqual({ ok: true, ops: [st("INC"), st("SC", 4), st("INC")] });
+    expect(parseRowText("1 fM in die 2. Lm ab Nadel, 4 fM", "de")).toEqual({ ok: true, ops: [st("SC"), st("SC", 4)] });
+    expect(parseRowText("in der 2. Lm von der Nadel aus beginnen: 5 fM, 3 fM in die letzte Lm", "de")).toEqual({
+      ok: true,
+      ops: [st("SC", 5), grp([st("SC", 3)])],
+    });
+  });
+});
