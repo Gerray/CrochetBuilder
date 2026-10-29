@@ -20,7 +20,7 @@ import { z } from "zod";
 import type { Placement } from "./assembly.js";
 import { isMirroredPair } from "./assembly-text.js";
 import { instructionText, rowOrdinals } from "./expand.js";
-import { renderedRowLine, type BuilderExport, type BuilderPart, type Material, type PaletteColor } from "./export.js";
+import { joinPartsOf, renderedRowLine, type BuilderExport, type BuilderPart, type Material, type PaletteColor } from "./export.js";
 import type { Gauge, YarnWeight } from "./gauge.js";
 import { renderRow, rowLabel } from "./notation.js";
 import type { Op, Row, StitchCode } from "./schema.js";
@@ -192,9 +192,10 @@ export type TmcLossCode =
 
 /**
  * What became text in a row: stitch groups, the bobble family, picots, relief stitches, a
- * round worked around a foundation chain (`around`).
+ * round worked around a foundation chain (`around`), stitches worked into or through another
+ * part (`join`, `StitchOp.from` / `.through`).
  */
-export type TmcTextFeature = "group" | "bobble" | "puff" | "popcorn" | "picot" | "relief" | "around";
+export type TmcTextFeature = "group" | "bobble" | "puff" | "popcorn" | "picot" | "relief" | "around" | "join";
 
 /** Something the draft carries differently from the builder export (German `message`). */
 export interface TmcLoss {
@@ -382,8 +383,9 @@ const FEATURE_WORDS: Record<TmcTextFeature, string> = {
   picot: "Pikots",
   relief: "Reliefmaschen",
   around: "Maschen um die Luftmaschenkette herum",
+  join: "Maschen in ein anderes Teil",
 };
-const FEATURE_ORDER: readonly TmcTextFeature[] = ["around", "group", "bobble", "puff", "popcorn", "picot", "relief"];
+const FEATURE_ORDER: readonly TmcTextFeature[] = ["around", "join", "group", "bobble", "puff", "popcorn", "picot", "relief"];
 
 function joinWords(words: readonly string[]): string {
   if (words.length <= 1) return words[0] ?? "";
@@ -472,6 +474,8 @@ function textFeatures(ops: readonly Op[], out: Set<TmcTextFeature> = new Set()):
       const feature = V2_CODE_FEATURES[op.code];
       if (feature) out.add(feature);
       if (op.modifiers?.some((m) => m === "FP" || m === "BP")) out.add("relief");
+      // Format version 1 has no joins between parts (B5b).
+      if (op.from !== undefined || op.through !== undefined) out.add("join");
     } else {
       if (op.kind === "group") out.add("group");
       textFeatures(op.ops, out);
@@ -595,6 +599,8 @@ function draftMaterials(materials: readonly Material[], palette: readonly Palett
  *   - rows with stitch groups, bobble-family stitches, picots or relief stitches, and rounds
  *     worked around a foundation chain, become free instructions holding the row's full German
  *     text ("Runde 3: 6× (3 fM in dieselbe M) (18)", "Runde 2: um die Lm-Kette: 1 fM, …");
+ *     so do rows with stitches worked into or through another part ("Runde 1: um die
+ *     Lm-Kette: 18 fM aus Teil Bein 1, 3 fM, 18 fM aus Teil Bein 2, 3 fM (42)");
  *     the rows after such a row keep their numbers as labels ("Runde 4");
  *   - colour changes at the start of a row become an instruction before it ("Farbwechsel: Weiß"),
  *     changes inside a row a note on it; with two or more colours each part says its first colour;
@@ -613,6 +619,8 @@ export function toTellmeCrochetDraft(doc: BuilderExport, opts: TmcDraftOptions =
   const colorName = (id: string) => (known.get(id) ?? id).replace(/[[\]]/g, "");
 
   const assemblyName = opts.assemblyPartName?.trim() || TMC_ASSEMBLY_PART_NAME;
+  // Joins name the other part as TellmeCrochet shows it ("aus Teil Bein 1 (Runde 5)").
+  const joinParts = joinPartsOf(doc);
 
   const parts: TmcDraftPart[] = doc.parts.map((part, partIndex) => {
     const sourceRows = part.content.rows;
@@ -702,7 +710,7 @@ export function toTellmeCrochetDraft(doc: BuilderExport, opts: TmcDraftOptions =
       // Format version 1 has no rounds around a chain (oval start).
       if (row.around) features.add("around");
       if (features.size > 0) {
-        const line = renderedRowLine(shown, ordinals[i] ?? 0, "de", palette, target);
+        const line = renderedRowLine(shown, ordinals[i] ?? 0, "de", palette, target, joinParts);
         rows.push({ id: takeSource(row.id), type: row.type, ops: [], stitchCountTarget: 0, label, note: line });
         shifted = true;
         const list = FEATURE_ORDER.filter((f) => features.has(f));

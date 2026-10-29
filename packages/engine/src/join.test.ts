@@ -13,6 +13,7 @@ import { buildModel } from "./model.js";
 import { relax } from "./relax.js";
 import { PartContentSchema, StitchOpSchema, usesFormatV2 } from "./schema.js";
 import { anchorsConsumed, checkConsumes, validate } from "./validate.js";
+import { summarizeTmcLosses, TmcDraftSchema, toTellmeCrochetDraft } from "./tellmecrochet.js";
 import { armDoc, content, legsDoc, pumpkinDoc, rep, rnd, sealDoc, st, tube } from "./test/join-fixtures.js";
 
 type V = [number, number, number];
@@ -361,5 +362,31 @@ describe("assembly of joined parts", () => {
     const bodyGraph = joined[0]!.parts.find((p) => p.part === 1)!.graph;
     const headBase = applyTransform(head.transform, centroid(rowPoints(models[2]!.graph, "hd")));
     expect(headBase[1]).toBeGreaterThan(yRange(bodyGraph).max - 2 * bodyGraph.gauge.stitchHeightMm);
+  });
+});
+
+describe("hand-off to TellmeCrochet", () => {
+  it("turns rows with joins into text steps with the full German text", () => {
+    const legs = toTellmeCrochetDraft(legsDoc());
+    const body = legs.draft.parts[1]!.content.rows;
+    expect(body[1]).toEqual({
+      id: "b1",
+      type: "round",
+      ops: [],
+      stitchCountTarget: 0,
+      label: "Runde 2",
+      note: "Runde 2: um die Lm-Kette: 18 fM aus Teil Bein 1, 3 fM, 18 fM aus Teil Bein 2, 3 fM (42)",
+    });
+    expect(legs.losses).toEqual([expect.objectContaining({ code: "row-as-text", partIndex: 1, rowId: "b1", features: ["around", "join"] })]);
+    expect(summarizeTmcLosses(legs.losses)[0]).toContain("Maschen in ein anderes Teil");
+    const stem = toTellmeCrochetDraft(pumpkinDoc()).draft.parts[1]!.content.rows[0]!;
+    expect(stem.note).toBe("Runde 1: 24 fM aus Teil Kürbis (24)");
+    const arm = toTellmeCrochetDraft(armDoc()).draft.parts[0]!.content.rows.find((r) => r.id === "join")!;
+    expect(arm.note).toBe("Runde 8: 3 fM, 4 fM zusammen mit Teil Arm, 23 fM (30)");
+    const seal = sealDoc();
+    seal.parts[1]!.content.rows[0]!.ops = [st("SC", 6, { from: { part: "seal", row: "sd1", start: 6 } })];
+    expect(toTellmeCrochetDraft(seal).draft.parts[1]!.content.rows[0]!.note).toBe("Runde 1: 6 fM aus Teil Robbe (Runde 12, ab M 7) (6)");
+    // Every draft is valid for TellmeCrochet's strict format version 1.
+    for (const d of [legsDoc(), pumpkinDoc(), sealDoc(), armDoc()]) expect(TmcDraftSchema.safeParse(toTellmeCrochetDraft(d).draft).success).toBe(true);
   });
 });
