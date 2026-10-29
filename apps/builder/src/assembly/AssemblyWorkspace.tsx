@@ -112,6 +112,8 @@ export function assemblyFindingText(f: AssemblyFinding): string {
       return "Mehr Platzierungen als Teile – diese wird nicht gezeigt.";
     case "MIRROR_OVERLAP":
       return "Beide Kopien landen an derselben Stelle (0°, 180° oder mittig auf dem Ende) – Winkel ändern oder für jede Kopie eine eigene Platzierung anlegen.";
+    case "JOINED":
+      return "Das Teil wird beim Häkeln mit einem anderen verbunden – dort sitzt es; diese Platzierung wird nicht verwendet.";
   }
 }
 

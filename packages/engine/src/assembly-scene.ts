@@ -33,6 +33,11 @@
  *     (ears, arms, legs). Further copies without a placement are not drawn. Copy k of an
  *     attached part goes onto copy k of its target when the target has that copy (hands on
  *     both arms), else onto copy 1.
+ *   - Crocheted together (`opts.joined`, parts joined by `StitchOp.from` / `.through`): the
+ *     copies of a joined component are drawn where the joint relaxation put them — one group
+ *     around its largest copy — and are never placed by their attach placements (finding
+ *     `JOINED`). Other parts are attached to them, and eyes set on them, as usual, on their
+ *     joined models.
  *   - Eyes: two eyes `spacing` stitches apart along the row, i.e. at angle ± (spacing / 2)
  *     stitches (one eye when the spacing is 0 or missing), on copy 1 of the target. The eye's
  *     centre lies on the surface — half its diameter is sunk in. Embroidery: one mark.
@@ -42,6 +47,7 @@
 
 import { placementAnchor, type Placement, type Vec3 } from "./assembly.js";
 import { isFabricNode, type GraphRow, type StitchGraph } from "./graph.js";
+import type { JoinedComponent, JoinedPart } from "./joined.js";
 import type { Finish } from "./schema.js";
 
 /** Row-major 3×3 rotation matrix: `m[3 * row + col]`. */
@@ -89,6 +95,11 @@ export interface PartInstance {
   placed: boolean;
   /** Index of the group (main group 0): a root part and everything attached to it. */
   group: number;
+  /**
+   * Crocheted onto other parts: drawn with its joined model (`ComposeOptions.joined`), whose
+   * positions are in the component's common frame — not with the part's own model.
+   */
+  joined?: true;
   transform: RigidTransform;
 }
 
@@ -121,7 +132,9 @@ export type AssemblyFindingCode =
   | "NO_MODEL"
   | "EXTRA_PLACEMENT"
   /** A part ×2 with one placement at 0°/180° (or on the target's end): both copies coincide. */
-  | "MIRROR_OVERLAP";
+  | "MIRROR_OVERLAP"
+  /** An attach placement of a part that is crocheted onto another part: the join wins. */
+  | "JOINED";
 
 export interface AssemblyFinding {
   code: AssemblyFindingCode;
@@ -151,6 +164,13 @@ export interface ComposeOptions {
    * of the main part's widest round. Default false: the main part keeps its own pose.
    */
   faceFront?: boolean;
+  /**
+   * Parts crocheted together (`buildJoinedModels(doc).components`): their copies are drawn as
+   * the joint relaxation put them, as one group around the component's largest copy, and
+   * placements, eyes and embroidery on them use their joined models. Attach placements of a
+   * joined part are dropped (finding `JOINED`): the join decides.
+   */
+  joined?: ReadonlyArray<Pick<JoinedComponent, "root"> & { parts: ReadonlyArray<Pick<JoinedPart, "part" | "copy" | "graph" | "finish">> }>;
 }
 
 export const DEFAULT_EYE_MM = 10;
@@ -462,10 +482,30 @@ export function composeAssembly(
   doc.parts.forEach((p, i) => {
     if (p.id !== undefined && !byId.has(p.id)) byId.set(p.id, i);
   });
-  const usable = (i: number) => {
-    const m = models[i];
-    return !!m && m.graph.nodes.length > 0 && fabricRows(m.graph).length > 0;
-  };
+
+  // Parts crocheted together: their copies in the common frame of their component.
+  const joinedModel = new Map<string, AssemblyPartModel>();
+  const joinedRoot = new Map<string, string>();
+  const joinedCopies = new Map<number, number[]>();
+  for (const c of opts.joined ?? []) {
+    const rootPart = c.parts[c.root];
+    if (!rootPart) continue;
+    const rootKey = instanceKey(rootPart.part, rootPart.copy);
+    for (const p of c.parts) {
+      if (p.part < 0 || p.part >= doc.parts.length || p.graph.nodes.length === 0) continue;
+      const key = instanceKey(p.part, p.copy);
+      joinedModel.set(key, { graph: p.graph, finish: p.finish });
+      joinedRoot.set(key, rootKey);
+      const list = joinedCopies.get(p.part) ?? [];
+      list.push(p.copy);
+      joinedCopies.set(p.part, list);
+    }
+  }
+  /** The model of a part copy: its joined model, else the part's own. */
+  const modelOf = (part: number, copy: number): AssemblyPartModel | null | undefined =>
+    joinedModel.get(instanceKey(part, copy)) ?? models[part];
+  const usableModel = (m: AssemblyPartModel | null | undefined) => !!m && m.graph.nodes.length > 0 && fabricRows(m.graph).length > 0;
+  const usable = (i: number) => usableModel(models[i]) || (joinedCopies.get(i) ?? []).some((c) => usableModel(modelOf(i, c)));
   const quantity = (i: number) => Math.max(1, Math.floor(doc.parts[i]?.quantity ?? 1));
 
   // 1. Resolve references; collect attach placements per attached part.
@@ -481,7 +521,8 @@ export function composeAssembly(
       findings.push({ code: "NO_MODEL", placementId: pl.id, part: target, message: `Placement "${pl.id}": target part "${pl.target}" has no model.` });
       continue;
     }
-    if (!models[target]!.graph.rows.some((r) => r.rowId === pl.row) || !placementAnchor(models[target]!.graph, pl.row, 0)) {
+    const targetGraph = modelOf(target, 0)!.graph;
+    if (!targetGraph.rows.some((r) => r.rowId === pl.row) || !placementAnchor(targetGraph, pl.row, 0)) {
       findings.push({ code: "UNKNOWN_ROW", placementId: pl.id, part: target, message: `Placement "${pl.id}": part "${pl.target}" has no stitches in row "${pl.row}".` });
       continue;
     }
@@ -506,6 +547,15 @@ export function composeAssembly(
       findings.push({ code: "NO_MODEL", placementId: pl.id, part, message: `Placement "${pl.id}": part "${pl.part}" has no model.` });
       continue;
     }
+    if (joinedCopies.has(part)) {
+      findings.push({
+        code: "JOINED",
+        placementId: pl.id,
+        part,
+        message: `Placement "${pl.id}": part "${pl.part}" is crocheted onto another part; the join decides where it sits.`,
+      });
+      continue;
+    }
     const list = attaches.get(part) ?? [];
     list.push(pl);
     attaches.set(part, list);
@@ -515,7 +565,7 @@ export function composeAssembly(
   const mirrorOverlaps = (pl: Placement) => {
     if (Math.abs(pl.angle) % 180 === 0) return true;
     const t = byId.get(pl.target);
-    const anchor = t === undefined ? null : localAnchor(models[t]!, pl.row, pl.angle, true);
+    const anchor = t === undefined ? null : localAnchor(modelOf(t, 0)!, pl.row, pl.angle, true);
     return anchor?.end ?? false;
   };
 
@@ -524,6 +574,12 @@ export function composeAssembly(
   const drawn: Array<{ part: number; copy: number; assignment?: Assignment }> = [];
   doc.parts.forEach((_, part) => {
     if (!usable(part)) return;
+    const joined = joinedCopies.get(part);
+    if (joined) {
+      // Crocheted together: the joined copies, as the joint relaxation put them.
+      for (const copy of [...joined].sort((a, b) => a - b)) drawn.push({ part, copy });
+      return;
+    }
     const list = attaches.get(part) ?? [];
     const q = quantity(part);
     for (const extra of list.slice(q)) {
@@ -560,6 +616,13 @@ export function composeAssembly(
   const resolve = (key: string): { transform: RigidTransform; root: string } | null => {
     if (local.has(key)) return local.get(key)!;
     const inst = byKey.get(key)!;
+    const joinedTo = joinedRoot.get(key);
+    if (joinedTo !== undefined && joinedTo !== key && byKey.has(joinedTo)) {
+      // In the common frame of its component, whose root it moves with.
+      const out = { transform: IDENTITY_TRANSFORM, root: joinedTo };
+      local.set(key, out);
+      return out;
+    }
     if (!inst.assignment) {
       const out = { transform: IDENTITY_TRANSFORM, root: key };
       local.set(key, out);
@@ -579,10 +642,10 @@ export function composeAssembly(
       local.set(key, null);
       return null;
     }
-    const targetModel = models[target]!;
+    const targetModel = modelOf(target, targetCopy(target, inst.copy))!;
     const angle = mirrored ? -placement.angle : placement.angle;
     const anchor = localAnchor(targetModel, placement.row, angle, true)!;
-    const end = attachEnd(models[inst.part]!)!;
+    const end = attachEnd(modelOf(inst.part, inst.copy)!)!;
     const T = parent.transform;
     const p = applyTransform(T, anchor.point);
     const n = normalize(rotate(T.rotation, anchor.normal));
@@ -623,15 +686,16 @@ export function composeAssembly(
   const members = (g: string) => drawn.filter((d) => groupOf.get(instanceKey(d.part, d.copy)) === g);
   const targeted = new Set<number>([...decorations.map((d) => d.target)]);
   for (const d of drawn) if (d.assignment && local.get(instanceKey(d.part, d.copy))) targeted.add(d.assignment.target);
-  const stitches = (part: number) => models[part]!.graph.nodes.length;
   const rootPart = (g: string) => byKey.get(g)!.part;
+  const rootModel = (g: string) => modelOf(rootPart(g), byKey.get(g)!.copy)!;
+  const stitches = (g: string) => rootModel(g).graph.nodes.length;
   const isRealRoot = (g: string) => local.get(g) !== null && !byKey.get(g)!.assignment;
   const ranked = [...groups].sort((a, b) => {
     const real = Number(isRealRoot(b)) - Number(isRealRoot(a));
     if (real !== 0) return real;
     const hasChildren = Number(targeted.has(rootPart(b)) || members(b).length > 1) - Number(targeted.has(rootPart(a)) || members(a).length > 1);
     if (hasChildren !== 0) return hasChildren;
-    const size = stitches(rootPart(b)) - stitches(rootPart(a));
+    const size = stitches(b) - stitches(a);
     if (size !== 0) return size;
     return rootPart(a) - rootPart(b);
   });
@@ -647,13 +711,13 @@ export function composeAssembly(
       const key = instanceKey(target, 0);
       const at = local.get(key);
       if (!at || groupOf.get(key) !== g) continue;
-      const a = placementAnchor(models[target]!.graph, placement.row, placement.angle);
+      const a = placementAnchor(modelOf(target, 0)!.graph, placement.row, placement.angle);
       if (!a) continue;
       const n = rotate(at.transform.rotation, a.normal);
       const h: Vec3 = [n[0], 0, n[2]];
       if (length(h) > 0.2) return normalize(h);
     }
-    const graph = models[rootPart(g)]!.graph;
+    const graph = rootModel(g).graph;
     let widest: string | undefined;
     let most = -1;
     for (const r of fabricRows(graph)) {
@@ -681,7 +745,7 @@ export function composeAssembly(
     for (const key of keys) {
       const inst = byKey.get(key)!;
       const t = composeTransforms(shift, local.get(key)?.transform ?? IDENTITY_TRANSFORM);
-      const g = models[inst.part]!.graph;
+      const g = modelOf(inst.part, inst.copy)!.graph;
       for (let i = 0; i < g.nodes.length; i++) {
         const p = applyTransform(t, P(g, i));
         for (let k = 0; k < 3; k++) {
@@ -724,6 +788,7 @@ export function composeAssembly(
         transform: world.get(key)!,
       };
       if (d.assignment && local.get(key)) inst.placement = d.assignment.placement.id;
+      if (joinedModel.has(key)) inst.joined = true;
       return inst;
     }),
   );
@@ -735,7 +800,7 @@ export function composeAssembly(
   for (const { placement, target } of decorations) {
     const T = world.get(instanceKey(target, 0));
     if (!T) continue;
-    const model = models[target]!;
+    const model = modelOf(target, 0)!;
     const at = (angle: number) => {
       const a = localAnchor(model, placement.row, angle, false);
       if (!a) return null;

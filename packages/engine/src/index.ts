@@ -11,6 +11,7 @@ export {
   StitchCodeSchema,
   ModSchema,
   StitchOpSchema,
+  JoinRefSchema,
   RepeatGroupSchema,
   GroupRepeatSchema,
   GroupOpSchema,
@@ -35,6 +36,7 @@ export type {
   StitchCode,
   Mod,
   StitchOp,
+  JoinRef,
   RepeatGroup,
   GroupRepeat,
   GroupOp,
@@ -99,6 +101,8 @@ export {
   checkModifiers,
   checkColors,
   checkGroups,
+  checkJoins,
+  rowWorksFromOtherPart,
 } from "./validate.js";
 export type { Finding, FindingCode, ValidateOptions } from "./validate.js";
 
@@ -164,6 +168,9 @@ export type {
 
 export {
   relax,
+  relaxBodies,
+  stitchParticles,
+  stuffingOf,
   isClosedPiece,
   canonicalPose,
   resolveFinish,
@@ -171,7 +178,7 @@ export {
   seamStrip,
   STUFFING_LEVELS,
 } from "./relax.js";
-export type { RelaxOptions } from "./relax.js";
+export type { RelaxOptions, RelaxBody, RelaxBodiesOptions, RelaxBodiesResult, BodySpring, ParticleRef } from "./relax.js";
 
 export { measure, measureRounds, maxRoundDiameter } from "./measure.js";
 export type { Size, RoundMeasure } from "./measure.js";
@@ -186,6 +193,27 @@ export type { StitchClosing, YarnArc, YarnLoop, YarnPiece, YarnPost } from "./st
 
 export { buildModel, partRelaxOptions } from "./model.js";
 export type { Model, ModelOptions } from "./model.js";
+
+export {
+  planJoins,
+  lastStitchRow,
+  rowHasJoin,
+  partHasJoin,
+  joinCapacity,
+  gathersByDefault,
+} from "./join.js";
+export type {
+  JoinDocument,
+  JoinFinding,
+  JoinFindingCode,
+  JoinInstance,
+  JoinKind,
+  JoinLink,
+  JoinPlan,
+  JoinSource,
+} from "./join.js";
+export { buildJoinedModels, joinedKey } from "./joined.js";
+export type { JoinBridge, JoinedComponent, JoinedModels, JoinedPart } from "./joined.js";
 
 export {
   renderOp,

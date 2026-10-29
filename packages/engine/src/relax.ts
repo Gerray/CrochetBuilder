@@ -181,33 +181,267 @@ export function relax(graph: StitchGraph, opts: RelaxOptions = {}): StitchGraph 
   const n = graph.nodes.length;
   if (n === 0) return { ...graph, positions: new Float64Array(0), relaxed: true };
 
+  const finish = resolveFinish(graph, opts);
+  const bendingK = clamp01(num(opts.bending, 1));
+  const model = buildParticles(graph, finish, bendingK);
+  const system = assembleSystem([{ model, stuffing: stuffingOf(opts, finish) }], []);
+  solveSystem(system, opts, graph.gauge.stitchWidthMm, graph.gauge.stitchHeightMm);
+  const out = nodePositions(model, system.pos, 0, n);
+  const relaxed = { ...graph, positions: out, relaxed: true };
+  if (opts.pose ?? true) canonicalPose(relaxed);
+  return relaxed;
+}
+
+/** A particle of a body of `relaxBodies`: the `k`-th fabric stitch of node `node` (an INC has two). */
+export interface ParticleRef {
+  body: number;
+  node: number;
+  k?: number;
+}
+
+/** A spring between particles of different bodies (a join), relative stiffness `k` (default 1). */
+export interface BodySpring {
+  a: ParticleRef;
+  b: ParticleRef;
+  rest: number;
+  k?: number;
+}
+
+/** One piece of a joint relaxation. */
+export interface RelaxBody {
+  graph: StitchGraph;
+  finish: Finish;
+  /** Stuffing 0–1 (`stuffingOf`). */
+  stuffing: number;
+  /** Where its procedural layout starts in the common frame: rotation (row-major 3×3) and translation. */
+  place?: { rotation: readonly number[]; translation: readonly number[] };
+  /** Extra triangles counted to its surface for the stuffing (the fabric across a join). */
+  tris?: ReadonlyArray<readonly [ParticleRef, ParticleRef, ParticleRef]>;
+}
+
+export interface RelaxBodiesOptions extends Omit<RelaxOptions, "finish" | "closed" | "stuffing"> {
+  /** Body whose canonical pose the whole result takes (default 0). */
+  root?: number;
+}
+
+export interface RelaxBodiesResult {
+  /** Per body: node positions (mm) in the common frame. */
+  positions: Float64Array[];
+  /** Positions of the tracked particles, in the same frame. */
+  tracked: Float64Array;
+}
+
+/** Fabric stitches (particles) of a node in the relaxation: an INC has two, everything else one. */
+export function stitchParticles(node: { lift: boolean; code: string; span: number }): number {
+  return !node.lift && node.code !== "MR" && node.span > 1 ? Math.round(node.span) : 1;
+}
+
+/**
+ * Relax several pieces together, linked by `springs` (parts joined while crocheting): every
+ * body keeps its own springs, rings, finish and stuffing (its own pressure on its own surface
+ * plus `tris`); the links come after them; repulsion acts across all. Deterministic like
+ * `relax`. With `pose` (default true) the result takes the canonical pose of the `root` body,
+ * every body moved with it.
+ */
+export function relaxBodies(
+  bodies: readonly RelaxBody[],
+  springs: readonly BodySpring[],
+  opts: RelaxBodiesOptions = {},
+  track: readonly ParticleRef[] = [],
+): RelaxBodiesResult {
+  const bendingK = clamp01(num(opts.bending, 1));
+  const models = bodies.map((b) => buildParticles(b.graph, b.finish, bendingK));
+  const offsets: number[] = [];
+  let total = 0;
+  for (const m of models) {
+    offsets.push(total);
+    total += m.count;
+  }
+  const at = (r: ParticleRef): number => {
+    const m = models[r.body]!;
+    const e = m.extraCount[r.node]!;
+    const k = Math.min(e, Math.max(0, Math.floor(r.k ?? 0)));
+    return offsets[r.body]! + (k === 0 ? r.node : m.extraStart[r.node]! + k - 1);
+  };
+  bodies.forEach((b, i) => {
+    if (!b.place) return;
+    const R = b.place.rotation;
+    const T = b.place.translation;
+    const p = models[i]!.pos;
+    for (let j = 0; j + 2 < p.length; j += 3) {
+      const x = p[j]!, y = p[j + 1]!, z = p[j + 2]!;
+      p[j] = R[0]! * x + R[1]! * y + R[2]! * z + T[0]!;
+      p[j + 1] = R[3]! * x + R[4]! * y + R[5]! * z + T[1]!;
+      p[j + 2] = R[6]! * x + R[7]! * y + R[8]! * z + T[2]!;
+    }
+  });
+  const system = assembleSystem(
+    bodies.map((b, i) => {
+      const body: SystemBody = { model: models[i]!, stuffing: b.stuffing };
+      if (b.tris && b.tris.length > 0) body.tris = b.tris.flatMap((t) => t.map(at));
+      return body;
+    }),
+    springs.map((s) => ({ a: at(s.a), b: at(s.b), rest: s.rest, k: s.k ?? 1 })),
+  );
+  const g0 = bodies[0]?.graph;
+  if (!g0) return { positions: [], tracked: new Float64Array(0) };
+  solveSystem(system, opts, g0.gauge.stitchWidthMm, g0.gauge.stitchHeightMm);
+  const positions = bodies.map((b, i) => nodePositions(models[i]!, system.pos, offsets[i]!, b.graph.nodes.length));
+  const tracked = new Float64Array(3 * track.length);
+  track.forEach((r, i) => {
+    const p = at(r);
+    tracked[3 * i] = system.pos[3 * p]!;
+    tracked[3 * i + 1] = system.pos[3 * p + 1]!;
+    tracked[3 * i + 2] = system.pos[3 * p + 2]!;
+  });
+  if (opts.pose ?? true) {
+    const root = Math.min(bodies.length - 1, Math.max(0, Math.floor(opts.root ?? 0)));
+    const others = positions.filter((_, i) => i !== root);
+    canonicalPose({ ...bodies[root]!.graph, positions: positions[root]! }, [...others, tracked]);
+  }
+  return { positions, tracked };
+}
+
+/** The stuffing value (0–1) of `opts` for a piece finished `finish` (see `RelaxOptions.stuffing`). */
+export function stuffingOf(opts: Pick<RelaxOptions, "stuffing">, finish: Finish): number {
+  return opts.stuffing === undefined || opts.stuffing === "auto" ? (finish === "gather" ? 1 : 0) : clamp01(num(opts.stuffing, 0));
+}
+
+/** One position per node (the mean of its particles) of a body whose particles start at `offset`. */
+function nodePositions(model: Particles, pos: Float64Array, offset: number, n: number): Float64Array {
+  const out = new Float64Array(3 * n);
+  for (let i = 0; i < n; i++) {
+    const first = model.extraStart[i]!;
+    const extra = model.extraCount[i]!;
+    for (let k = 0; k < 3; k++) {
+      let s = pos[3 * (offset + i) + k]!;
+      for (let e = 0; e < extra; e++) s += pos[3 * (offset + first + e) + k]!;
+      out[3 * i + k] = s / (extra + 1);
+    }
+  }
+  return out;
+}
+
+/** A spring between two particles of a system (global indices), e.g. a join between parts. */
+export interface SystemSpring {
+  a: number;
+  b: number;
+  rest: number;
+  k: number;
+}
+
+/** One body of a system: a piece's particle model and its stuffing; extra surface for its pressure. */
+interface SystemBody {
+  model: Particles;
+  stuffing: number;
+  /** Extra surface triangles over global particle indices (joins), counted to this body's volume. */
+  tris?: readonly number[];
+}
+
+/** Several particle models solved together (one model: `relax`). */
+interface ParticleSystem {
+  count: number;
+  pos: Float64Array;
+  ea: Uint32Array;
+  eb: Uint32Array;
+  er: Float64Array;
+  ek: Float64Array;
+  es: Uint8Array;
+  /** Per spring: the body whose stretch it measures (fabric springs), −1 for none. */
+  eg: Int32Array;
+  rings: Array<{ ids: Uint32Array; radius: number }>;
+  bodies: Array<{ offset: number; count: number; tris: Uint32Array; stuffing: number }>;
+}
+
+/**
+ * Put particle models side by side into one system: body b's particle i is `offsets[b] + i`;
+ * `links` (global indices) come after every body's own springs.
+ */
+function assembleSystem(bodies: readonly SystemBody[], links: readonly SystemSpring[]): ParticleSystem & { offsets: number[] } {
+  const offsets: number[] = [];
+  let count = 0;
+  let springs = links.length;
+  for (const b of bodies) {
+    offsets.push(count);
+    count += b.model.count;
+    springs += b.model.er.length;
+  }
+  if (bodies.length === 1 && links.length === 0) {
+    // One piece: its own arrays as they are.
+    const m = bodies[0]!.model;
+    const eg = new Int32Array(m.er.length);
+    for (let i = 0; i < eg.length; i++) eg[i] = m.es[i] === 1 ? 0 : -1;
+    return {
+      count,
+      pos: m.pos,
+      ea: m.ea,
+      eb: m.eb,
+      er: m.er,
+      ek: m.ek,
+      es: m.es,
+      eg,
+      rings: m.rings,
+      bodies: [{ offset: 0, count, tris: m.tris, stuffing: bodies[0]!.stuffing }],
+      offsets,
+    };
+  }
+  const pos = new Float64Array(3 * count);
+  const ea = new Uint32Array(springs);
+  const eb = new Uint32Array(springs);
+  const er = new Float64Array(springs);
+  const ek = new Float64Array(springs);
+  const es = new Uint8Array(springs);
+  const eg = new Int32Array(springs);
+  const rings: ParticleSystem["rings"] = [];
+  const out: ParticleSystem["bodies"] = [];
+  let e = 0;
+  bodies.forEach((b, bi) => {
+    const m = b.model;
+    const o = offsets[bi]!;
+    pos.set(m.pos, 3 * o);
+    for (let i = 0; i < m.er.length; i++, e++) {
+      ea[e] = m.ea[i]! + o;
+      eb[e] = m.eb[i]! + o;
+      er[e] = m.er[i]!;
+      ek[e] = m.ek[i]!;
+      es[e] = m.es[i]!;
+      eg[e] = m.es[i] === 1 ? bi : -1;
+    }
+    for (const r of m.rings) rings.push({ ids: r.ids.map((id) => id + o), radius: r.radius });
+    const tris = new Uint32Array(m.tris.length + (b.tris?.length ?? 0));
+    for (let i = 0; i < m.tris.length; i++) tris[i] = m.tris[i]! + o;
+    if (b.tris) tris.set(b.tris, m.tris.length);
+    out.push({ offset: o, count: m.count, tris, stuffing: b.stuffing });
+  });
+  for (const l of links) {
+    ea[e] = l.a;
+    eb[e] = l.b;
+    er[e] = l.rest;
+    ek[e] = l.k;
+    es[e] = 0;
+    eg[e] = -1;
+    e++;
+  }
+  return { count, pos, ea, eb, er, ek, es, eg, rings, bodies: out, offsets };
+}
+
+/** Run the solver on `system` (positions in place); see the module doc for the steps. */
+function solveSystem(system: ParticleSystem, opts: RelaxOptions, w: number, h: number): void {
   const iterations = Math.max(0, Math.floor(num(opts.iterations, 300)));
   const stiffness = clamp01(num(opts.stiffness, 1));
   const keep = 1 - clamp01(num(opts.damping, 0.2));
   const radialK = clamp01(num(opts.radial, 0.3));
   const repulsionK = clamp01(num(opts.repulsion, 0.3));
-  const bendingK = clamp01(num(opts.bending, 1));
-  const finish = resolveFinish(graph, opts);
-  const stuffing =
-    opts.stuffing === undefined || opts.stuffing === "auto"
-      ? finish === "gather"
-        ? 1
-        : 0
-      : clamp01(num(opts.stuffing, 0));
-  const w = graph.gauge.stitchWidthMm;
-  const h = graph.gauge.stitchHeightMm;
-
-  const model = buildParticles(graph, finish, bendingK);
-  const P = model.count;
+  const P = system.count;
 
   // Start positions with seeded jitter (graph nodes first, so a seed jitters them as before).
   const rand = createRandom(num(opts.seed, 1));
   const amp = Math.max(0, num(opts.jitter, 0.02)) * w;
-  const pos = model.pos;
+  const pos = system.pos;
   for (let i = 0; i < pos.length; i++) pos[i] = pos[i]! + (rand() * 2 - 1) * amp;
   const old = Float64Array.from(pos);
 
-  const { ea, eb, er, ek, es } = model;
+  const { ea, eb, er, ek, es, eg } = system;
   const m = er.length;
   const half = 0.5 * stiffness;
 
@@ -225,17 +459,23 @@ export function relax(graph: StitchGraph, opts: RelaxOptions = {}): StitchGraph 
     adj[fill[eb[i]!]!++] = ea[i]!;
   }
 
-  const rings = model.rings;
+  const rings = system.rings;
 
-  // Stuffing: a pressure on the surface (fabric triangles plus the pole's cap) that rises
-  // until the fabric is stretched by the target strain on average.
-  const tris = model.tris;
-  const grad = stuffing > 0 && tris.length > 0 ? new Float64Array(3 * P) : null;
-  const volumeSign = grad && signedVolume(pos, tris) < 0 ? -1 : 1;
-  const targetStrain = stuffing * STUFFED_STRAIN;
-  let pressure = 0; // outward step per iteration, in stitch widths
-  let strainSum = 0;
-  let strainCount = 0;
+  // Stuffing, per body: a pressure on its surface (fabric triangles plus the pole's cap) that
+  // rises until its fabric is stretched by the target strain on average.
+  const B = system.bodies.length;
+  const stuffed = system.bodies.map((b) => {
+    const grad = b.stuffing > 0 && b.tris.length > 0 ? new Float64Array(3 * b.count) : null;
+    return {
+      ...b,
+      grad,
+      volumeSign: grad && signedVolume(pos, b.tris) < 0 ? -1 : 1,
+      targetStrain: b.stuffing * STUFFED_STRAIN,
+      pressure: 0, // outward step per iteration, in stitch widths
+    };
+  });
+  const strainSum = new Float64Array(B);
+  const strainCount = new Float64Array(B);
 
   // Repulsion grid.
   const r0 = 0.75 * Math.min(w, h);
@@ -263,8 +503,9 @@ export function relax(graph: StitchGraph, opts: RelaxOptions = {}): StitchGraph 
         const len = Math.sqrt(dx * dx + dy * dy + dz * dz);
         if (len < 1e-9) continue;
         if (!forward && es[e] === 1) {
-          strainSum += (len - er[e]!) / er[e]!;
-          strainCount++;
+          const g = eg[e]!;
+          strainSum[g] = strainSum[g]! + (len - er[e]!) / er[e]!;
+          strainCount[g]!++;
         }
         const s = (half * ek[e]! * (len - er[e]!)) / len;
         pos[a] = pos[a]! + dx * s;
@@ -308,27 +549,30 @@ export function relax(graph: StitchGraph, opts: RelaxOptions = {}): StitchGraph 
 
     // 4. Stuffing: integral control of the pressure on the mean stretch of the fabric, so a
     //    ball and a long sausage end up equally firm. Unilateral: it only ever pushes out.
-    const meanStrain = strainCount > 0 ? strainSum / strainCount : 0;
-    strainSum = 0;
-    strainCount = 0;
-    if (grad) {
-      pressure = Math.min(MAX_PRESSURE, Math.max(0, pressure + PRESSURE_GAIN * (targetStrain - meanStrain)));
-      if (pressure > 0) {
-        // The volume gradient is the area-weighted outward normal: a uniform pressure.
-        volumeGradient(pos, tris, grad);
-        let sum = 0;
-        let count = 0;
-        for (let i = 0; i < P; i++) {
-          const g = Math.hypot(grad[3 * i]!, grad[3 * i + 1]!, grad[3 * i + 2]!);
-          if (g > 0) {
-            sum += g;
-            count++;
-          }
+    for (let b = 0; b < B; b++) {
+      const body = stuffed[b]!;
+      const meanStrain = strainCount[b]! > 0 ? strainSum[b]! / strainCount[b]! : 0;
+      strainSum[b] = 0;
+      strainCount[b] = 0;
+      const grad = body.grad;
+      if (!grad) continue;
+      body.pressure = Math.min(MAX_PRESSURE, Math.max(0, body.pressure + PRESSURE_GAIN * (body.targetStrain - meanStrain)));
+      if (body.pressure <= 0) continue;
+      // The volume gradient is the area-weighted outward normal: a uniform pressure.
+      volumeGradient(pos, body.tris, grad, body.offset);
+      let sum = 0;
+      let count = 0;
+      for (let i = 0; i < body.count; i++) {
+        const g = Math.hypot(grad[3 * i]!, grad[3 * i + 1]!, grad[3 * i + 2]!);
+        if (g > 0) {
+          sum += g;
+          count++;
         }
-        if (sum > 1e-12) {
-          const scale = (pressure * w * volumeSign * count) / sum;
-          for (let i = 0; i < grad.length; i++) pos[i] = pos[i]! + scale * grad[i]!;
-        }
+      }
+      if (sum > 1e-12) {
+        const scale = (body.pressure * w * body.volumeSign * count) / sum;
+        const o = 3 * body.offset;
+        for (let i = 0; i < grad.length; i++) pos[o + i] = pos[o + i]! + scale * grad[i]!;
       }
     }
 
@@ -347,22 +591,6 @@ export function relax(graph: StitchGraph, opts: RelaxOptions = {}): StitchGraph 
       });
     }
   }
-
-  // Back to one position per node: the mean of its particles.
-  const out = new Float64Array(3 * n);
-  for (let i = 0; i < n; i++) {
-    const first = model.extraStart[i]!;
-    const extra = model.extraCount[i]!;
-    for (let k = 0; k < 3; k++) {
-      let s = pos[3 * i + k]!;
-      for (let e = 0; e < extra; e++) s += pos[3 * (first + e) + k]!;
-      out[3 * i + k] = s / (extra + 1);
-    }
-  }
-
-  const relaxed = { ...graph, positions: out, relaxed: true };
-  if (opts.pose ?? true) canonicalPose(relaxed);
-  return relaxed;
 }
 
 /**
@@ -400,6 +628,8 @@ interface Particles {
   rings: Array<{ ids: Uint32Array; radius: number }>;
   /** Surface triangles over particles (closed pieces include the pole's cap). */
   tris: Uint32Array;
+  /** Per graph row: its fabric particles (no lifts, no MR, no picots) in working order. */
+  fabric: number[][];
 }
 
 /** Relative stiffness of the pole springs that pull the last round shut. */
@@ -663,8 +893,33 @@ function buildParticles(graph: StitchGraph, finish: Finish, bendingK: number): P
   // Surface: zip every row's stitches to the stitches they are worked into (as the graph's
   // triangulation, per particle), plus the pole's cap.
   const tris: number[] = [];
+  const nodeOfParticle = new Int32Array(count).fill(-1);
+  for (let i = 0; i < n; i++) {
+    nodeOfParticle[i] = i;
+    for (let k = 0; k < extraCount[i]!; k++) nodeOfParticle[extraStart[i]! + k] = i;
+  }
+  const nodeOf = (p: number): number => nodeOfParticle[p]!;
   graph.rows.forEach((r, ri) => {
-    const children = fabric[ri]!.filter((c) => (parentsOfPart.get(c)?.length ?? 0) > 0);
+    const row = fabric[ri]!;
+    // Stitches worked into another part (`from`) have no parents here: the surface is not
+    // zipped across them (the joined model links them to the other part).
+    const fromBefore = new Int32Array(row.length + 1);
+    let anyFrom = false;
+    row.forEach((p, k) => {
+      const isFrom = nodes[nodeOf(p)]?.joined === "from";
+      anyFrom ||= isFrom;
+      fromBefore[k + 1] = fromBefore[k]! + (isFrom ? 1 : 0);
+    });
+    const at = new Map<number, number>();
+    row.forEach((p, k) => at.set(p, k));
+    const gapFree = (c1: number, c2: number) => {
+      if (!anyFrom) return true;
+      const i = at.get(c1)!;
+      const j = at.get(c2)!;
+      if (i < j) return fromBefore[j]! - fromBefore[i + 1]! === 0;
+      return fromBefore[row.length]! - fromBefore[i + 1]! + fromBefore[j]! === 0;
+    };
+    const children = row.filter((c) => (parentsOfPart.get(c)?.length ?? 0) > 0);
     if (children.length === 0) return;
     const flip = r.direction === -1;
     const tri = (a: number, b: number, c: number) => {
@@ -684,10 +939,12 @@ function buildParticles(graph: StitchGraph, finish: Finish, bendingK: number): P
       const c = children[i]!;
       const ps = parentsOfPart.get(c)!;
       for (let k = 0; k + 1 < ps.length; k++) tri(c, ps[k]!, ps[k + 1]!);
-      if (i + 1 < children.length) zip(c, children[i + 1]!);
+      if (i + 1 < children.length && gapFree(c, children[i + 1]!)) zip(c, children[i + 1]!);
     }
     const ringOk = r.kind === "ring" || new Set(children.flatMap((c) => parentsOfPart.get(c)!)).size > 2;
-    if (r.closed && children.length > 2 && ringOk) zip(children[children.length - 1]!, children[0]!);
+    if (r.closed && children.length > 2 && ringOk && gapFree(children[children.length - 1]!, children[0]!)) {
+      zip(children[children.length - 1]!, children[0]!);
+    }
   });
   if (pole >= 0) {
     const f = lastRing!;
@@ -720,6 +977,7 @@ function buildParticles(graph: StitchGraph, finish: Finish, bendingK: number): P
     es: Uint8Array.from(es),
     rings,
     tris: Uint32Array.from(tris),
+    fabric,
   };
 }
 
@@ -747,14 +1005,25 @@ export function signedVolume(pos: Float64Array, tris: Uint32Array): number {
   return v / 6;
 }
 
-/** Volume and its gradient with respect to every node position (written into `grad`). */
-function volumeGradient(pos: Float64Array, tris: Uint32Array, grad: Float64Array): number {
+/**
+ * Volume and its gradient with respect to every node position (written into `grad`, whose
+ * entry i is particle `offset + i`; the triangles use global indices).
+ */
+function volumeGradient(pos: Float64Array, tris: Uint32Array, grad: Float64Array, offset = 0): number {
   grad.fill(0);
   let v = 0;
+  const o = 3 * offset;
+  const limit = grad.length;
   for (let t = 0; t < tris.length; t += 3) {
     const a = 3 * tris[t]!;
     const b = 3 * tris[t + 1]!;
     const c = 3 * tris[t + 2]!;
+    if (offset !== 0 || limit < pos.length) {
+      // A body of a system: its own triangles may reach particles of another body (joins);
+      // only its own particles are pushed.
+      volumeGradientTriangle(pos, a, b, c, grad, o);
+      continue;
+    }
     const ax = pos[a]!, ay = pos[a + 1]!, az = pos[a + 2]!;
     const bx = pos[b]!, by = pos[b + 1]!, bz = pos[b + 2]!;
     const cx = pos[c]!, cy = pos[c + 1]!, cz = pos[c + 2]!;
@@ -774,6 +1043,23 @@ function volumeGradient(pos: Float64Array, tris: Uint32Array, grad: Float64Array
     grad[c + 2] = grad[c + 2]! + abz / 6;
   }
   return v / 6;
+}
+
+/** One triangle's share of the volume gradient, for the corners in `[o, o + grad.length)`. */
+function volumeGradientTriangle(pos: Float64Array, a: number, b: number, c: number, grad: Float64Array, o: number): void {
+  const ax = pos[a]!, ay = pos[a + 1]!, az = pos[a + 2]!;
+  const bx = pos[b]!, by = pos[b + 1]!, bz = pos[b + 2]!;
+  const cx = pos[c]!, cy = pos[c + 1]!, cz = pos[c + 2]!;
+  const put = (at: number, x: number, y: number, z: number) => {
+    const i = at - o;
+    if (i < 0 || i >= grad.length) return;
+    grad[i] = grad[i]! + x / 6;
+    grad[i + 1] = grad[i + 1]! + y / 6;
+    grad[i + 2] = grad[i + 2]! + z / 6;
+  };
+  put(a, by * cz - bz * cy, bz * cx - bx * cz, bx * cy - by * cx);
+  put(b, cy * az - cz * ay, cz * ax - cx * az, cx * ay - cy * ax);
+  put(c, ay * bz - az * by, az * bx - ax * bz, ax * by - ay * bx);
 }
 
 /**
@@ -870,10 +1156,15 @@ class SpatialHash {
  * normals) → +Y, and for an oval start its foundation chain → +X; for flat pieces the fabric
  * normal → +Z and row growth → +Y. Then centre on the Y axis and put the lowest point on y = 0.
  */
-export function canonicalPose(graph: StitchGraph): void {
+export function canonicalPose(graph: StitchGraph, others: readonly Float64Array[] = []): void {
   const pos = graph.positions;
   const n = graph.nodes.length;
   if (n === 0) return;
+  const all = [pos, ...others];
+  /** Every point of every array (`others` carry their own length). */
+  const each = (fn: (a: Float64Array, i: number) => void) => {
+    for (const a of all) for (let i = 0; i + 2 < a.length; i += 3) fn(a, i);
+  };
 
   const closedRows = graph.rows.filter((r) => r.closed);
   if (closedRows.length > 0) {
@@ -889,7 +1180,7 @@ export function canonicalPose(graph: StitchGraph): void {
       ay += nrm[1];
       az += nrm[2];
     }
-    rotateInto(pos, [ax, ay, az], [0, 1, 0]);
+    for (const a of all) rotateInto(a, [ax, ay, az], [0, 1, 0]);
     // An oval start: turn about Y so that its foundation chain runs along +X (the oval's
     // length is then the width).
     const around = graph.rows.findIndex((r) => r.around);
@@ -902,11 +1193,11 @@ export function canonicalPose(graph: StitchGraph): void {
       const l = Math.hypot(ux, uz);
       if (l > 1e-9) {
         const cs = ux / l, sn = uz / l;
-        for (let i = 0; i < n; i++) {
-          const x = pos[3 * i]!, z = pos[3 * i + 2]!;
-          pos[3 * i] = cs * x + sn * z;
-          pos[3 * i + 2] = -sn * x + cs * z;
-        }
+        each((p, i) => {
+          const x = p[i]!, z = p[i + 2]!;
+          p[i] = cs * x + sn * z;
+          p[i + 2] = -sn * x + cs * z;
+        });
       }
     }
   } else {
@@ -921,7 +1212,7 @@ export function canonicalPose(graph: StitchGraph): void {
         ny += c[1];
         nz += c[2];
       }
-      rotateInto(pos, [nx, ny, nz], [0, 0, 1]);
+      for (const a of all) rotateInto(a, [nx, ny, nz], [0, 0, 1]);
     }
     const u = workingDirection(graph);
     if (t.length > 0) {
@@ -929,31 +1220,32 @@ export function canonicalPose(graph: StitchGraph): void {
         // Rotate about Z so that the working direction points along +X.
         const ang = -Math.atan2(u[1], u[0]);
         const cs = Math.cos(ang), sn = Math.sin(ang);
-        for (let i = 0; i < n; i++) {
-          const x = pos[3 * i]!, y = pos[3 * i + 1]!;
-          pos[3 * i] = cs * x - sn * y;
-          pos[3 * i + 1] = sn * x + cs * y;
-        }
+        each((p, i) => {
+          const x = p[i]!, y = p[i + 1]!;
+          p[i] = cs * x - sn * y;
+          p[i + 1] = sn * x + cs * y;
+        });
       }
     } else {
-      rotateInto(pos, u, [1, 0, 0]);
+      for (const a of all) rotateInto(a, u, [1, 0, 0]);
     }
   }
 
+  // Centre on the Y axis and rest on y = 0 — all arrays together (a joined piece as a whole).
   let minX = Infinity, maxX = -Infinity, minY = Infinity, minZ = Infinity, maxZ = -Infinity;
-  for (let i = 0; i < n; i++) {
-    minX = Math.min(minX, pos[3 * i]!);
-    maxX = Math.max(maxX, pos[3 * i]!);
-    minY = Math.min(minY, pos[3 * i + 1]!);
-    minZ = Math.min(minZ, pos[3 * i + 2]!);
-    maxZ = Math.max(maxZ, pos[3 * i + 2]!);
-  }
+  each((p, i) => {
+    minX = Math.min(minX, p[i]!);
+    maxX = Math.max(maxX, p[i]!);
+    minY = Math.min(minY, p[i + 1]!);
+    minZ = Math.min(minZ, p[i + 2]!);
+    maxZ = Math.max(maxZ, p[i + 2]!);
+  });
   const ox = (minX + maxX) / 2, oz = (minZ + maxZ) / 2;
-  for (let i = 0; i < n; i++) {
-    pos[3 * i] = pos[3 * i]! - ox;
-    pos[3 * i + 1] = pos[3 * i + 1]! - minY;
-    pos[3 * i + 2] = pos[3 * i + 2]! - oz;
-  }
+  each((p, i) => {
+    p[i] = p[i]! - ox;
+    p[i + 1] = p[i + 1]! - minY;
+    p[i + 2] = p[i + 2]! - oz;
+  });
 }
 
 /**
