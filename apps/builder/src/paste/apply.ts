@@ -237,6 +237,21 @@ export function applyPaste(
     partIds.set(part.id, id);
     return { id, name: name.trim() || `Teil ${i + 1}`, quantity, content };
   });
+  // Joins between the pasted parts (B5b) follow their new part and row ids.
+  const relink = (ops: readonly Op[]): void => {
+    for (const op of ops) {
+      if (op.kind !== "stitch") {
+        relink(op.ops);
+        continue;
+      }
+      for (const ref of [op.from, op.through]) {
+        if (!ref) continue;
+        ref.part = partIds.get(ref.part) ?? ref.part;
+        if (ref.row !== undefined) ref.row = rowIds.get(ref.row) ?? ref.row;
+      }
+    }
+  };
+  for (const part of parts) for (const row of part.content.rows) relink(row.ops);
   const assembly: Placement[] = [];
   for (const placement of preview.assembly) {
     const target = partIds.get(placement.target);

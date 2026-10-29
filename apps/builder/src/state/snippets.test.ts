@@ -5,7 +5,7 @@ import type { RoundSpec } from "./rounds.js";
 
 const texts = (rounds: readonly RoundSpec[]) => rounds.map((r) => renderOps(r.ops, "de"));
 const counts = (rounds: readonly RoundSpec[]) => rounds.map((r) => r.count);
-const params = (p: Partial<SnippetParams>): SnippetParams => ({ max: 36, rounds: 4, min: 6, chain: 7, increases: 2, ...p });
+const params = (p: Partial<SnippetParams>): SnippetParams => ({ max: 36, rounds: 4, min: 6, chain: 7, increases: 2, bridge: 3, legA: "", legB: "", ...p });
 
 /** The rounds as a part, every Soll set — validation must find nothing. */
 function asPart(rounds: readonly RoundSpec[]): PartContent {

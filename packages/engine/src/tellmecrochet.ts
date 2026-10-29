@@ -20,7 +20,8 @@ import { z } from "zod";
 import type { Placement } from "./assembly.js";
 import { isMirroredPair } from "./assembly-text.js";
 import { instructionText, rowOrdinals } from "./expand.js";
-import { renderedRowLine, type BuilderExport, type BuilderPart, type Material, type PaletteColor } from "./export.js";
+import { joinPartsOf, renderedRowLine, type BuilderExport, type BuilderPart, type Material, type PaletteColor } from "./export.js";
+import { droppedPlacements, planJoins, rowHasJoin, type JoinPlan } from "./join.js";
 import type { Gauge, YarnWeight } from "./gauge.js";
 import { renderRow, rowLabel } from "./notation.js";
 import type { Op, Row, StitchCode } from "./schema.js";
@@ -192,9 +193,10 @@ export type TmcLossCode =
 
 /**
  * What became text in a row: stitch groups, the bobble family, picots, relief stitches, a
- * round worked around a foundation chain (`around`).
+ * round worked around a foundation chain (`around`), stitches worked into or through another
+ * part (`join`, `StitchOp.from` / `.through`).
  */
-export type TmcTextFeature = "group" | "bobble" | "puff" | "popcorn" | "picot" | "relief" | "around";
+export type TmcTextFeature = "group" | "bobble" | "puff" | "popcorn" | "picot" | "relief" | "around" | "join";
 
 /** Something the draft carries differently from the builder export (German `message`). */
 export interface TmcLoss {
@@ -382,8 +384,9 @@ const FEATURE_WORDS: Record<TmcTextFeature, string> = {
   picot: "Pikots",
   relief: "Reliefmaschen",
   around: "Maschen um die Luftmaschenkette herum",
+  join: "Maschen in ein anderes Teil",
 };
-const FEATURE_ORDER: readonly TmcTextFeature[] = ["around", "group", "bobble", "puff", "popcorn", "picot", "relief"];
+const FEATURE_ORDER: readonly TmcTextFeature[] = ["around", "join", "group", "bobble", "puff", "popcorn", "picot", "relief"];
 
 function joinWords(words: readonly string[]): string {
   if (words.length <= 1) return words[0] ?? "";
@@ -472,6 +475,8 @@ function textFeatures(ops: readonly Op[], out: Set<TmcTextFeature> = new Set()):
       const feature = V2_CODE_FEATURES[op.code];
       if (feature) out.add(feature);
       if (op.modifiers?.some((m) => m === "FP" || m === "BP")) out.add("relief");
+      // Format version 1 has no joins between parts (B5b).
+      if (op.from !== undefined || op.through !== undefined) out.add("join");
     } else {
       if (op.kind === "group") out.add("group");
       textFeatures(op.ops, out);
@@ -498,6 +503,27 @@ function toTmcOps(ops: readonly Op[]): TmcOp[] {
  * order (a repeat's body once). Marks with ids outside the palette (`known`) stay as they are.
  * Returns the ops, the working colour after them and how many real changes they hold.
  */
+/**
+ * `row` (with ops of the source row, possibly copied shallowly) with the start every join of
+ * copy `copy` of part `part` resolves to (`planJoins`) written out: "ab M 7" for the second
+ * branch of a split tail, which takes the second half without saying so.
+ */
+function withResolvedStarts(row: Row, part: number, copy: number, plan: JoinPlan): Row {
+  const slots = new Map<object, number>();
+  for (const l of plan.links) if (l.part === part && l.copy === copy && l.rowId === row.id && !slots.has(l.ref)) slots.set(l.ref, l.slot);
+  const walk = (ops: readonly Op[]): Op[] =>
+    ops.map((op): Op => {
+      if (op.kind !== "stitch") return { ...op, ops: walk(op.ops) } as Op;
+      const kind = op.from ? "from" : op.through ? "through" : undefined;
+      if (!kind) return op;
+      const ref = op[kind]!;
+      const slot = slots.get(ref);
+      if (slot === undefined || (slot === 0 && ref.start === undefined)) return op;
+      return { ...op, [kind]: { ...ref, start: slot } };
+    });
+  return { ...row, ops: walk(row.ops) };
+}
+
 function cleanColors(
   ops: readonly Op[],
   current: string | undefined,
@@ -595,6 +621,8 @@ function draftMaterials(materials: readonly Material[], palette: readonly Palett
  *   - rows with stitch groups, bobble-family stitches, picots or relief stitches, and rounds
  *     worked around a foundation chain, become free instructions holding the row's full German
  *     text ("Runde 3: 6× (3 fM in dieselbe M) (18)", "Runde 2: um die Lm-Kette: 1 fM, …");
+ *     so do rows with stitches worked into or through another part ("Runde 1: um die
+ *     Lm-Kette: 18 fM aus Teil Bein 1, 3 fM, 18 fM aus Teil Bein 2, 3 fM (42)");
  *     the rows after such a row keep their numbers as labels ("Runde 4");
  *   - colour changes at the start of a row become an instruction before it ("Farbwechsel: Weiß"),
  *     changes inside a row a note on it; with two or more colours each part says its first colour;
@@ -613,6 +641,9 @@ export function toTellmeCrochetDraft(doc: BuilderExport, opts: TmcDraftOptions =
   const colorName = (id: string) => (known.get(id) ?? id).replace(/[[\]]/g, "");
 
   const assemblyName = opts.assemblyPartName?.trim() || TMC_ASSEMBLY_PART_NAME;
+  // Joins name the other part as TellmeCrochet shows it ("aus Teil Bein 1 (Runde 5)").
+  const joinParts = joinPartsOf(doc);
+  const plan = doc.parts.some((p) => p.content.rows.some(rowHasJoin)) ? planJoins(doc) : null;
 
   const parts: TmcDraftPart[] = doc.parts.map((part, partIndex) => {
     const sourceRows = part.content.rows;
@@ -702,7 +733,16 @@ export function toTellmeCrochetDraft(doc: BuilderExport, opts: TmcDraftOptions =
       // Format version 1 has no rounds around a chain (oval start).
       if (row.around) features.add("around");
       if (features.size > 0) {
-        const line = renderedRowLine(shown, ordinals[i] ?? 0, "de", palette, target);
+        let line = renderedRowLine(shown, ordinals[i] ?? 0, "de", palette, target, joinParts);
+        if (plan && rowHasJoin(row)) {
+          // Each copy with the stitches its joins take; one line when all copies read the same.
+          const copies = Math.max(1, Math.floor(part.quantity));
+          const lines = Array.from({ length: copies }, (_, copy) =>
+            renderedRowLine(withResolvedStarts(shown, partIndex, copy, plan), ordinals[i] ?? 0, "de", palette, target, joinParts),
+          );
+          const name = partDisplayName(part.name, partIndex);
+          line = lines.every((l) => l === lines[0]) ? lines[0]! : lines.map((l, copy) => `${name} ${copy + 1}: ${l}`).join(" · ");
+        }
         rows.push({ id: takeSource(row.id), type: row.type, ops: [], stitchCountTarget: 0, label, note: line });
         shifted = true;
         const list = FEATURE_ORDER.filter((f) => features.has(f));
@@ -755,7 +795,12 @@ export function toTellmeCrochetDraft(doc: BuilderExport, opts: TmcDraftOptions =
     return finishPart(partDisplayName(part.name, partIndex), part.quantity, rows);
   });
 
-  const placements = doc.assembly ?? [];
+  // Placements the join overrides (the part is crocheted on there) are no step.
+  const dropped = new Set(plan ? droppedPlacements(doc, plan).map((d) => d.placement.id) : []);
+  for (const id of dropped) {
+    losses.push({ code: "assembly", placementId: id, partName: assemblyName, message: `Die Platzierung „${id}“ entfällt: das Teil wird beim Häkeln angesetzt.` });
+  }
+  const placements = (doc.assembly ?? []).filter((pl) => !dropped.has(pl.id));
   if (placements.length > 0) {
     const ids = new IdPool();
     const rows = placements.map((pl) => {

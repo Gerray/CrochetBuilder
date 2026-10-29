@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type Ref } from "react";
 import { parseRowText, renderRow, type Op, type Row } from "@crochetbuilder/engine";
+import { useJoinParts } from "./joinParts.js";
 import { parseErrorMessage, parseWarningMessage, type ParseWarning } from "../state/messages.js";
 import type { RowSuggestion } from "../state/suggest.js";
 import { usePalette } from "./palette.js";
@@ -57,7 +58,8 @@ interface RowTextFieldProps {
 export function RowTextField(props: RowTextFieldProps) {
   const { row, inputRef, previousCount, suggestion, onCommit, onEnter, label } = props;
   const palette = usePalette();
-  const rendered = renderRow(row, "de", { colors: palette.colors });
+  const joins = useJoinParts();
+  const rendered = renderRow(row, "de", { colors: palette.colors, parts: joins.parts });
   const [draft, setDraftState] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [warnings, setWarnings] = useState<readonly ParseWarning[]>([]);
@@ -164,6 +166,7 @@ export function RowTextField(props: RowTextFieldProps) {
     const context = {
       colors: palette.colors,
       rowColor: true,
+      ...(joins.parts.length > 0 ? { parts: joins.parts } : {}),
       ...(previousCount === undefined ? {} : { previousCount }),
     };
     const result = parseRowText(text, "de", context);

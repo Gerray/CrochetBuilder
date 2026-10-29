@@ -82,7 +82,14 @@ export interface PreviewPaneProps {
    * the pane has no "Teil | Montage" switch.
    */
   renderAssembly?: (view: AssemblyViewSettings) => ReactNode;
+  /**
+   * Names of the parts this part is crocheted together with (B5b): the preview shows the part
+   * on its own and says that the Montage shows it joined.
+   */
+  joinedWith?: readonly string[];
 }
+
+const NO_NAMES: readonly string[] = [];
 
 /** Display settings the pane hands to the "Montage" view. */
 export interface AssemblyViewSettings {
@@ -228,6 +235,7 @@ export function PreviewPane({
   previewOptions,
   loadView = loadModelCanvas,
   renderAssembly,
+  joinedWith = NO_NAMES,
 }: PreviewPaneProps) {
   const resolved = resolveGauge(gauge);
   const [modeSetting, setMode] = useState<PreviewMode>(() => readSetting<PreviewMode>(MODE_KEY, ["part", "assembly"], "part"));
@@ -389,6 +397,11 @@ export function PreviewPane({
         </div>
 
         <Dimensions preview={preview} />
+        {joinedWith.length > 0 && (
+          <p className="model-note join-note" role="note">
+            Wird beim Häkeln mit {joinedWith.join(", ")} verbunden – hier allein gezeigt, in der Montage angehäkelt.
+          </p>
+        )}
         {preview.mainThread && (
           <p className="model-note" title="Der Browser erlaubt hier keinen Hintergrund-Thread (Web Worker).">
             Vorschau rechnet ohne Hintergrund-Thread – höchstens {count(MAIN_THREAD_MAX_STITCHES)} Maschen.

@@ -4,7 +4,78 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the engine package
 (`@crochetbuilder/engine`) follows [Semantic Versioning](https://semver.org/).
 
-## [Unreleased] — engine 1.0.0, format version 2
+## [Unreleased] — engine 2.0.0, joining parts while crocheting
+
+### Breaking
+
+- **Joins between parts** (format version 2, still `schemaVersion: 2`): `StitchOp` gains the
+  optional fields `from` and `through` (`JoinRefSchema`: `{ part, copy?, row?, start? }`).
+  Strict version-2 readers built for engine 1.x reject stitch ops that have them; consumers of
+  the schema need engine 2.0.0. `usesFormatV2` counts them, so a document with joins that says
+  `schemaVersion: 1` is rejected.
+- New members of exported unions: the finding code `INVALID_JOIN`; the export finding codes
+  `JOIN_UNKNOWN_PART`, `JOIN_UNKNOWN_COPY`, `JOIN_UNKNOWN_ROW`, `JOIN_SELF`, `JOIN_CYCLE`,
+  `JOIN_OVERFLOW`, `JOIN_OVERLAP`, `JOIN_UNDERFLOW`, `THROUGH_NOT_FLAT`, `JOIN_INTO_GATHERED`, `JOINED_AND_PLACED`
+  (`JoinFindingCode`); the assembly finding code `JOINED`; the `TmcTextFeature` `join`; the
+  import issue code `JOIN_QUANTITY_RAISED`. Exhaustive `switch`es over these unions have to
+  cover them.
+- `validate` no longer counts stitches with `from` against the own previous row, and
+  `hookSkipOf` ignores them; a row in the middle of a part worked only into another part is
+  `CONSUMES_UNDERFLOW`. `RowStitch` gains `join`, `StitchNode` gains `joined`.
+- `UNSUPPORTED_JOIN` of the pattern import now means a join that names no part of the pattern
+  (or a row that does not read); joins that name one are read. A round split into branches
+  in prose ("sc the round in half", "Runde in zwei Hälften teilen") is reported as
+  `UNSUPPORTED_JOIN` too.
+
+### Added
+
+- **Joining while crocheting.** `from`: the stitches are worked into the stitches of a row of
+  another part (the body around both legs, a stem on a pumpkin, the branches of a split tail);
+  `through`: worked into the own row and through the other part's edge, of a round both
+  layers ("5 sc with the arm"). `copy` picks the copy of a part ×2 (1-based, default 1), `row`
+  the row (default its last stitch row), `start` the first stitch (default: where the previous
+  join into that row stopped). `planJoins(doc)` resolves every joined stitch to its places;
+  `validateExport` reports unknown parts, copies and rows, self joins, cycles, overflow,
+  overlap, stitches left free, `through` without an edge and joined parts that are also sewn
+  on. Documented in docs/FORMAT.md, "Joining parts while crocheting".
+- **Joint relaxation.** `buildJoinedModels(doc)` relaxes every component of joined part
+  copies as one piece (`relaxBodies`: each copy keeps its graph, finish and stuffing, joins
+  are links, repulsion works across parts; deterministic), with start poses fitted copy by
+  copy and the canonical pose of the component's root (`JoinPlan.roots`: most stitches, ties by
+  part id), independent of the order of the parts; components joined in a circle are skipped.
+  It hands out the fabric across the joins (`JoinedComponent.bridge`), closed where joined
+  stitches meet the row's own ones. `composeAssembly(…, { joined })` draws joined copies in
+  their common frame (`PartInstance.joined`): the root is placed like any part (sewn on, it
+  carries the others), placements go per copy to copies that are not joined below a root
+  (`placeableCopies`), left-over ones are dropped (`droppedPlacements`). `start` on a part ×2
+  applies to its first copy; the others continue after it. Single-part
+  `buildModel` is unchanged. A body with two legs of about 1,500 stitches relaxes in well under
+  a second.
+- **Notation:** joins render after their stitch (`18 fM aus Teil Bein 1`, `21 fM aus Teil
+  Kürbis (Runde 12)`, `5 fM zusammen mit Teil Arm`, US/UK `from part …`, `together with part
+  …`) with `RenderOptions.parts`, and `parseRowText` reads them back with
+  `ParseRowContext.parts` — also "18 fM um das erste Bein", "18 sc around leg 1", "5 fM mit dem
+  Arm", "4 sc on the arm", "5 sc through both layers of the arm and the body".
+  `renderedRows` / `renderedRowLine` take the parts (`joinPartsOf(doc)`).
+- **Pattern import:** joins to parts of the pattern are read (see Breaking); "N sc with/on the
+  arm" is worked into the arm when N is its whole last round, else through it; left/right
+  are copies 1/2; a round around a chain bridge with joins is marked `around`. A join in the
+  middle of a part that would leave the own previous round unworked ("12 sc on the head" in a
+  body round) stays a hint (`UNSUPPORTED_JOIN`); plain "in" ("6 sc in ring") names no part.
+- **Hand-off to TellmeCrochet:** rows with joins become text steps with their full German line
+  ("Runde 2: um die Lm-Kette: 18 fM aus Teil Bein 1, 3 fM, 18 fM aus Teil Bein 2, 3 fM (42)"),
+  with the stitch each copy starts at (one line per copy when they differ); placements the join
+  overrides are no step of "Zusammensetzen".
+- **Builder:** the row text reads and shows joins; every stitch has a picker "aus Teil … /
+  zusammen mit Teil …" (part, copy, row — default the last one — and first stitch — proposed
+  where the join would start in document order and stored explicitly); parts get their ids
+  when a join needs one; deleting a part removes the joins to it (one undo step). The Montage
+  says when joined parts are shown without their joins (a circle, the budget). Join findings show on the rows,
+  the part preview says when a part is joined, and the Montage (and the PDF image) shows the
+  joined parts relaxed together. "+ Baustein" offers "Beine verbinden": two legs (a part ×2 or
+  two parts) and a bridge length give the chain bridge and the round around both legs.
+
+## [1.0.0] — engine 1.0.0, format version 2, not released separately
 
 ### Breaking
 

@@ -22,6 +22,7 @@ import {
   opsWithinLimits,
   type Finish,
   type Gauge,
+  type JoinRef,
   type Material,
   type Op,
   type PaletteColor,
@@ -35,6 +36,7 @@ import { emptyRow, instructionRow, type BuilderDoc } from "./document.js";
 import * as tree from "./op-tree.js";
 import type { OpPath } from "./op-tree.js";
 import { colorNameProblem, replaceColorInRow } from "./palette.js";
+import { joinRefOf, withJoinIds, withoutJoinsTo, type JoinDraft } from "./joins.js";
 
 export const HISTORY_LIMIT = 200;
 
@@ -125,6 +127,11 @@ export type EditorAction =
   | { type: "insertOp"; rowId: string; path: OpPath; op: Op }
   /** Colour change at a stitch ("ab dieser Masche"); null removes it. */
   | { type: "setOpColor"; rowId: string; path: OpPath; color: string | null }
+  /**
+   * Join of a stitch to another part (B5b): "aus Teil …" (`from`) or "zusammen mit Teil …"
+   * (`through`); null removes it. The other part gets an id if it has none.
+   */
+  | { type: "setOpJoin"; rowId: string; path: OpPath; join: JoinDraft | null }
   | { type: "removeOp"; rowId: string; path: OpPath }
   | { type: "moveOp"; rowId: string; path: OpPath; delta: number }
   | { type: "wrapInRepeat"; rowId: string; path: OpPath; times?: number; length?: number }
@@ -502,7 +509,8 @@ function applyEdit(state: EditorState, action: EditorAction): DocResult {
     case "setRowOps":
       if (rowScope < 0) return same;
       return scoped({
-        doc: withRow(doc, action.rowId, (row) => {
+        // A part named in the text before it had an id gets it now (`joinPartsFor`).
+        doc: withRow(withJoinIds(doc, action.ops), action.rowId, (row) => {
           const next = rowWithOps(row, action.ops, pinned, action.target);
           // Ops the limits refuse keep the row as it is, colour included.
           if (next === row && !sameJson(action.ops, row.ops)) return row;
@@ -536,6 +544,38 @@ function applyEdit(state: EditorState, action: EditorAction): DocResult {
           return next;
         }),
       );
+
+    case "setOpJoin": {
+      if (rowScope < 0) return same;
+      let base = doc;
+      let ref: JoinRef | null = null;
+      if (action.join) {
+        if (action.join.part === rowScope) return same; // never into its own part
+        const resolved = joinRefOf(doc, action.join);
+        if (!resolved) return same;
+        base = resolved.doc;
+        ref = resolved.ref;
+      }
+      const kind = action.join?.kind;
+      const next = withRow(base, action.rowId, (row) =>
+        rowWithOps(
+          row,
+          tree.updateOp(row.ops, action.path, (op) => {
+            if (op.kind !== "stitch") return op;
+            const out: StitchOp = { ...op };
+            delete out.from;
+            delete out.through;
+            if (ref && kind) out[kind] = ref;
+            return sameJson(out, op) ? op : out;
+          }),
+          pinned,
+        ),
+      );
+      // Nothing changed (same join, or not a stitch): no undo step, no new part id.
+      const rowIn = (d: BuilderDoc) => d.parts[rowScope]?.content.rows.find((r) => r.id === action.rowId);
+      if (rowIn(next) === rowIn(doc)) return same;
+      return scoped({ doc: next, pinned });
+    }
 
     case "updateStitch":
       return opsEdit(action.rowId, (ops) =>
@@ -654,8 +694,8 @@ function applyEdit(state: EditorState, action: EditorAction): DocResult {
       const gone = new Set(part.content.rows.map((r) => r.id));
       const parts = doc.parts.filter((_, i) => i !== action.index);
       return {
-        // Placements on or of the deleted part go with it (undo brings both back).
-        doc: withoutPlacementsOf({ ...doc, parts }, part.id),
+        // Placements on or of the deleted part, and joins to it, go with it (undo brings all back).
+        doc: withoutJoinsTo(withoutPlacementsOf({ ...doc, parts }, part.id), part.id),
         pinned: pinned.some((id) => gone.has(id)) ? pinned.filter((id) => !gone.has(id)) : pinned,
         scope: action.index,
         // The next part takes its place in view (the previous one after the last part).
@@ -849,7 +889,9 @@ function applyAssist(state: EditorState, action: AssistAction): DocResult {
         return [...rows.slice(0, anchor + 1), ...inserted, ...rows.slice(anchor + 1)];
       });
       const keep = dropped === undefined ? pinned : pinned.filter((id) => id !== dropped);
-      return { doc: next, pinned: keep.length === pinned.length ? pinned : keep, scope: index };
+      // Joins of the new rows (a "Beine verbinden" snippet) may name parts without an id yet.
+      const withIds = withJoinIds(next, action.rows.flatMap((r) => r.ops));
+      return { doc: withIds, pinned: keep.length === pinned.length ? pinned : keep, scope: index };
     }
 
     case "setRunLength": {

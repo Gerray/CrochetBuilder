@@ -13,7 +13,8 @@
  * Format versions: parsers read `schemaVersion` 1 and 2, writers write 2
  * (`CURRENT_SCHEMA_VERSION`). Version 2 is purely additive — colours, stitch groups, the
  * codes BOBBLE/PUFF/POPCORN/PICOT, the modifiers FP/BP, rounds around a foundation chain
- * (`Row.around`), a part's finish and stuffing — so every v1 document is a valid v2 document.
+ * (`Row.around`), joins to other parts (`StitchOp.from`, `StitchOp.through`), a part's finish
+ * and stuffing — so every v1 document is a valid v2 document.
  *
  * Note: this Zod schema validates *shape*, not crochet correctness — a recursive
  * RepeatGroup tree cannot enforce row stitch counts. The real guarantee is
@@ -68,10 +69,40 @@ export const FinishSchema = z.enum(["open", "gather", "flat"]);
 export const StuffingSchema = z.enum(["none", "light", "firm"]);
 
 /**
+ * Where in another part a join works (format v2, `StitchOp.from` / `StitchOp.through`):
+ *   - `part`: the other part's `BuilderPart.id`;
+ *   - `copy`: which copy of a part with `quantity` ≥ 2 (1-based, default 1 — "leg 1", "leg 2");
+ *   - `row`: the row id in that part (default: its last stitch row);
+ *   - `start`: index (0-based, in working order) of the first stitch of that row the op works
+ *     into. Without it the op continues where the previous join into the same row stopped
+ *     (the first one at 0), in document order across all parts — so two branches worked from
+ *     one round without `start` take its first and its second half.
+ * Whether the references exist is checked by `validateExport`, not by the schema.
+ */
+export const JoinRefSchema = z
+  .object({
+    part: z.string().min(1),
+    copy: z.number().int().positive().optional(),
+    row: z.string().min(1).optional(),
+    start: z.number().int().nonnegative().optional(),
+  })
+  .strict();
+
+/**
  * A single stitch operation: a code worked `count` times, with optional modifiers.
  * `into` is a display-only note ("into next chain space") and does NOT affect the
  * stitch-count check. `color` (format v2) switches the working colour from this op on; it
  * stays until the next switch.
+ *
+ * Joining while crocheting (format v2):
+ *   - `from`: the stitches are worked into the stitches of a row of ANOTHER part instead of the
+ *     own previous row ("18 sc around leg 1", a stem's first round into the top of a pumpkin,
+ *     a branch of a split tail). They consume nothing of the own previous row.
+ *   - `through`: the stitches are worked into the own previous row AND through stitches of
+ *     another part ("5 sc through both layers of the arm and the body"): each stitch takes one
+ *     more stitch there — of a round, one stitch of each layer (the round lies flattened).
+ * Not both on one op, not inside a stitch group and not on stitches that are worked into
+ * nothing (chains, magic ring, picots): validation findings (`INVALID_JOIN`).
  */
 export const StitchOpSchema = z
   .object({
@@ -81,6 +112,8 @@ export const StitchOpSchema = z
     modifiers: z.array(ModSchema).optional(),
     into: z.string().optional(),
     color: ColorIdSchema.optional(),
+    from: JoinRefSchema.optional(),
+    through: JoinRefSchema.optional(),
   })
   .strict();
 
@@ -175,13 +208,20 @@ function opsUseV2(ops: readonly Op[]): boolean {
   return ops.some((op) => {
     if (op.kind === "group") return true;
     if (op.kind === "repeat") return opsUseV2(op.ops);
-    return op.color !== undefined || V2_CODES.has(op.code) || (op.modifiers ?? []).some((m) => V2_MODS.has(m));
+    return (
+      op.color !== undefined ||
+      op.from !== undefined ||
+      op.through !== undefined ||
+      V2_CODES.has(op.code) ||
+      (op.modifiers ?? []).some((m) => V2_MODS.has(m))
+    );
   });
 }
 
 /**
  * Whether a part uses anything of format version 2: `finish`, `stuffing`, a row or stitch
- * colour, a round worked around a chain (`around`), a stitch group, the codes
+ * colour, a round worked around a chain (`around`), a join to another part (`StitchOp.from`,
+ * `StitchOp.through`), a stitch group, the codes
  * BOBBLE/PUFF/POPCORN/PICOT or the modifiers FP/BP. Such a part must say `schemaVersion: 2`
  * (a version-1 reader would reject it).
  */
@@ -214,7 +254,7 @@ export const PartContentSchema = z
         code: z.ZodIssueCode.custom,
         path: ["schemaVersion"],
         message:
-          "Uses format version 2 features (colours, groups, new stitches, rounds around a chain, finish or stuffing) but says schemaVersion 1",
+          "Uses format version 2 features (colours, groups, new stitches, rounds around a chain, joins, finish or stuffing) but says schemaVersion 1",
       });
     }
   });
@@ -230,6 +270,7 @@ export type Finish = z.infer<typeof FinishSchema>;
 export type Stuffing = z.infer<typeof StuffingSchema>;
 export type SchemaVersion = z.infer<typeof SchemaVersionSchema>;
 export type StitchOp = z.infer<typeof StitchOpSchema>;
+export type JoinRef = z.infer<typeof JoinRefSchema>;
 export type RepeatGroup = {
   kind: "repeat";
   times: number;

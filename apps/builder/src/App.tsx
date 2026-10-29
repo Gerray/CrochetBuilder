@@ -5,6 +5,7 @@ import { AssemblyWorkspace } from "./assembly/AssemblyWorkspace.js";
 import type { AssemblySceneOptions } from "./assembly/useAssemblyScene.js";
 import type { ExportActions } from "./components/ExportMenu.js";
 import { focusLater } from "./components/focus.js";
+import { JoinPartsContext, type JoinPartsInfo } from "./components/joinParts.js";
 import { PaletteContext, type PaletteInfo } from "./components/palette.js";
 import { PART_PANEL_ID, PartsBar, partTabId } from "./components/PartsBar.js";
 import { PasteDialog, pasteShortcut, type PasteImport } from "./components/PasteDialog.js";
@@ -22,6 +23,7 @@ import type { PastePreviewOptions } from "./paste/usePastePreview.js";
 import { addPart, addRow, duplicatePart, duplicateRow, insertRounds, loadDemo, newDocument } from "./state/actions.js";
 import { emptyDocument, type BuilderDoc } from "./state/document.js";
 import { canRedo, canUndo, editorReducer, initEditorState, selectedPart, type EditorAction } from "./state/editor.js";
+import { joinedPartNames, joinFindingsByRow, joinPartsFor, withJoinFindings } from "./state/joins.js";
 import { paletteCss } from "./state/palette.js";
 import { partFindings, partName } from "./state/parts.js";
 import type { RoundSpec } from "./state/rounds.js";
@@ -129,10 +131,25 @@ export function App({ exportActions, pastePreviewOptions, assemblySceneOptions }
   const palette = useMemo<PaletteInfo>(() => ({ colors, css: paletteCss(colors), getDoc: () => docRef.current }), [colors]);
 
   const part = selectedPart(state);
+  // Joins between parts (B5b): checked across the document, shown on the joining rows.
+  const joinFindings = useMemo(() => joinFindingsByRow(state.doc), [state.doc]);
   // Validation only reruns when a part's content changes (cached per part, see parts.ts).
   // The stitch budget of the 3D preview is reported like any other finding.
-  const findings = partFindings(part);
+  const ownFindings = partFindings(part);
+  const findings = useMemo(() => withJoinFindings(ownFindings, part.rows, joinFindings), [ownFindings, part.rows, joinFindings]);
   const rows = part.rows;
+  // The other parts the rows may be joined to (row text, picker); a new value only when their
+  // names, copies or rows change, so the memoised row cards do not re-render on every edit.
+  const joinKey = JSON.stringify([
+    state.part,
+    state.doc.parts.map((p) => [p.id ?? null, p.name, p.quantity, p.content.rows.map((r) => [r.id, r.type, r.label ?? "", r.ops.length > 0])]),
+  ]);
+  const joinParts = useMemo<JoinPartsInfo>(
+    () => ({ parts: joinPartsFor(docRef.current, state.part), part: state.part, getDoc: () => docRef.current }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `joinKey` stands for what is used
+    [joinKey],
+  );
+  const joinedWith = useMemo(() => joinedPartNames(state.doc, state.part), [state.doc, state.part]);
   // Cards of the row list (groups of identical rounds), shared with the findings panel.
   const groups = useRowGroups(rows, findings);
 
@@ -331,6 +348,7 @@ export function App({ exportActions, pastePreviewOptions, assemblySceneOptions }
   return (
     // Leaving a field ends its typing streak: the next edit is a separate undo step.
     <PaletteContext.Provider value={palette}>
+    <JoinPartsContext.Provider value={joinParts}>
       <div ref={appRoot} className="app" onBlurCapture={() => dispatch({ type: "endTyping" })}>
         {persistence.invalidStored !== undefined && (
           <StorageNotice raw={persistence.invalidStored} onStartFresh={persistence.resume} />
@@ -428,6 +446,7 @@ export function App({ exportActions, pastePreviewOptions, assemblySceneOptions }
                 content={part}
                 gauge={state.doc.overview.gauge}
                 palette={colors}
+                joinedWith={joinedWith}
                 findings={findings}
                 selectedRowId={selectedRowId}
                 highlightRowIds={selectedRows}
@@ -464,6 +483,7 @@ export function App({ exportActions, pastePreviewOptions, assemblySceneOptions }
           />,
           document.body,
         )}
+    </JoinPartsContext.Provider>
     </PaletteContext.Provider>
   );
 }

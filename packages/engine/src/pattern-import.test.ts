@@ -4,6 +4,7 @@ import { parsePatternText, type ImportedPart, type PatternImport } from "./patte
 import type { PartContent, Row } from "./schema.js";
 import { renderedRows } from "./export.js";
 import { validate } from "./validate.js";
+import { planJoins } from "./join.js";
 
 /** Compact view of a part: "ops (target)" per stitch row, "> note" per instruction row. */
 function view(part: Pick<ImportedPart, "rows">, locale: "en_us" | "de" = "en_us"): string[] {
@@ -691,6 +692,145 @@ describe("parsePatternText — what the format cannot represent", () => {
     expectEveryWordKept(text, res);
   });
 });
+
+describe("parsePatternText — joining parts while crocheting (B5b)", () => {
+  /** A made-up pattern: two legs joined into the body, arms worked through, a stem, a split tail. */
+  const text = [
+    "Leg (make 2)",
+    "1. 6 sc in MR (6)",
+    "2. inc x 6 (12)",
+    "3-6. 12 sc (4 rounds)",
+    "Fasten off the first leg only.",
+    "",
+    "Arm (make 2)",
+    "1. 6 sc in MR (6)",
+    "2. (2 sc, inc) x 2 (8)",
+    "3-8. 8 sc (6 rounds)",
+    "",
+    "Body",
+    "1. 4 ch, 12 sc around the first leg, 4 sc in ch, join to the second leg, 12 sc around it, 4 sc on the other side of the chain (32)",
+    "2. 32 sc (32)",
+    "3. 6 sc, 4 sc with the arm, 12 sc, 4 sc with the arm, 6 sc (32)",
+    "4. 5 sc, 4 sc through both layers of the arm and the body, 23 sc (32)",
+    "5. (2 sc, dec) x 8 (24)",
+    "",
+    "Stem",
+    "1. 24 sc around the body (24)",
+    "2. (2 sc, dec) x 6 (18)",
+    "",
+    "Tail",
+    "1. 6 sc with the head (6)",
+  ].join("\n");
+  const res = parsePatternText(text, { locale: "en_us" });
+  const [leg, arm, body, stem, tail] = res.parts;
+  const docOf = () => ({ parts: res.parts.map((p) => ({ id: p.id, name: p.name, quantity: p.quantity, content: { schemaVersion: 2 as const, rows: p.rows } })) });
+
+  it("reads joins to parts of the pattern: around both legs across a chain bridge", () => {
+    expect(res.parts.map((p) => [p.id, p.quantity])).toEqual([
+      ["leg", 2],
+      ["arm", 2],
+      ["body", 1],
+      ["stem", 1],
+      ["tail", 1],
+    ]);
+    const b = view(body!);
+    expect(b[0]).toBe("4 ch (0)");
+    expect(body!.rows[1]!.around).toBe(true);
+    expect(body!.rows[1]!.ops).toEqual([
+      { kind: "stitch", code: "SC", count: 12, from: { part: "leg", copy: 1 } },
+      { kind: "stitch", code: "SC", count: 4 },
+      { kind: "stitch", code: "SC", count: 12, from: { part: "leg", copy: 2 } },
+      { kind: "stitch", code: "SC", count: 4 },
+    ]);
+    expect(validate({ schemaVersion: 2, rows: body!.rows })).toEqual([]);
+    expect(leg!.rows.length).toBeGreaterThan(0);
+  });
+
+  it("reads “N sc with the arm” on fewer stitches than the arm has as worked through it, copies in turn", () => {
+    expect(body!.rows[3]!.ops[1]).toEqual({ kind: "stitch", code: "SC", count: 4, through: { part: "arm", copy: 1 } });
+    expect(body!.rows[3]!.ops[3]).toEqual({ kind: "stitch", code: "SC", count: 4, through: { part: "arm", copy: 2 } });
+    expect(body!.rows[4]!.ops[1]).toEqual({ kind: "stitch", code: "SC", count: 4, through: { part: "arm" } });
+    expect(arm!.quantity).toBe(2);
+  });
+
+  it("reads a part started on another part's last round, and keeps unknown parts as unsupported joins", () => {
+    expect(stem!.rows[0]!.ops).toEqual([{ kind: "stitch", code: "SC", count: 24, from: { part: "body" } }]);
+    expect(view(tail!)).toEqual(["> 1. 6 sc with the head (6)"]);
+    expect(res.issues.filter((i) => i.code === "UNSUPPORTED_JOIN").map((i) => i.text)).toEqual(["1. 6 sc with the head (6)"]);
+  });
+
+  it("gives joins that resolve; working through an arm a second time is reported", () => {
+    const findings = planJoinsOf(docOf());
+    // Round 4 works through arm 1 again: it continues after round 3 and runs past its edge.
+    expect(findings.filter((f) => f.severity === "error").map((f) => [f.code, f.rowId])).toEqual([["JOIN_OVERFLOW", body!.rows[4]!.id]]);
+  });
+
+  it("raises a part's quantity when a join names its second copy", () => {
+    const r = parsePatternText(["Foot", "1. 6 sc in MR (6)", "2. inc x 6 (12)", "Body", "1. 6 sc with the left foot, 6 sc with the right foot (12)"].join("\n"), { locale: "en_us" });
+    expect(r.parts[0]!.quantity).toBe(2);
+    expect(r.issues.map((i) => i.code)).toEqual(["JOIN_QUANTITY_RAISED"]);
+    expect(r.parts[1]!.rows[0]!.ops.map((op) => (op.kind === "stitch" ? op.through : undefined))).toEqual([
+      { part: "foot", copy: 1 },
+      { part: "foot", copy: 2 },
+    ]);
+  });
+
+  it("keeps a join in the middle of a part that would leave the own previous round unworked as a hint", () => {
+    const r = parsePatternText(
+      ["Head", "1. 6 sc in MR (6)", "2. inc x 6 (12)", "3. 12 sc (12)", "", "Body", "1. 6 sc in MR (6)", "2. inc x 6 (12)", "3. 12 sc (12)", "4. 12 sc on the head (12)", "5. 12 sc (12)"].join("\n"),
+      { locale: "en_us" },
+    );
+    const body = r.parts[1]!;
+    expect(body.rows.some((row) => JSON.stringify(row.ops).includes('"from"'))).toBe(false);
+    expect(r.issues.filter((i) => i.code === "UNSUPPORTED_JOIN").map((i) => i.text)).toEqual(["4. 12 sc on the head (12)"]);
+    // As the first round of a part it is read: the pot starts on the base.
+    const pot = parsePatternText(["Base", "1. 6 sc in MR (6)", "2. inc x 6 (12)", "", "Pot", "1. 12 sc at the base (12)", "2. 12 sc (12)"].join("\n"), { locale: "en_us" });
+    expect(pot.parts[1]!.rows[0]!.ops).toEqual([{ kind: "stitch", code: "SC", count: 12, from: { part: "base" } }]);
+  });
+
+  it("does not take “in ring” for a join to a part called Ring", () => {
+    const r = parsePatternText(["Ring", "1. ch 12, sl st to join (12)", "", "Ball", "1. 6 sc in ring (6)", "2. inc x 6 (12)"].join("\n"), { locale: "en_us" });
+    expect(JSON.stringify(r.parts[1]!.rows)).not.toContain('"from"');
+  });
+
+  it("reports a round split into branches as a join it cannot read, but not folding in half", () => {
+    const split = parsePatternText(
+      [
+        "Body",
+        "1. 6 sc in MR (6)",
+        "2. inc x 6 (12)",
+        "3. 12 sc (12)",
+        "Now sc the round in half: one sc across to the other side, you get two openings of 6.",
+        "Repeat the last two rounds once more.",
+        "Arm",
+        "1. 6 sc in MR (6)",
+        "2. 6 sc (6)",
+        "Fold in half and crochet 3 sc through both layers.",
+      ].join("\n"),
+      { locale: "en_us" },
+    );
+    expect(split.issues.filter((i) => i.code === "UNSUPPORTED_JOIN").map((i) => i.text)).toEqual([
+      "Now sc the round in half: one sc across to the other side, you get two openings of 6.",
+    ]);
+    const de = parsePatternText(["Körper", "1. 6 fM in einen Fadenring (6)", "2. 6 Zun (12)", "Die Runde in zwei Hälften teilen und jede Hälfte einzeln weiterhäkeln."].join("\n"), {
+      locale: "de",
+    });
+    expect(de.issues.map((i) => i.code)).toContain("UNSUPPORTED_JOIN");
+  });
+
+  it("reads German joins too", () => {
+    const r = parsePatternText(["Bein (2x)", "1. 6 fM in einen Fadenring (6)", "2. 6 Zun (12)", "Körper", "1. 12 fM um das erste Bein, 12 fM um das zweite Bein (24)"].join("\n"), { locale: "de" });
+    expect(r.parts[1]!.rows[0]!.ops).toEqual([
+      { kind: "stitch", code: "SC", count: 12, from: { part: "bein", copy: 1 } },
+      { kind: "stitch", code: "SC", count: 12, from: { part: "bein", copy: 2 } },
+    ]);
+    expect(r.issues.filter((i) => i.severity !== "info")).toEqual([]);
+  });
+});
+
+function planJoinsOf(doc: Parameters<typeof planJoins>[0]) {
+  return planJoins(doc).findings;
+}
 
 /** Words a stitch row may consume without repeating them (notation, not content). */
 const NOTATION_WORDS = new Set(

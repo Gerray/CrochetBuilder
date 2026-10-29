@@ -1,6 +1,6 @@
 {
   "name": "@crochetbuilder/engine",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "Crochet pattern engine: schema, validation, stitch graph, relaxation, mesh. No UI.",
   "license": "AGPL-3.0-only",
   "type": "module",
@@ -11,7 +11,8 @@
   },
   "files": [
     "src",
-    "!src/**/*.test.ts"
+    "!src/**/*.test.ts",
+    "!src/test"
   ],
   "sideEffects": false,
   "scripts": {

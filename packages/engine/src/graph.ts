@@ -40,6 +40,13 @@
  * the hook on side 1 (as for a row), the far chain's second side (the stitch group there turns
  * around the end), the hook chain on side 2, then alternately inwards from the hook end.
  *
+ * Joins (format v2): a stitch worked into another part (`StitchOp.from`) takes no slot of its
+ * own previous row and has no parents in this graph (`StitchNode.joined`); the surface is not
+ * zipped across it. A first round made only of such stitches closes on its own (a stem worked
+ * into the top of a pumpkin). A stitch worked `through` another part is wired as usual. The
+ * links between the parts live in the joined model (`relaxJoined`), not here, so the graph of
+ * one part stays the standalone part.
+ *
  * The graph never throws on an invalid pattern — `validate` reports problems. Here: a
  * stitch with no anchor left attaches to the last available anchor, surplus anchors stay
  * free, a row with nothing to work into gets no parents. When a row works into a foundation
@@ -106,6 +113,11 @@ export interface StitchNode {
   lean?: number;
   /** Bobble family: how far the stitch stands proud of the fabric (`STITCH_BULGE`). */
   bulge?: number;
+  /**
+   * Format v2 join: `"from"` — worked into another part (no parents in this graph; the parts
+   * are linked by `relaxJoined`); `"through"` — worked into the own row and through another part.
+   */
+  joined?: "from" | "through";
 }
 
 /**
@@ -265,6 +277,7 @@ export function buildGraph(content: PartContent, gauge?: Gauge, opts: BuildGraph
 
     // Nodes.
     let seenConsumer = false;
+    let joinedFrom = false;
     atoms.forEach((atom, offset) => {
       if (atom.code === "NOTE") return; // cannot happen in a stitch row; defensive
       const code = atom.code;
@@ -287,9 +300,16 @@ export function buildGraph(content: PartContent, gauge?: Gauge, opts: BuildGraph
       if (atom.modifiers) node.modifiers = [...atom.modifiers];
       const bulge = STITCH_BULGE[code];
       if (bulge !== undefined) node.bulge = bulge;
+      // A join inside a stitch group is invalid (`INVALID_JOIN`) and ignored here.
+      const join = atom.join && atom.group === undefined && c > 0 ? atom.join.kind : undefined;
+      if (join) {
+        node.joined = join;
+        joinedFrom ||= join === "from";
+      }
       nodes.push(node);
       parentDx.push([]);
-      consumes.push(kind === "chain" ? 0 : c);
+      // Worked into another part: nothing of the own previous row.
+      consumes.push(kind === "chain" || join === "from" ? 0 : c);
       groupPos.push(atom.group ?? -1);
       lastNode = node.id;
     });
@@ -418,6 +438,8 @@ export function buildGraph(content: PartContent, gauge?: Gauge, opts: BuildGraph
       row.type === "round" &&
       (kind === "ring" ||
         around ||
+        // A first round worked into another part (a stem on a pumpkin) closes on its own.
+        (kind === "stitch" && prevRow === null && joinedFrom) ||
         (kind === "stitch" && prevRow !== null && !reversed && prevRow.kind !== "chain" && prevRow.type === "round"));
     let widthStitches = 0;
     for (let id = firstNode; id < firstNode + nodeCount; id++) {
@@ -578,16 +600,29 @@ function triangulate(nodes: StitchNode[], rows: GraphRow[]): Uint32Array {
       tri(c1.id, last, c2.id);
       if (first !== last) tri(c2.id, last, first);
     };
+    // Stitches worked into another part (`from`) have no parents here: the fabric between
+    // their neighbours is not zipped across them (it is in the joined model).
+    const fromBefore = new Int32Array(row.nodeCount + 1);
+    for (let k = 0; k < row.nodeCount; k++) {
+      fromBefore[k + 1] = fromBefore[k]! + (nodes[row.firstNode + k]!.joined === "from" ? 1 : 0);
+    }
+    const gapFree = (a: StitchNode, b: StitchNode) => {
+      const i = a.id - row.firstNode;
+      const j = b.id - row.firstNode;
+      if (i < j) return fromBefore[j]! - fromBefore[i + 1]! === 0;
+      // Around the seam: after `a` to the end, and before `b`.
+      return fromBefore[row.nodeCount]! - fromBefore[i + 1]! + fromBefore[j]! === 0;
+    };
     for (let i = 0; i < children.length; i++) {
       const c = children[i]!;
       for (let k = 0; k + 1 < c.parents.length; k++) tri(c.id, c.parents[k]!, c.parents[k + 1]!);
-      if (i + 1 < children.length) zip(c, children[i + 1]!);
+      if (i + 1 < children.length && gapFree(c, children[i + 1]!)) zip(c, children[i + 1]!);
     }
     // Close the ring around the magic ring (a fan), or around at least three distinct parents:
     // on a parent ring of two the seam would reuse the edge between them a third time and
     // break the surface's orientation.
     const ringOk = row.kind === "ring" || new Set(children.flatMap((c) => c.parents)).size > 2;
-    if (row.closed && children.length > 2 && ringOk) {
+    if (row.closed && children.length > 2 && ringOk && gapFree(children[children.length - 1]!, children[0]!)) {
       zip(children[children.length - 1]!, children[0]!);
     }
   }
