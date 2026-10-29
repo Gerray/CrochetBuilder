@@ -10,7 +10,8 @@
 import { z } from "zod";
 import { instructionText, rowOrdinals } from "./expand.js";
 import { GaugeSchema } from "./gauge.js";
-import { renderRow, rowLabel, type NotationLocale } from "./notation.js";
+import type { JoinNotationPart } from "./join-notation.js";
+import { renderRow, rowLabel, type NotationLocale, type RenderOptions } from "./notation.js";
 import { PlacementSchema } from "./assembly.js";
 import { planJoins, type JoinFindingCode } from "./join.js";
 import { CURRENT_SCHEMA_VERSION, PartContentSchema, SchemaVersionSchema, type PartContent, type Row } from "./schema.js";
@@ -127,17 +128,19 @@ export type BuilderExport = z.infer<typeof BuilderExportSchema>;
  * appended after a dash. Free instructions render as their text ("Label: note" when both
  * are set); rows with neither stitches nor text are skipped. With a `palette`
  * (`overview.colors`) colour changes are shown with the colour names: `[Farbe: Weiß] 6 fM`;
- * a free instruction that changes the colour gets the mark in front.
+ * a free instruction that changes the colour gets the mark in front. With `parts`
+ * (`joinPartsOf(doc)`) joins name the other part: `18 fM aus Teil Bein 1`.
  */
 export function renderedRows(
   content: PartContent,
   locale: NotationLocale,
   palette?: readonly { id: string; name?: string }[],
+  parts?: readonly JoinNotationPart[],
 ): string[] {
   const ordinals = rowOrdinals(content.rows);
   const lines: string[] = [];
   content.rows.forEach((row, i) => {
-    const line = renderedRowLine(row, ordinals[i] ?? 0, locale, palette);
+    const line = renderedRowLine(row, ordinals[i] ?? 0, locale, palette, row.stitchCountTarget, parts);
     if (line) lines.push(line);
   });
   return lines;
@@ -153,8 +156,10 @@ export function renderedRowLine(
   locale: NotationLocale,
   palette?: readonly { id: string; name?: string }[],
   target: number = row.stitchCountTarget,
+  parts?: readonly JoinNotationPart[],
 ): string {
-  const opts = palette ? { colors: palette } : {};
+  const opts: RenderOptions = palette ? { colors: palette } : {};
+  if (parts) opts.parts = parts;
   const note = row.note?.trim() ?? "";
   if (row.ops.length === 0) {
     const label = row.label?.trim() ?? "";
@@ -166,6 +171,20 @@ export function renderedRowLine(
   let line = `${rowLabel(row, ordinal, locale)}: ${renderRow(row, locale, opts)} (${target})`;
   if (note) line += ` – ${note}`;
   return line;
+}
+
+/**
+ * The parts of `doc` as the notation names them in joins (`RenderOptions.parts`,
+ * `ParseRowContext.parts`): id, name ("Teil n" when empty), quantity and rows. Parts without an
+ * id cannot be joined to and are left out.
+ */
+export function joinPartsOf(doc: { parts: readonly { id?: string | undefined; name: string; quantity: number; content: PartContent }[] }): JoinNotationPart[] {
+  const out: JoinNotationPart[] = [];
+  doc.parts.forEach((p, i) => {
+    if (p.id === undefined) return;
+    out.push({ id: p.id, name: p.name.trim() || `Teil ${i + 1}`, quantity: p.quantity, rows: p.content.rows });
+  });
+  return out;
 }
 
 // ---------------------------------------------------------------------------

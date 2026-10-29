@@ -239,7 +239,9 @@ export {
   MOD_NAMES,
   AROUND_MARKS,
 } from "./notation.js";
-export type { NotationLocale, ParseRowResult, ParseRowErrorCode, ParseRowContext } from "./notation.js";
+export type { NotationLocale, ParseRowResult, ParseRowErrorCode, ParseRowContext, RenderOptions } from "./notation.js";
+export { renderJoin, extractJoins } from "./join-notation.js";
+export type { JoinNotationPart, FoundJoin } from "./join-notation.js";
 
 export { detectNotationLocale } from "./detect-locale.js";
 export type { LocaleDetection } from "./detect-locale.js";
@@ -267,6 +269,7 @@ export {
   PaletteColorSchema,
   renderedRows,
   renderedRowLine,
+  joinPartsOf,
   validateExport,
   withCurrentVersion,
 } from "./export.js";

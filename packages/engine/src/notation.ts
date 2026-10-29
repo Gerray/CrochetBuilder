@@ -39,6 +39,7 @@ import {
   type StitchCode,
   type StitchOp,
 } from "./schema.js";
+import { extractJoins, renderJoin, type FoundJoin, type JoinNotationPart } from "./join-notation.js";
 
 // ---------------------------------------------------------------------------
 // Limits and modifier rules (shared by the parser and editors)
@@ -386,6 +387,12 @@ export interface RenderOptions {
    * not rendered. `parseRowText` reads the marks back (`ParseRowContext.colors`).
    */
   colors?: readonly { id: string; name?: string }[];
+  /**
+   * The document's parts, for joins (format v2, `StitchOp.from` / `.through`): a join names
+   * the part ("18 fM aus Teil Bein 1", "5 fM zusammen mit Teil Arm") and its row by number.
+   * Without them a join shows the part's id.
+   */
+  parts?: readonly JoinNotationPart[];
 }
 
 /**
@@ -414,9 +421,11 @@ function colorMark(id: string | undefined, locale: NotationLocale, opts: RenderO
 }
 
 function renderStitch(op: StitchOp, locale: NotationLocale, opts: RenderOptions): string {
-  const text = `${colorMark(op.color, locale, opts)}${op.count} ${STITCH_ABBREVIATIONS[op.code][locale]}`;
-  if (!op.modifiers || op.modifiers.length === 0) return text;
-  return `${text} (${op.modifiers.map((m) => MOD_ABBREVIATIONS[m][locale]).join(", ")})`;
+  let text = `${colorMark(op.color, locale, opts)}${op.count} ${STITCH_ABBREVIATIONS[op.code][locale]}`;
+  if (op.modifiers && op.modifiers.length > 0) text += ` (${op.modifiers.map((m) => MOD_ABBREVIATIONS[m][locale]).join(", ")})`;
+  if (op.from) text += renderJoin("from", op.from, locale, opts.parts);
+  if (op.through) text += renderJoin("through", op.through, locale, opts.parts);
+  return text;
 }
 
 /**
@@ -562,6 +571,18 @@ export interface ParseRowContext {
    * Reads what `renderRow(row, locale, { colors })` writes. Off by default.
    */
   rowColor?: boolean;
+  /**
+   * The document's parts (with ids, names, quantities and rows), so that joins are read:
+   * "18 fM aus Teil Bein 1", "18 fM um das erste Bein", "18 sc around leg 1", "5 fM mit dem
+   * Arm", "5 sc through the arm and body" (see join-notation.ts). Only parts listed here are
+   * recognised.
+   */
+  parts?: readonly JoinNotationPart[];
+}
+
+/** Joins found by `extractJoins` before parsing (internal). */
+interface JoinContext extends ParseRowContext {
+  foundJoins?: readonly FoundJoin[];
 }
 
 type Token =
@@ -575,6 +596,8 @@ type Token =
   | { t: "fill"; pos: number }
   /** A colour change `[Farbe: Weiß]` (format v2); `name` as written. */
   | { t: "color"; name: string; pos: number }
+  /** A join phrase replaced by `extractJoins` (`§jN§`): index into the found joins. */
+  | { t: "join"; index: number; pos: number }
   | { t: "end"; pos: number }
   | { t: "bad"; pos: number };
 
@@ -655,6 +678,10 @@ function tokenize(text: string, lenient: boolean): Token[] {
       tokens.push({ t: "rp", pos: i++ });
     } else if (ch === "," || ch === ";") {
       tokens.push({ t: "sep", pos: i++ });
+    } else if (ch === "§" && /^§j\d+§/.test(text.slice(i))) {
+      const m = /^§j(\d+)§/.exec(text.slice(i))!;
+      tokens.push({ t: "join", index: Number(m[1]), pos: i });
+      i += m[0].length;
     } else if (lenient && ch === "@") {
       tokens.push({ t: "fill", pos: i++ });
     } else if (WORD_CHAR.test(ch)) {
@@ -704,6 +731,8 @@ class Parser {
     private readonly locale: NotationLocale,
     /** Lenient mode: postfix counts ("sc 2", "inc x 6") and fill markers. */
     private readonly lenient = false,
+    /** Joins found in the text (`extractJoins`), by token index. */
+    private readonly joins: readonly FoundJoin[] = [],
   ) {}
 
   private peek(offset = 0): Token {
@@ -726,7 +755,7 @@ class Parser {
 
   /** Whether `tok` ends an item (what may follow a postfix count). */
   private endsItem(tok: Token): boolean {
-    return tok.t === "sep" || tok.t === "end" || tok.t === "rp" || tok.t === "fill";
+    return tok.t === "sep" || tok.t === "end" || tok.t === "rp" || tok.t === "fill" || tok.t === "join";
   }
 
   /** `( N [stitch word…] )` as the very last thing of the text — a stitch-count note. */
@@ -916,7 +945,22 @@ class Parser {
     if (this.peek().t === "lp" && !(depth === 0 && this.atTrailingCount() !== undefined)) {
       this.parseModifiers(op, code);
     }
-    return this.lenient ? this.parsePostfix(op, depth, explicit) : op;
+    // A join phrase after the stitch ("18 fM aus Teil Bein 1"), or after a postfix count in
+    // the lenient pass ("sc 18 around leg 1"): `from` / `through`.
+    this.parseJoin(op);
+    if (!this.lenient) return op;
+    const out = this.parsePostfix(op, depth, explicit);
+    if (!op.from && !op.through) this.parseJoin(op);
+    return out;
+  }
+
+  private parseJoin(op: StitchOp): void {
+    const join = this.peek();
+    if (join.t !== "join") return;
+    this.next();
+    const found = this.joins[join.index];
+    if (!found) this.fail(join);
+    op[found.kind] = { ...found.ref };
   }
 
   /** Modifier list: "(hMG)", "(BLO, tog)" — duplicates collapse, contradictions fail. */
@@ -1400,7 +1444,7 @@ function runParser(
   rowModifier?: Mod,
   info: ParseInfo = {},
 ): ParseRowResult {
-  const parser = new Parser(tokenize(text, lenient), text, locale, lenient);
+  const parser = new Parser(tokenize(text, lenient), text, locale, lenient, (context as JoinContext).foundJoins);
   try {
     const ops = parser.parseRow();
     if (rowModifier && applyRowModifier(ops, rowModifier) === 0) throw new ParseFailure("syntax", 0);
@@ -1482,6 +1526,15 @@ export function parseRowText(
     const result = parseRowText(rest, locale, inner);
     if (!result.ok) return result.position === undefined ? result : { ...result, position: result.position + offset };
     return { ...result, color };
+  }
+  // Join phrases ("aus Teil Bein 1", "around leg 1", "mit dem Arm") become placeholders first, so
+  // neither pass reads them as stitch terms or as "around" = to the end of the round.
+  if (context.parts && !(context as JoinContext).foundJoins) {
+    const found = extractJoins(text, context.parts);
+    if (found.joins.length > 0) {
+      text = found.text;
+      context = { ...context, foundJoins: found.joins } as JoinContext;
+    }
   }
   const strict = runParser(text, locale, false, context);
   if (strict.ok) return strict;
