@@ -5,7 +5,7 @@ validates, expands and renders, what the builder saves, and what other software 
 Stitches are stored as **codes**, never as display text; rendering to German, US or UK
 terminology is a separate concern.
 
-Schema source: `packages/engine/src/schema.ts` (Zod). Version: `schemaVersion: 2` (engine 1.0.0).
+Schema source: `packages/engine/src/schema.ts` (Zod). Version: `schemaVersion: 2` (engine 2.0.0).
 Parsers read versions 1 and 2, writers write 2. Version 2 only adds fields and codes (see
 [Format version 2](#format-version-2)), so every version-1 document is a valid version-2 document
 and needs no migration.
@@ -186,15 +186,17 @@ Version 2 adds colours, stitch groups, four stitch codes, two modifiers, rounds 
 a foundation chain, a part's finish and stuffing, part ids and an assembly. Nothing was
 removed or renamed. Software that only knows version 1 rejects version-2 documents (the
 objects are strict); it needs engine 1.0.0. `Row.around` came later within version 2: a
-strict reader built before it rejects rows that have it.
+strict reader built before it rejects rows that have it. So do joins between parts
+(`StitchOp.from`, `StitchOp.through`, engine 2.0.0): a strict version-2 reader older than
+engine 2.0.0 rejects stitch ops that have them.
 
 Writers write `schemaVersion: 2` on the export and on every part. A document that says
 `schemaVersion: 1` but uses anything of version 2 is **rejected by the schema**, so a
 version-1 label always means the document can be read by version-1 software:
 
 - a part with `finish`, `stuffing`, a row or stitch `color`, a row with `around`, a stitch
-  group, one of the codes `BOBBLE`, `PUFF`, `POPCORN`, `PICOT` or one of the modifiers `FP`,
-  `BP`;
+  with `from` or `through`, a stitch group, one of the codes `BOBBLE`, `PUFF`, `POPCORN`,
+  `PICOT` or one of the modifiers `FP`, `BP`;
 - an export with `overview.colors`, `assembly`, a part `id`, or a part that says version 2.
 
 A version-2 export may contain parts that say version 1.
@@ -308,6 +310,119 @@ of the chain: 4 sc, 2 sc in the last ch (14). Round 2: inc, 4 sc, 3 inc, 4 sc, 2
 - **Notation.** The row text starts with a mark: `um die Lm-Kette: 5 fM, (3 fM) in dieselbe
   M, 4 fM, 1 Zun` (US/UK `around the chain: …`), after a row colour if there is one. The row
   notation reads it back, also as `um die Kette herum:` or `working around the chain:`.
+
+### Joining parts while crocheting
+
+Many patterns crochet parts into each other instead of sewing them: the body is worked around
+both legs, an arm is caught in a round of the body, a stem starts on the top of a pumpkin, a
+tail splits into two branches. A stitch op says so with one of two fields (engine 2.0.0):
+
+- **`from`** — the stitches are worked **into** the stitches of a row of another part, instead
+  of the own previous row. They take nothing of the own previous row. A decrease takes two
+  stitches there, as it would of its own row.
+- **`through`** — the stitches are worked into the own previous row as usual **and through**
+  the other part: each stitch takes one more place there. A place of a round is a pair of
+  stitches lying on top of each other (the round flattened: its k-th stitch and its k-th from
+  the end, as a flat finish pairs them), so a round of 10 offers 5 places; a place of a row
+  (`type: "row"`) is one stitch.
+
+Both hold a reference `{ part, copy?, row?, start? }`:
+
+| Field | Meaning |
+|---|---|
+| `part` | the other part's `id` (`BuilderPart.id`) |
+| `copy` | which copy of a part with `quantity` ≥ 2, from 1 (default 1): `copy: 2` is "the second leg". The quantity of a part is one part with copies, so leg 1 and leg 2 are copies of one part `leg` ×2 |
+| `row` | the row id in the other part; default: its last row with stitches |
+| `start` | index (from 0, in working order) of the first stitch (or place) of that row the op works into. Without it the op continues where the previous join into the same row — same part copy, row and kind — stopped, the first one at 0, in document order: parts, then the copies of a part, then rows. Two branches worked from one round without `start` take its first and its second half |
+
+A part's `quantity` copies all make their own joins, one after the other, so the second copy
+of a branch continues where the first stopped. Not on a stitch that is worked into nothing
+(chains, magic ring, picots), not inside a stitch group, and not `from` and `through` on one
+op: validation reports `INVALID_JOIN` (error).
+
+**Legs into the body.** Leg ×2 (rounds of 18, the first leg fastened off, the second not);
+the body starts with a bridge of 3 chains and a round around leg 1, along the bridge, around
+leg 2 and back along the other side of the bridge (42):
+
+```json
+{ "id": "body", "name": "Körper", "quantity": 1, "content": { "schemaVersion": 2, "rows": [
+  { "id": "bridge", "type": "round", "ops": [{ "kind": "stitch", "code": "CH", "count": 3 }], "stitchCountTarget": 0 },
+  { "id": "b1", "type": "round", "around": true, "ops": [
+    { "kind": "stitch", "code": "SC", "count": 18, "from": { "part": "leg", "copy": 1 } },
+    { "kind": "stitch", "code": "SC", "count": 3 },
+    { "kind": "stitch", "code": "SC", "count": 18, "from": { "part": "leg", "copy": 2 } },
+    { "kind": "stitch", "code": "SC", "count": 3 }
+  ], "stitchCountTarget": 42 }
+] } }
+```
+
+The stitches without `from` work into the bridge, along both of its sides (`around`, see the
+oval start), 6 places for 6 stitches.
+
+**An arm caught in a round of the body** ("5 sc through both layers of the arm and the body"):
+
+```json
+{ "id": "b8", "type": "round", "ops": [
+  { "kind": "stitch", "code": "SC", "count": 7 },
+  { "kind": "stitch", "code": "SC", "count": 5, "through": { "part": "arm" } },
+  { "kind": "stitch", "code": "SC", "count": 18 }
+], "stitchCountTarget": 30 }
+```
+
+The arm (last round 10, `finish: "flat"` or `"open"`) offers 5 places; the body round still
+works into 30 stitches of its own previous round.
+
+**A stem started on the pumpkin** — its first round works into the last round of the pumpkin
+(or a `row` given by id):
+
+```json
+{ "id": "s1", "type": "round", "ops": [
+  { "kind": "stitch", "code": "SC", "count": 21, "from": { "part": "pumpkin" } }
+], "stitchCountTarget": 21 }
+```
+
+**A tail split into two branches** — the body ends in a round of 12; the branch is one part ×2
+whose first round works into 6 stitches: copy 1 takes stitches 1–6, copy 2 continues with
+7–12. With two different parts, the second could also say `"start": 6`:
+
+```json
+{ "id": "f1", "type": "round", "ops": [
+  { "kind": "stitch", "code": "SC", "count": 6, "from": { "part": "seal", "row": "tail" } }
+], "stitchCountTarget": 6 }
+```
+
+- **Validation of one part** (`validate`): `from` stitches do not count against the own
+  previous row; a first round of only `from` stitches needs no previous row.
+- **Validation across parts** (`validateExport`, see `planJoins`): `JOIN_UNKNOWN_PART`,
+  `JOIN_UNKNOWN_COPY`, `JOIN_UNKNOWN_ROW` (the row does not exist or has no stitches),
+  `JOIN_SELF` (a part joined to itself), `JOIN_CYCLE` (parts joined into each other in a
+  circle), `JOIN_OVERFLOW` (beyond the end of the other part's row), `JOIN_OVERLAP` (stitches
+  another join already took) — all errors; `JOIN_UNDERFLOW` (stitches of the other row left
+  free), `THROUGH_NOT_FLAT` (`through` on a row that is not the other part's edge, or on an end
+  that is gathered shut — set its finish to `flat` or `open`) and `JOINED_AND_PLACED` (a joined
+  part that also has an `attach` placement) — warnings. The own next row of the other part may
+  work into the same row as usual (front and back loops); it is not counted.
+- **Shape.** Parts joined this way form one component; `buildJoinedModels(doc)` relaxes it as
+  one piece: every part copy keeps its own stitch graph, finish and stuffing, the joins become
+  links (a `from` stitch to the stitches it is worked into, a `through` stitch half a stitch
+  height above the place it goes through, the two stitches of a pair pulled onto each other).
+  The largest copy keeps its canonical pose; the others start fitted onto it — a `from` part
+  continues the growth of the row it works into (leaning outwards by what it leaves free), a
+  `through` part sticks out along the surface normal. A part whose last round is worked into
+  by `from` is not gathered by default. The fabric across `from` joins is handed out as a
+  bridge mesh (`JoinedComponent.bridge`). `buildModel` of a single part is unchanged: a part
+  with `from` rows shows on its own, those stitches without parents.
+- **Assembly.** `composeAssembly(doc, models, { joined })` draws the copies of a joined
+  component where the joint relaxation put them, as one group around its largest copy; an
+  `attach` placement of a joined part is ignored (finding `JOINED`). Other parts are sewn onto
+  joined parts, and eyes set on them, as usual.
+- **Notation.** A join follows its stitch: `18 fM aus Teil Bein 1`, `21 fM aus Teil Kürbis
+  (Runde 12)`, `6 fM aus Teil Robbe (Runde 15, ab M 7)`, `5 fM zusammen mit Teil Arm` (US/UK:
+  `18 sc from part Leg 1`, `5 sc together with part Arm`); the copy number shows for a part
+  ×2, a row by its number in the other part, a start by its stitch counted from 1. With the
+  document's parts the row notation reads these back and what patterns write: `18 fM um Bein
+  1`, `18 fM um das erste Bein`, `18 sc around the second leg`, `5 fM mit dem Arm`, `4 sc on the
+  arm`, `5 sc through both layers of the arm and the body`.
 
 ### Finish and stuffing
 
@@ -535,7 +650,7 @@ JSON is validated against `TmcEnvelope` instead of `BuilderExport`. The saved fi
 | `title` | `title` (trimmed; left out when empty) |
 | part `name`, `quantity` | `name` (empty → `Teil n`), `quantity` |
 | row without version-2 features | same row (colours removed); `stitchCountTarget` 0 on a row with stitches ("no number given") → the counted stitches |
-| row with stitch groups, BOBBLE/PUFF/POPCORN/PICOT or FP/BP, or with `around` | **text**: free instruction, `label` = "Runde 3", `note` = the full German line, e.g. `Runde 3: 6× ((3 fM) in dieselbe M) (18)`, `Runde 2: um die Lm-Kette: 5 fM, (3 fM) in dieselbe M, 4 fM, 1 Zun (14)` |
+| row with stitch groups, BOBBLE/PUFF/POPCORN/PICOT or FP/BP, with `around`, or with a join (`from`, `through`) | **text**: free instruction, `label` = "Runde 3", `note` = the full German line, e.g. `Runde 3: 6× ((3 fM) in dieselbe M) (18)`, `Runde 2: um die Lm-Kette: 5 fM, (3 fM) in dieselbe M, 4 fM, 1 Zun (14)`, `Runde 2: um die Lm-Kette: 18 fM aus Teil Bein 1, 3 fM, 18 fM aus Teil Bein 2, 3 fM (42)` |
 | rows after such a row | keep their number as `label` ("Runde 4"), because the receiver numbers only rows with stitches |
 | free instruction (no stitches, with text) | same row; with both label and note the note reads `Label: note` (the receiver shows the note, else the label); rows with neither stitches nor text are left out |
 | colour at the start of a row | **text**: an instruction before the row, `Farbwechsel: Weiß`, when the colour really changes; with two or more palette colours each part first states its starting colour, `Farbe: …` |
