@@ -22,9 +22,13 @@
  *
  * Consuming more anchors than exist is an error (the pattern cannot be worked). Consuming
  * fewer is a warning (stitches left unworked — legitimate for shaping, often a mistake).
- * A stitch group (format v2) consumes one anchor, whatever its stitches.
+ * A stitch group (format v2) consumes one anchor, whatever its stitches. Stitches worked into
+ * another part (`StitchOp.from`) consume nothing of the own previous row; what they take from
+ * the other part is checked across parts by `validateExport` (see join.ts). Stitches worked
+ * `through` another part consume their own previous row as usual.
  *
- * Further checks: relief modifiers on stitches without a post (`INVALID_MODIFIER`), colours
+ * Further checks: joins that cannot be worked (`INVALID_JOIN`), relief modifiers on stitches
+ * without a post (`INVALID_MODIFIER`), colours
  * missing from the palette (`UNKNOWN_COLOR`, only when a palette is passed), empty repeats
  * and empty stitch groups (warnings), and optionally the stitch budget of the 3D model.
  *
@@ -59,7 +63,8 @@ export type FindingCode =
   | "INVALID_MODIFIER"
   | "UNKNOWN_COLOR"
   | "AROUND_WITHOUT_CHAIN"
-  | "AROUND_ON_ROW";
+  | "AROUND_ON_ROW"
+  | "INVALID_JOIN";
 
 export interface Finding {
   rowId: string;
@@ -89,7 +94,8 @@ function onlyChains(op: Op): boolean {
  * picots) into none (`consumesOfGroup`; the graph agrees).
  */
 function consumedByOp(op: Op): number {
-  if (op.kind === "stitch") return op.count * consumesOf(op);
+  // Worked into another part (`from`): nothing of the own previous row.
+  if (op.kind === "stitch") return op.from ? 0 : op.count * consumesOf(op);
   if (op.kind === "group") return consumesOfGroup(op);
   return op.times * op.ops.reduce((sum, inner) => sum + consumedByOp(inner), 0);
 }
@@ -136,7 +142,7 @@ export function hookSkipOf(row: Row): number {
   const first = (ops: readonly Op[]): StitchOp | undefined => {
     for (const op of ops) {
       if (op.kind === "stitch") {
-        if (consumesOf(op) > 0) return op;
+        if (consumesOf(op) > 0 && !op.from) return op;
       } else {
         const inner = first(op.ops);
         if (inner) return inner;
@@ -440,6 +446,44 @@ export function checkColors(content: PartContent, palette: readonly { id: string
 }
 
 /**
+ * Joins (`StitchOp.from` / `.through`) that cannot be worked: both on one op, inside a stitch
+ * group (all its stitches go into one stitch of the own row), or on a stitch that is worked
+ * into nothing (chain, magic ring, picot). One error per affected row; `actual` counts the ops.
+ * Whether the referenced part and row exist is checked by `validateExport`.
+ */
+export function checkJoins(content: PartContent): Finding[] {
+  const bad = (ops: readonly Op[], inGroup: boolean, out: StitchOp[]): StitchOp[] => {
+    for (const op of ops) {
+      if (op.kind === "stitch") {
+        if (!op.from && !op.through) continue;
+        if (inGroup || (op.from && op.through) || consumesOf(op) === 0) out.push(op);
+      } else bad(op.ops, inGroup || op.kind === "group", out);
+    }
+    return out;
+  };
+  return content.rows.flatMap((row) => {
+    const ops = bad(row.ops, false, []);
+    if (ops.length === 0) return [];
+    return [
+      {
+        rowId: row.id,
+        severity: "error" as const,
+        code: "INVALID_JOIN" as const,
+        message:
+          "A join to another part needs a stitch that is worked into something, outside a stitch group, and either “from” or “through”, not both.",
+        actual: ops.length,
+      },
+    ];
+  });
+}
+
+/** Whether a row has a stitch worked into another part (`StitchOp.from`). */
+export function rowWorksFromOtherPart(row: Row): boolean {
+  const any = (ops: readonly Op[]): boolean => ops.some((op) => (op.kind === "stitch" ? op.from !== undefined : any(op.ops)));
+  return any(row.ops);
+}
+
+/**
  * Repeat groups without ops (`6× ()`) — legal in the schema, contribute nothing, and are
  * almost always an unfinished edit. One warning per affected row.
  */
@@ -474,6 +518,7 @@ export function validate(content: PartContent, opts: ValidateOptions = {}): Find
     ...checkConsumes(content),
     ...checkModifiers(content),
     ...checkGroups(content),
+    ...checkJoins(content),
     ...(opts.palette ? checkColors(content, opts.palette) : []),
     ...checkEmptyRepeats(content),
     ...checkEmptyGroups(content),

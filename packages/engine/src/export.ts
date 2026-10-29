@@ -12,6 +12,7 @@ import { instructionText, rowOrdinals } from "./expand.js";
 import { GaugeSchema } from "./gauge.js";
 import { renderRow, rowLabel, type NotationLocale } from "./notation.js";
 import { PlacementSchema } from "./assembly.js";
+import { planJoins, type JoinFindingCode } from "./join.js";
 import { CURRENT_SCHEMA_VERSION, PartContentSchema, SchemaVersionSchema, type PartContent, type Row } from "./schema.js";
 import { validate, type Finding, type FindingCode } from "./validate.js";
 
@@ -178,7 +179,8 @@ export type ExportFindingCode =
   | "DUPLICATE_PLACEMENT_ID"
   | "UNKNOWN_PART"
   | "UNKNOWN_ROW"
-  | "ATTACH_WITHOUT_PART";
+  | "ATTACH_WITHOUT_PART"
+  | JoinFindingCode;
 
 /**
  * A finding about a whole export. Part findings (`validate` with the palette) carry the
@@ -215,8 +217,11 @@ function duplicates(ids: readonly (string | undefined)[]): string[] {
  * Everything the engine can say about an export: every part's findings (`validate`, with
  * the palette, so unknown colours are reported), duplicate ids (parts, colours, placements)
  * and assembly references — the target and attached part must be part ids, the row a row of
- * the target, and an `attach` placement needs the part it attaches. The schema only checks
- * the shape, so a document with a dangling reference still loads and can be repaired.
+ * the target, and an `attach` placement needs the part it attaches — and the joins between
+ * parts (`StitchOp.from` / `.through`, see `planJoins`): references, cycles, stitches of the
+ * other part taken twice, beyond its row or not at all, `through` without an edge, a joined
+ * part that is also sewn on. The schema only checks the shape, so a document with a dangling
+ * reference still loads and can be repaired.
  */
 export function validateExport(doc: BuilderExport): ExportFinding[] {
   const out: ExportFinding[] = [];
@@ -284,6 +289,16 @@ export function validateExport(doc: BuilderExport): ExportFinding[] {
         placementId: pl.id,
       });
     }
+  }
+
+  for (const f of planJoins(doc).findings) {
+    const finding: ExportFinding = { severity: f.severity, code: f.code, message: f.message, partIndex: f.partIndex };
+    if (f.rowId !== undefined) finding.rowId = f.rowId;
+    if (f.placementId !== undefined) finding.placementId = f.placementId;
+    if (f.ref !== undefined) finding.ref = f.ref;
+    if (f.expected !== undefined) finding.expected = f.expected;
+    if (f.actual !== undefined) finding.actual = f.actual;
+    out.push(finding);
   }
   return out;
 }

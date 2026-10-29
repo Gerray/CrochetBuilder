@@ -10,7 +10,7 @@
  * Pure functions, no I/O, no framework imports.
  */
 
-import type { Mod, Op, PartContent, Row, StitchCode } from "./schema.js";
+import type { JoinRef, Mod, Op, PartContent, Row, StitchCode } from "./schema.js";
 
 /**
  * Pseudo-code of a free instruction row ("insert safety eyes between rounds 8 and 9").
@@ -53,6 +53,19 @@ export interface RowStitch {
    * new group starts at every `group === 0`.
    */
   group?: number;
+  /**
+   * Format v2: the join of the op this stitch comes from (`StitchOp.from` / `.through`).
+   * `ref` is the op's own object (shared by all stitches of the op and its repetitions);
+   * `first` marks the op's first stitch, where an explicit `start` applies.
+   */
+  join?: AtomJoin;
+}
+
+/** The join of an atom (see `RowStitch.join`). */
+export interface AtomJoin {
+  kind: "from" | "through";
+  ref: JoinRef;
+  first: boolean;
 }
 
 /** A row with no ops but with text (note, else label) is a free instruction. */
@@ -84,10 +97,14 @@ function expandOp(op: Op): RowStitch[] {
   if (op.kind === "stitch") {
     const mods = op.modifiers && op.modifiers.length > 0 ? op.modifiers : undefined;
     const color = op.color;
-    return Array.from({ length: op.count }, () => {
+    // `from` wins over `through` when both are set (an invalid op, see `validate`).
+    const ref = op.from ?? op.through;
+    const kind = op.from ? "from" : "through";
+    return Array.from({ length: op.count }, (_, i) => {
       const atom: RowStitch = { code: op.code };
       if (mods) atom.modifiers = [...mods];
       if (color !== undefined) atom.color = color;
+      if (ref) atom.join = { kind, ref, first: i === 0 };
       return atom;
     });
   }

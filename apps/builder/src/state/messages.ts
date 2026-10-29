@@ -44,6 +44,8 @@ export function findingMessage(finding: Finding, row: Row | undefined): string {
       return "Reliefmaschen (vorne/hinten) gehen nur bei fM, hStb, Stb, DStb und DDStb, und nur eine Richtung pro Masche.";
     case "UNKNOWN_COLOR":
       return "Die Zeile verwendet eine Farbe, die nicht in der Farbpalette steht.";
+    case "INVALID_JOIN":
+      return "„Aus Teil …“ und „zusammen mit Teil …“ gehen nur bei Maschen, die in etwas gearbeitet werden, nicht in einer Gruppe „in dieselbe Masche“ und nicht beides zugleich.";
     case "TOO_MANY_STITCHES":
       return `Das Teil hat ${n(actual ?? 0)} Maschen – das 3D-Modell zeigt höchstens ${n(expected ?? 0)}.`;
   }
