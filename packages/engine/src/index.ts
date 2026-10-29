@@ -89,6 +89,7 @@ export {
   anchorsConsumed,
   anchorsAvailable,
   aroundCapacity,
+  hookSkipOf,
   worksAroundChain,
   isChainRow,
   consumesOfAtom,

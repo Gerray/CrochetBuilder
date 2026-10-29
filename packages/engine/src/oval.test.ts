@@ -9,7 +9,7 @@ import { measure } from "./measure.js";
 import { toMesh, type MeshData } from "./mesh.js";
 import { isClosedPiece, relax } from "./relax.js";
 import { PartContentSchema, usesFormatV2, type Op, type PartContent, type Row, type StitchCode } from "./schema.js";
-import { anchorsAvailable, aroundCapacity, checkConsumes, validate, worksAroundChain } from "./validate.js";
+import { anchorsAvailable, aroundCapacity, checkConsumes, hookSkipOf, validate, worksAroundChain } from "./validate.js";
 
 const st = (code: StitchCode, count = 1): Op => ({ kind: "stitch", code, count });
 const rep = (times: number, ops: Op[]): Op => ({ kind: "repeat", times, ops });
@@ -76,6 +76,37 @@ describe("validation of a round around a chain", () => {
     expect(checkConsumes(under)).toMatchObject([{ rowId: "r1", code: "CONSUMES_UNDERFLOW", severity: "warning", expected: 11, actual: 9 }]);
     // All 14: allowed (up to twice the chain).
     expect(checkConsumes(part([CHAIN, row("r1", [st("SC", 14)], 14, { around: true })]))).toEqual([]);
+  });
+
+  it("takes the usual skips from the height of the first stitch (hdc/dc 2, tr 3 at each end)", () => {
+    expect(aroundCapacity(10, 2)).toEqual({ max: 20, usual: 15 });
+    expect(aroundCapacity(10, 3)).toEqual({ max: 20, usual: 13 });
+    expect(hookSkipOf(row("x", [st("CH", 2), st("DC", 3)], 3))).toBe(2);
+    expect(hookSkipOf(row("x", [grp([st("TR", 4)])], 4))).toBe(3);
+    expect(hookSkipOf(row("x", [st("SC", 3)], 3))).toBe(1);
+    // "Ch 10, dc in 3rd ch from hook, 6 dc, 5 dc in last ch, 6 dc, 4 dc in last ch (22)": 15 of 20.
+    const dc = part([row("c", [st("CH", 10)], 0), row("r1", [st("DC", 7), grp([st("DC", 5)]), st("DC", 6), grp([st("DC", 4)])], 22, { around: true })]);
+    expect(validate(dc)).toEqual([]);
+    // Side 1 from the third chain from the hook, side 2 back to it.
+    const g = buildGraph(dc);
+    const first = g.rows[1]!.firstNode;
+    expect(g.nodes[first]!.parents).toEqual([7]);
+    expect(g.nodes[first + g.rows[1]!.nodeCount - 1]!.parents).toEqual([7]);
+    // The same places with sc (one chain skipped at the hook) leave two unworked.
+    const sc = part([row("c", [st("CH", 10)], 0), row("r1", [st("SC", 7), grp([st("SC", 5)]), st("SC", 6), grp([st("SC", 4)])], 22, { around: true })]);
+    expect(validate(sc)).toMatchObject([{ code: "CONSUMES_UNDERFLOW", expected: 17, actual: 15 }]);
+  });
+
+  it("reports `around` on a row (it turns): validation and graph build it as a plain row", () => {
+    const flat = part([row("c", [st("CH", 7)], 0, { type: "row" }), row("r1", [st("SC", 6)], 6, { around: true, type: "row" })]);
+    expect(validate(flat).map((f) => [f.code, f.severity])).toEqual([
+      ["AROUND_ON_ROW", "error"],
+      ["CONSUMES_UNDERFLOW", "warning"],
+    ]);
+    expect(worksAroundChain(flat.rows[1]!, flat.rows[0]!)).toBe(false);
+    const g = buildGraph(flat);
+    expect(g.rows[1]!.around).toBeUndefined();
+    expect(g.rows[1]!.closed).toBe(false);
   });
 
   it("reports `around` without a chain before it, and checks the round as a plain one", () => {

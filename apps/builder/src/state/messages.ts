@@ -24,6 +24,8 @@ export function findingMessage(finding: Finding, row: Row | undefined): string {
       }
       return `Wird nur in ${actual} von ${expected} Maschen gearbeitet – ${left} ${left === 1 ? "bleibt" : "bleiben"} frei.`;
     }
+    case "AROUND_ON_ROW":
+      return "Eine Reihe wird am Ende gewendet und geht nicht „um die Lm-Kette“ – als Runde häkeln.";
     case "AROUND_WITHOUT_CHAIN":
       return "„Um die Lm-Kette“ geht nur direkt nach einer Luftmaschenkette – davor steht keine.";
     case "NO_ANCHOR_ROW":

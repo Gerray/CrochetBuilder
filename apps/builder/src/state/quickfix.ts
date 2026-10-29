@@ -197,6 +197,9 @@ export function quickFixes(finding: Finding, rows: readonly Row[], pinned: reado
         const times = solve(linear(row, path, anchorsConsumed), offered);
         return times === null ? null : repeatCandidate(row, path, times);
       });
+      // Around a chain the places left are at the ends: single crochets at the end of the
+      // round would not fill them.
+      if (row.around) return finish(row, repeats, explicit, MAX_REPEAT_FIXES);
       return finish(row, [fill, ...repeats], explicit, 1 + MAX_REPEAT_FIXES);
     }
     case "CONSUMES_OVERFLOW": {

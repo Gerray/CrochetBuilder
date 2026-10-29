@@ -450,6 +450,8 @@ function applyEdit(state: EditorState, action: EditorAction): DocResult {
         doc: withRows(doc, rowScope, (rows) => {
           const at = rows.findIndex((r) => r.id === action.rowId) + 1;
           const copy: Row = { ...structuredClone(source), id: action.newId };
+          // Only the round right after the chain goes around it.
+          delete copy.around;
           return [...rows.slice(0, at), copy, ...rows.slice(at)];
         }),
         pinned: pinned.includes(source.id) ? [...pinned, action.newId] : pinned,
@@ -876,6 +878,7 @@ function applyAssist(state: EditorState, action: AssistAction): DocResult {
       const copies = newIds.map((id): Row => {
         const copy: Row = { ...structuredClone(source), id };
         delete copy.color;
+        delete copy.around;
         return copy;
       });
       const end = start + rowIds.length;

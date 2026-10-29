@@ -260,7 +260,7 @@ export function buildGraph(content: PartContent, gauge?: Gauge, opts: BuildGraph
     const hasRing = atoms.some((a) => a.code === "MR");
     const kind: GraphRowKind = allChain ? "chain" : hasRing ? "ring" : "stitch";
     // Around a foundation chain (oval start); without a chain before it, a plain round.
-    const around = row.around === true && kind === "stitch" && prevRow?.kind === "chain";
+    const around = row.around === true && row.type === "round" && kind === "stitch" && prevRow?.kind === "chain";
     const firstNode = nodes.length;
 
     // Nodes.

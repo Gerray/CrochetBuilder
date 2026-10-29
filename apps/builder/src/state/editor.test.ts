@@ -73,6 +73,21 @@ describe("rows", () => {
     expect(row(s, "r2")).not.toHaveProperty("around");
   });
 
+  it("copies of a round around the chain (duplicate, ×N) are plain rounds", () => {
+    let s = run(
+      fresh(),
+      { type: "setRowOps", rowId: "r1", ops: [{ kind: "stitch", code: "CH", count: 7 }] },
+      { type: "addRow", id: "r2" },
+      { type: "setRowOps", rowId: "r2", ops: [sc(11)] },
+      { type: "setRowAround", rowId: "r2", around: true },
+    );
+    const dup = run(s, { type: "duplicateRow", rowId: "r2", newId: "d" });
+    expect(row(dup, "r2").around).toBe(true);
+    expect(row(dup, "d")).not.toHaveProperty("around");
+    s = run(s, { type: "setRunLength", rowIds: ["r2"], length: 3, newIds: ["x", "y"] });
+    expect(rows(s).map((r) => r.around ?? false)).toEqual([false, true, false, false]);
+  });
+
   it("adds free instruction rows with a note only", () => {
     const s = run(fresh(), { type: "addRow", id: "n1", instruction: true }, {
       type: "updateRow",
