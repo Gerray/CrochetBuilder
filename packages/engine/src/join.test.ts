@@ -8,7 +8,7 @@ import { composeAssembly, applyTransform } from "./assembly-scene.js";
 import { validateExport, type BuilderExport } from "./export.js";
 import { buildGraph, isFabricNode, type StitchGraph } from "./graph.js";
 import { gathersByDefault, joinCapacity, planJoins } from "./join.js";
-import { buildJoinedModels, type JoinedComponent } from "./joined.js";
+import { buildJoinedModels, rowInfo, type JoinedComponent } from "./joined.js";
 import { buildModel } from "./model.js";
 import { relax } from "./relax.js";
 import { PartContentSchema, StitchOpSchema, usesFormatV2, type Op, type PartContent, type Row } from "./schema.js";
@@ -145,9 +145,11 @@ describe("planJoins", () => {
 
   it("reports stitches taken twice, beyond the row, or left free", () => {
     const twice = sealDoc();
-    twice.parts[1]!.content.rows[0]!.ops = [st("SC", 6, { from: { part: "seal", start: 0 } })];
+    twice.parts[1]!.quantity = 1;
+    twice.parts.push({ id: "fin2", name: "B", quantity: 1, content: content([rnd("g1", [st("SC", 6, { from: { part: "seal", start: 0 } })], 6)]) });
     expect(codes(twice)).toContain("JOIN_OVERLAP");
     const beyond = sealDoc();
+    beyond.parts[1]!.quantity = 1;
     beyond.parts[1]!.content.rows[0]!.ops = [st("SC", 6, { from: { part: "seal", start: 9 } })];
     const over = validateExport(beyond).find((f) => f.code === "JOIN_OVERFLOW")!;
     expect(over).toMatchObject({ severity: "error", partIndex: 1, expected: 12, actual: 15 });
@@ -405,15 +407,26 @@ describe("a part both crocheted on and sewn on", () => {
 });
 
 describe("parts without joins", () => {
-  // Measures of `buildModel` taken from the engine before joins existed (main at bedcb4f,
-  // positions were bit-identical): joins must not change a part that has none.
+  /** FNV-1a (32 bit) of the raw bytes of a Float64Array, as 8 hex digits. */
+  const fnv1a = (a: Float64Array): string => {
+    const bytes = new Uint8Array(a.buffer, a.byteOffset, a.byteLength);
+    let h = 0x811c9dc5;
+    for (let i = 0; i < bytes.length; i++) {
+      h ^= bytes[i]!;
+      h = Math.imul(h, 0x01000193) >>> 0;
+    }
+    return h.toString(16).padStart(8, "0");
+  };
   const grp = (ops: Op[]): Op => ({ kind: "group", ops }) as Op;
-  const CASES: Array<[string, PartContent, { nodes: number; extent: V; centroid: V; meanRadius: number }]> = [
-    ["leg", legsDoc().parts[0]!.content, { nodes: 97, extent: [28.390525, 23.286201, 28.807711], centroid: [-0.004308, 12.134203, 0.007136], meanRadius: 15.590301 }],
-    ["pumpkin", pumpkinDoc().parts[0]!.content, { nodes: 319, extent: [59.368693, 48.678938, 58.805686], centroid: [-0.010617, 25.756845, 0.000782], meanRadius: 28.762161 }],
-    ["seal", sealDoc().parts[0]!.content, { nodes: 229, extent: [38.068574, 41.774665, 38.162151], centroid: [-0.006956, 21.14211, 0.007381], meanRadius: 21.318249 }],
-    ["arm (flat finish)", armDoc().parts[1]!.content, { nodes: 53, extent: [14.353178, 29.120494, 12.498821], centroid: [0.004829, 15.350077, -0.020295], meanRadius: 10.753767 }],
-    ["tube", content(tube("t", 30, 5)), { nodes: 217, extent: [47.555028, 30.549732, 47.760417], centroid: [-0.006042, 15.207584, -0.00362], meanRadius: 24.223876 }],
+  // Hashes of `buildModel(…).graph.positions` computed with the engine before joins existed
+  // (main at bedcb4f): a part without joins must keep exactly the same positions.
+  const CASES: Array<[string, PartContent, string]> = [
+    ["leg", legsDoc().parts[0]!.content, "5cab8e14"],
+    ["pumpkin", pumpkinDoc().parts[0]!.content, "5d9623ba"],
+    ["seal", sealDoc().parts[0]!.content, "8e29b45e"],
+    ["body of the arm case", armDoc().parts[0]!.content, "e99f4fad"],
+    ["arm (flat finish)", armDoc().parts[1]!.content, "b2878221"],
+    ["tube", content(tube("t", 30, 5)), "654e2222"],
     [
       "oval",
       content([
@@ -422,31 +435,18 @@ describe("parts without joins", () => {
         rnd("r2", [st("INC"), st("SC", 4), st("INC", 3), st("SC", 4), st("INC", 2)], 20),
         rnd("r3", [st("SC", 20)], 20),
       ]),
-      { nodes: 54, extent: [37.096414, 10.540631, 23.39776], centroid: [0.061326, 6.464418, 0.023993], meanRadius: 12.843286 },
+      "285b53f1",
     ],
-    [
-      "stuffed, flat finish",
-      content([...tube("f", 24, 3), rnd("fd", [rep(6, [st("SC", 2), st("DEC")])], 18)], { finish: "flat", stuffing: "firm" }),
-      { nodes: 133, extent: [49.927047, 27.594966, 31.038446], centroid: [0.017321, 16.036245, -0.011374], meanRadius: 17.996753 },
-    ],
+    ["stuffed, flat finish", content([...tube("f", 24, 3), rnd("fd", [rep(6, [st("SC", 2), st("DEC")])], 18)], { finish: "flat", stuffing: "firm" }), "861ee181"],
     [
       "rows",
       content([{ id: "ch", type: "row", ops: [st("CH", 13)], stitchCountTarget: 0 }, ...[1, 2, 3, 4, 5, 6].map((k): Row => ({ id: `w${k}`, type: "row", ops: [st("SC", 12)], stitchCountTarget: 12 }))]),
-      { nodes: 85, extent: [60.023725, 30.093762, 0.213464], centroid: [-2.100268, 14.871739, -0.000711], meanRadius: 18.678274 },
+      "d43ac105",
     ],
   ];
 
-  it.each(CASES)("keeps the shape of %s as before joins existed", (_, c, expected) => {
-    const g = buildModel(c).graph;
-    const ps = allPoints(g);
-    const mid = centroid(ps);
-    const extent = [0, 1, 2].map((k) => Math.max(...ps.map((p) => p[k]!)) - Math.min(...ps.map((p) => p[k]!)));
-    expect(g.nodes.length).toBe(expected.nodes);
-    for (let k = 0; k < 3; k++) {
-      expect(extent[k]).toBeCloseTo(expected.extent[k]!, 5);
-      expect(mid[k]).toBeCloseTo(expected.centroid[k]!, 5);
-    }
-    expect(ps.reduce((s, p) => s + dist(p, mid), 0) / ps.length).toBeCloseTo(expected.meanRadius, 5);
+  it.each(CASES)("keeps the positions of %s bit for bit", (_, c, hash) => {
+    expect(fnv1a(buildModel(c).graph.positions)).toBe(hash);
   });
 });
 
@@ -469,9 +469,193 @@ describe("hand-off to TellmeCrochet", () => {
     const arm = toTellmeCrochetDraft(armDoc()).draft.parts[0]!.content.rows.find((r) => r.id === "join")!;
     expect(arm.note).toBe("Runde 8: 3 fM, 4 fM zusammen mit Teil Arm, 23 fM (30)");
     const seal = sealDoc();
+    seal.parts[1]!.quantity = 1;
     seal.parts[1]!.content.rows[0]!.ops = [st("SC", 6, { from: { part: "seal", row: "sd1", start: 6 } })];
     expect(toTellmeCrochetDraft(seal).draft.parts[1]!.content.rows[0]!.note).toBe("Runde 1: 6 fM aus Teil Robbe (Runde 12, ab M 7) (6)");
     // Every draft is valid for TellmeCrochet's strict format version 1.
     for (const d of [legsDoc(), pumpkinDoc(), sealDoc(), armDoc()]) expect(TmcDraftSchema.safeParse(toTellmeCrochetDraft(d).draft).success).toBe(true);
+  });
+});
+
+describe("review fixes (B5b)", () => {
+  /** Seal with a separate tail: the branches work from the tail, the tail is sewn onto a body. */
+  function tailDoc(): BuilderExport {
+    const doc = sealDoc();
+    const tail = doc.parts[0]!;
+    tail.id = "tail";
+    tail.name = "Schwanz";
+    tail.content = content([...tube("t", 12, 2)], { finish: "open" });
+    doc.parts[1]!.content.rows[0] = rnd("f1", [st("SC", 6, { from: { part: "tail" } })], 6);
+    doc.parts.unshift({ id: "body", name: "Körper", quantity: 1, content: content(tube("b", 48, 8)) });
+    doc.assembly = [{ id: "tailOn", kind: "attach", part: "tail", target: "body", row: "be4", angle: 180 }];
+    return doc;
+  }
+  const compose = (doc: BuilderExport) => {
+    const models = doc.parts.map((p) => buildModel(p.content));
+    const joined = buildJoinedModels(doc).components;
+    return { scene: composeAssembly(doc, models, { joined }), joined, models };
+  };
+  const finite = (a: ArrayLike<number>) => Array.from(a).every(Number.isFinite);
+
+  it("skips a component joined in a circle: not relaxed, no NaN, the parts stand unjoined", () => {
+    const doc = sealDoc();
+    doc.parts[1]!.quantity = 1;
+    doc.parts[0]!.content.rows.push(rnd("cyc", [st("SC", 6, { from: { part: "fin" } }), st("SC", 6)], 12));
+    expect(validateExport(doc).filter((f) => f.code === "JOIN_CYCLE").map((f) => f.partIndex)).toEqual([0, 1]);
+    const res = buildJoinedModels(doc);
+    expect(res.components).toEqual([]);
+    expect(res.skipped).toEqual([{ instances: [{ part: 0, copy: 0 }, { part: 1, copy: 0 }], reason: "cycle" }]);
+    const { scene } = compose(doc);
+    expect(scene.instances.map((i) => [i.part, i.copy, i.joined ?? false])).toEqual([
+      [0, 0, false],
+      [1, 0, false],
+    ]);
+    for (const i of scene.instances) expect(finite([...i.transform.rotation, ...i.transform.translation])).toBe(true);
+  });
+
+  it("applies `start` on a part ×2 to its first copy; the second continues after it", () => {
+    const doc = sealDoc();
+    doc.parts[1]!.content.rows[0]!.ops = [st("SC", 6, { from: { part: "seal", start: 0 } })];
+    const plan = planJoins(doc);
+    expect(plan.findings).toEqual([]);
+    expect(plan.links.map((l) => [l.copy, l.slot])).toEqual([...Array(12).keys()].map((k) => [k < 6 ? 0 : 1, k]));
+    // A start in the middle: the second copy runs past the end of the tail.
+    doc.parts[1]!.content.rows[0]!.ops = [st("SC", 6, { from: { part: "seal", start: 3 } })];
+    const shifted = planJoins(doc);
+    expect(shifted.links.filter((l) => l.offset === 0).map((l) => [l.copy, l.slot])).toEqual([
+      [0, 3],
+      [1, 9],
+    ]);
+    expect(shifted.findings.map((f) => f.code)).toEqual(expect.arrayContaining(["JOIN_OVERFLOW"]));
+    expect(shifted.findings.map((f) => f.code)).not.toContain("JOIN_OVERLAP");
+  });
+
+  it("sews a joined root on and carries the copies joined to it rigidly", () => {
+    const doc = tailDoc();
+    expect(validateExport(doc).map((f) => f.code)).not.toContain("JOINED_AND_PLACED");
+    const { scene, joined, models } = compose(doc);
+    expect(scene.findings).toEqual([]);
+    const c = joined[0]!;
+    expect(c.parts[c.root]).toMatchObject({ part: 1, copy: 0 }); // the tail
+    const at = (part: number, copy = 0) => scene.instances.find((i) => i.part === part && i.copy === copy)!;
+    expect(at(1)).toMatchObject({ placement: "tailOn", placed: true, joined: true, group: 0 });
+    for (const copy of [0, 1]) expect(at(2, copy)).toMatchObject({ placed: true, joined: true, group: 0 });
+    // The branches keep their place relative to the tail (one rigid transform).
+    const world = (part: number, copy: number) =>
+      centroid(allPoints(only(c, part, copy).graph).map((p) => applyTransform(at(part, copy).transform, p)));
+    const local = (part: number, copy: number) => centroid(allPoints(only(c, part, copy).graph));
+    for (const copy of [0, 1]) expect(dist(world(2, copy), world(1, 0))).toBeCloseTo(dist(local(2, copy), local(1, 0)), 6);
+    // The tail sits on the body at round be4, behind (180°).
+    const body = models[0]!.graph;
+    const be4 = centroid(rowPoints(body, "be4"));
+    const tailEnd = centroid(rowPoints(only(c, 1).graph, "te2").map((p) => applyTransform(at(1).transform, p)));
+    expect(Math.abs(tailEnd[1] - be4[1])).toBeLessThan(2 * body.gauge.stitchHeightMm);
+    expect(tailEnd[2] - be4[2]).toBeLessThan(0);
+  });
+
+  it("decides per copy: a copy outside the component keeps its placement and is drawn", () => {
+    const doc = legsDoc();
+    doc.parts[0]!.quantity = 3;
+    doc.assembly = [{ id: "third", kind: "attach", part: "leg", target: "body", row: "be3", angle: 0 }];
+    expect(validateExport(doc).map((f) => f.code)).not.toContain("JOINED_AND_PLACED");
+    const { scene } = compose(doc);
+    expect(scene.findings).toEqual([]);
+    expect(scene.instances.map((i) => [i.part, i.copy, i.joined ?? false, i.placement ?? null])).toEqual([
+      [0, 0, true, null],
+      [0, 1, true, null],
+      [0, 2, false, "third"],
+      [1, 0, true, null],
+    ]);
+    // A second placement has no copy left: dropped, the join decides.
+    doc.assembly.push({ id: "more", kind: "attach", part: "leg", target: "body", row: "be3", angle: 90 });
+    expect(validateExport(doc).filter((f) => f.code === "JOINED_AND_PLACED").map((f) => f.placementId)).toEqual(["more"]);
+    expect(compose(doc).scene.findings.map((f) => [f.code, f.placementId])).toEqual([["JOINED", "more"]]);
+  });
+
+  it("warns about `from` into a last round that is explicitly gathered", () => {
+    const doc = pumpkinDoc();
+    expect(codes(doc)).not.toContain("JOIN_INTO_GATHERED");
+    doc.parts[0]!.content.finish = "gather";
+    expect(validateExport(doc).find((f) => f.code === "JOIN_INTO_GATHERED")).toMatchObject({ severity: "warning", partIndex: 1, rowId: "s1", ref: "pumpkin" });
+  });
+
+  it("makes no join for `through` on a chain, and pairs only the stitches (not chains) of a round", () => {
+    const doc = legsDoc();
+    doc.parts[1]!.content.rows[1]!.ops.push(st("CH", 2, { through: { part: "leg" } }));
+    expect(codes(doc)).toContain("INVALID_JOIN");
+    expect(planJoins(doc).links.filter((l) => l.kind === "through")).toEqual([]);
+    const lace = content([rnd("a", [st("MR"), st("SC", 6)], 6), rnd("b", [rep(6, [st("SC"), st("CH")])], 12)]);
+    const g = buildGraph(lace);
+    const places = rowInfo(g, "b")!;
+    expect(places.fabric).toHaveLength(6);
+    expect(places.fabric.every((p) => g.nodes[p.node]!.code !== "CH")).toBe(true);
+    expect(joinCapacity(lace.rows[1]!, "through").capacity).toBe(places.fabric.length / 2);
+  });
+
+  it("closes the surface where the legs meet the bridge: no one-sided edge at the joins", () => {
+    const c = buildJoinedModels(legsDoc()).components[0]!;
+    const directed = new Map<string, number>();
+    const add = (a: string, b: string) => directed.set(`${a}>${b}`, (directed.get(`${a}>${b}`) ?? 0) + 1);
+    const tri = (a: string, b: string, d: string) => {
+      add(a, b);
+      add(b, d);
+      add(d, a);
+    };
+    c.parts.forEach((p, i) => {
+      const t = p.graph.triangles;
+      for (let k = 0; k < t.length; k += 3) tri(`${i}:${t[k]}`, `${i}:${t[k + 1]}`, `${i}:${t[k + 2]}`);
+    });
+    const v = c.bridge.vertices;
+    const t = c.bridge.triangles;
+    const key = (x: number) => `${v[x]!.instance}:${v[x]!.node}`;
+    for (let k = 0; k < t.length; k += 3) tri(key(t[k]!), key(t[k + 1]!), key(t[k + 2]!));
+    const rowOf = (s: string) => {
+      const [i, n] = s.split(":").map(Number) as [number, number];
+      return c.parts[i]!.graph.nodes[n]!.rowId;
+    };
+    // Every edge at the joins has a triangle on both sides. Each part is meshed (and turned
+    // outwards) on its own, the bridge with the body: the winding must agree within the body.
+    const joinRows = new Set(["bridge", "b1", "le4"]);
+    const body = c.parts.findIndex((p) => p.part === 1);
+    const open: string[] = [];
+    const twisted: string[] = [];
+    for (const [e, n] of directed) {
+      const [a, b] = e.split(">") as [string, string];
+      const inBody = a.startsWith(`${body}:`) && b.startsWith(`${body}:`);
+      if (inBody && (n > 1 || (directed.get(`${b}>${a}`) ?? 0) > 1)) twisted.push(e);
+      const sides = n + (directed.get(`${b}>${a}`) ?? 0);
+      if (sides < 2 && (joinRows.has(rowOf(a)) || joinRows.has(rowOf(b)))) open.push(e);
+    }
+    expect(open).toEqual([]);
+    expect(twisted).toEqual([]);
+  });
+
+  it("does not depend on the order of the parts in the document", () => {
+    const a = legsDoc();
+    const b = legsDoc();
+    b.parts = [b.parts[1]!, b.parts[0]!];
+    const ca = buildJoinedModels(a).components[0]!;
+    const cb = buildJoinedModels(b).components[0]!;
+    for (const [pa, pb, copy] of [[1, 0, 0], [0, 1, 0], [0, 1, 1]] as const) {
+      expect(Array.from(only(cb, pb, copy).graph.positions)).toEqual(Array.from(only(ca, pa, copy).graph.positions));
+    }
+  });
+
+  it("reports a row in the middle of a part worked only into another part as an underflow", () => {
+    const own = content([...tube("x", 12, 1), rnd("into", [st("SC", 12, { from: { part: "head" } })], 12)]);
+    expect(validate(own)).toEqual([expect.objectContaining({ rowId: "into", code: "CONSUMES_UNDERFLOW", expected: 12, actual: 0 })]);
+  });
+
+  it("leaves dropped placements out of the hand-off and writes each copy's start", () => {
+    const legs = legsDoc();
+    legs.assembly = [{ id: "p1", kind: "attach", part: "leg", target: "body", row: "be2", angle: 40 }];
+    const out = toTellmeCrochetDraft(legs);
+    expect(out.draft.parts.map((p) => p.name)).toEqual(["Bein", "Körper"]);
+    expect(out.losses.find((l) => l.placementId === "p1")!.message).toContain("entfällt");
+    const seal = toTellmeCrochetDraft(sealDoc()).draft.parts[1]!.content.rows[0]!.note;
+    expect(seal).toBe("Flosse 1: Runde 1: 6 fM aus Teil Robbe (6) · Flosse 2: Runde 1: 6 fM aus Teil Robbe (ab M 7) (6)");
+    // A sewn-on root keeps its step.
+    const tail = toTellmeCrochetDraft(tailDoc()).draft;
+    expect(tail.parts.at(-1)!.name).toBe("Zusammensetzen");
   });
 });

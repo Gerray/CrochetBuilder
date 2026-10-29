@@ -96,7 +96,7 @@ import {
 } from "./pattern-details.js";
 import type { Finish, JoinRef, Op, Row, Stuffing } from "./schema.js";
 import { computeRowStitches } from "./stitch-count.js";
-import { anchorsConsumed, anchorsOffered, isChainRow } from "./validate.js";
+import { anchorsConsumed, anchorsOffered, isChainRow, rowWorksFromOtherPart } from "./validate.js";
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -1359,6 +1359,17 @@ class Importer {
     return out;
   }
 
+  /**
+   * Whether `ops`, read with joins, would work only into another part although the current
+   * part already has a stitch row of its own (which would then stay unworked).
+   */
+  private leavesOwnRowUnworked(ops: readonly Op[]): boolean {
+    if (joinRefsOf(ops).length === 0) return false;
+    const row: Row = { id: "probe", type: "round", ops: [...ops], stitchCountTarget: 0 };
+    if (!rowWorksFromOtherPart(row) || anchorsConsumed(row) > 0) return false;
+    return this.part().rows.some((r) => r.ops.length > 0);
+  }
+
   /** Whether the join phrases of `text` name parts of the pattern (they are then read). */
   private readsJoin(text: string): boolean {
     const parts = this.joinParts();
@@ -1410,6 +1421,9 @@ class Importer {
         if (result.ops.length === 0) continue;
         const blocked = this.unsupported(prefix, false);
         if (blocked.length > 0) return { blocked };
+        // A join in the middle of a part that would leave the own previous row unworked
+        // ("12 sc on the head" in a body round) is doubtful: keep it as a hint.
+        if (this.leavesOwnRowUnworked(result.ops)) return { blocked: ["UNSUPPORTED_JOIN"] };
         return { result, end: cut };
       }
       if (!fill && result.code === "needs-context") fill = "NEEDS_PREVIOUS_COUNT";

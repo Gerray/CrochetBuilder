@@ -34,10 +34,14 @@
  *     attached part goes onto copy k of its target when the target has that copy (hands on
  *     both arms), else onto copy 1.
  *   - Crocheted together (`opts.joined`, parts joined by `StitchOp.from` / `.through`): the
- *     copies of a joined component are drawn where the joint relaxation put them — one group
- *     around its largest copy — and are never placed by their attach placements (finding
- *     `JOINED`). Other parts are attached to them, and eyes set on them, as usual, on their
- *     joined models.
+ *     copies of a joined component are drawn where the joint relaxation put them, moving
+ *     rigidly with the component's root. The root is placed like any part — sewn on by its
+ *     placement (a tail with its branches sewn onto a body), or a group of its own. The other
+ *     copies of the component (followers) take no placement: a part's placements go, in
+ *     order, to its copies that are not followers (`placeableCopies`, the third leg of a part
+ *     ×3 whose first two are joined); a placement left over for a part with followers is
+ *     dropped (finding `JOINED`, the join decides). Other parts are attached to joined
+ *     copies, and eyes set on them, as usual, on their joined models.
  *   - Eyes: two eyes `spacing` stitches apart along the row, i.e. at angle ± (spacing / 2)
  *     stitches (one eye when the spacing is 0 or missing), on copy 1 of the target. The eye's
  *     centre lies on the surface — half its diameter is sunk in. Embroidery: one mark.
@@ -47,6 +51,7 @@
 
 import { placementAnchor, type Placement, type Vec3 } from "./assembly.js";
 import { isFabricNode, type GraphRow, type StitchGraph } from "./graph.js";
+import { placeableCopies } from "./join.js";
 import type { JoinedComponent, JoinedPart } from "./joined.js";
 import type { Finish } from "./schema.js";
 
@@ -483,10 +488,14 @@ export function composeAssembly(
     if (p.id !== undefined && !byId.has(p.id)) byId.set(p.id, i);
   });
 
-  // Parts crocheted together: their copies in the common frame of their component.
+  // Parts crocheted together: their copies in the common frame of their component. The root
+  // of a component is placed like any part (sewn on, or a group of its own); the other copies
+  // move with it.
   const joinedModel = new Map<string, AssemblyPartModel>();
   const joinedRoot = new Map<string, string>();
-  const joinedCopies = new Map<number, number[]>();
+  /** Joined copies that are not their component's root, per part. */
+  const followers = new Map<number, number[]>();
+  const nonRoot = new Set<string>();
   for (const c of opts.joined ?? []) {
     const rootPart = c.parts[c.root];
     if (!rootPart) continue;
@@ -496,17 +505,21 @@ export function composeAssembly(
       const key = instanceKey(p.part, p.copy);
       joinedModel.set(key, { graph: p.graph, finish: p.finish });
       joinedRoot.set(key, rootKey);
-      const list = joinedCopies.get(p.part) ?? [];
+      if (key === rootKey) continue;
+      nonRoot.add(key);
+      const list = followers.get(p.part) ?? [];
       list.push(p.copy);
-      joinedCopies.set(p.part, list);
+      followers.set(p.part, list);
     }
   }
   /** The model of a part copy: its joined model, else the part's own. */
   const modelOf = (part: number, copy: number): AssemblyPartModel | null | undefined =>
     joinedModel.get(instanceKey(part, copy)) ?? models[part];
   const usableModel = (m: AssemblyPartModel | null | undefined) => !!m && m.graph.nodes.length > 0 && fabricRows(m.graph).length > 0;
-  const usable = (i: number) => usableModel(models[i]) || (joinedCopies.get(i) ?? []).some((c) => usableModel(modelOf(i, c)));
   const quantity = (i: number) => Math.max(1, Math.floor(doc.parts[i]?.quantity ?? 1));
+  const usable = (i: number) => Array.from({ length: quantity(i) }, (_, c) => c).some((c) => usableModel(modelOf(i, c)));
+  /** Copies of part `i` that take its placements, in copy order (all but joined followers). */
+  const placeable = (i: number) => placeableCopies(quantity(i), i, nonRoot);
 
   // 1. Resolve references; collect attach placements per attached part.
   const attaches = new Map<number, Placement[]>();
@@ -547,7 +560,9 @@ export function composeAssembly(
       findings.push({ code: "NO_MODEL", placementId: pl.id, part, message: `Placement "${pl.id}": part "${pl.part}" has no model.` });
       continue;
     }
-    if (joinedCopies.has(part)) {
+    const list = attaches.get(part) ?? [];
+    if (followers.has(part) && list.length >= placeable(part).length) {
+      // Every copy that could take it is crocheted onto another part.
       findings.push({
         code: "JOINED",
         placementId: pl.id,
@@ -556,7 +571,6 @@ export function composeAssembly(
       });
       continue;
     }
-    const list = attaches.get(part) ?? [];
     list.push(pl);
     attaches.set(part, list);
   }
@@ -569,19 +583,17 @@ export function composeAssembly(
     return anchor?.end ?? false;
   };
 
-  // 2. Instances: copy k of a part takes its k-th placement; one placement and quantity ≥ 2
-  // mirrors the second copy. Copy 0 is always drawn (placed or beside).
+  // 2. Instances: the k-th placeable copy of a part takes its k-th placement; one placement
+  // and two or more placeable copies mirrors the second. The first placeable copy is always
+  // drawn (placed or beside). Joined followers are drawn with their component's root.
   const drawn: Array<{ part: number; copy: number; assignment?: Assignment }> = [];
   doc.parts.forEach((_, part) => {
     if (!usable(part)) return;
-    const joined = joinedCopies.get(part);
-    if (joined) {
-      // Crocheted together: the joined copies, as the joint relaxation put them.
-      for (const copy of [...joined].sort((a, b) => a - b)) drawn.push({ part, copy });
-      return;
-    }
+    for (const copy of [...(followers.get(part) ?? [])].sort((a, b) => a - b)) drawn.push({ part, copy });
+    const free = placeable(part).filter((c) => usableModel(modelOf(part, c)));
+    if (free.length === 0) return;
     const list = attaches.get(part) ?? [];
-    const q = quantity(part);
+    const q = free.length;
     for (const extra of list.slice(q)) {
       findings.push({ code: "EXTRA_PLACEMENT", placementId: extra.id, part, message: `Placement "${extra.id}": part has only ${q} ${q === 1 ? "copy" : "copies"}.` });
     }
@@ -594,12 +606,13 @@ export function composeAssembly(
         message: `Placement "${list[0]!.id}": the mirrored second copy lands on the first (angle 0 or 180, or centred on the target's end).`,
       });
     }
-    for (let copy = 0; copy < count; copy++) {
-      const placement = list.length === 1 ? list[0] : list[copy];
+    for (let k = 0; k < count; k++) {
+      const copy = free[k]!;
+      const placement = list.length === 1 ? list[0] : list[k];
       const target = placement ? byId.get(placement.target)! : -1;
       drawn.push(
         placement
-          ? { part, copy, assignment: { placement, mirrored: list.length === 1 && copy === 1, target } }
+          ? { part, copy, assignment: { placement, mirrored: list.length === 1 && k === 1, target } }
           : { part, copy },
       );
     }
@@ -618,8 +631,17 @@ export function composeAssembly(
     const inst = byKey.get(key)!;
     const joinedTo = joinedRoot.get(key);
     if (joinedTo !== undefined && joinedTo !== key && byKey.has(joinedTo)) {
-      // In the common frame of its component, whose root it moves with.
-      const out = { transform: IDENTITY_TRANSFORM, root: joinedTo };
+      // In the common frame of its component: it moves with the component's root (which may
+      // itself be sewn on).
+      const onStack = visiting.indexOf(key);
+      if (onStack >= 0) {
+        for (const k of visiting.slice(onStack)) cyclic.add(k);
+        return null;
+      }
+      visiting.push(key);
+      const rootAt = resolve(joinedTo);
+      visiting.pop();
+      const out = rootAt && !cyclic.has(key) ? { transform: rootAt.transform, root: rootAt.root } : null;
       local.set(key, out);
       return out;
     }
@@ -670,7 +692,8 @@ export function composeAssembly(
   const reported = new Set<string>();
   for (const key of cyclic) {
     const inst = byKey.get(key)!;
-    const id = inst.assignment!.placement.id;
+    if (!inst.assignment) continue; // a joined follower: its root's placement is reported
+    const id = inst.assignment.placement.id;
     if (reported.has(id)) continue;
     reported.add(id);
     findings.push({ code: "CYCLE", placementId: id, part: inst.part, message: `Placement "${id}" is part of a cycle: the parts are attached to each other.` });

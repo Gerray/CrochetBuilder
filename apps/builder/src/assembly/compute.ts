@@ -97,6 +97,16 @@ export interface JoinedMeshResult {
   mesh?: PartMesh;
 }
 
+/**
+ * Parts crocheted together that the Montage shows without their joins: joined in a circle
+ * (`cycle`, finding `JOIN_CYCLE`), over the stitch budget or empty, or a joint relaxation
+ * that did not give finite positions (`invalid`).
+ */
+export interface UnjoinedComponent {
+  parts: number[];
+  reason: "cycle" | "overBudget" | "empty" | "invalid";
+}
+
 /** Worker → main thread. */
 export type AssemblyResult =
   | {
@@ -105,6 +115,8 @@ export type AssemblyResult =
       parts: AssemblyPartResult[];
       /** Copies of parts crocheted together (drawn instead of the part's own mesh). */
       joined: JoinedMeshResult[];
+      /** Joined parts shown without their joins (and why). */
+      unjoined: UnjoinedComponent[];
       scene: AssemblyScene;
       maxTotal: number;
     }
@@ -282,10 +294,10 @@ export class AssemblyComputer {
         parts.push(out);
       });
       this.cache = next;
-      const { components, joined } = this.joinedMeshes(doc, style, maxStitches, parts, have);
+      const { components, joined, unjoined } = this.joinedMeshes(doc, style, maxStitches, parts, have);
       // The toy faces the viewer (the default camera looks from +Z).
       const scene = composeAssembly(doc, models, { faceFront: true, joined: components });
-      return { id, kind: "scene", parts, joined, scene, maxTotal: this.maxTotal };
+      return { id, kind: "scene", parts, joined, unjoined, scene, maxTotal: this.maxTotal };
     } catch (err) {
       this.cache.clear();
       this.joinedCache = null;
@@ -303,10 +315,10 @@ export class AssemblyComputer {
     maxStitches: number,
     parts: readonly AssemblyPartResult[],
     have: ReadonlySet<string>,
-  ): { components: JoinedComponent[]; joined: JoinedMeshResult[] } {
+  ): { components: JoinedComponent[]; joined: JoinedMeshResult[]; unjoined: UnjoinedComponent[] } {
     if (!doc.parts.some((p) => partHasJoin(p.content))) {
       this.joinedCache = null;
-      return { components: [], joined: [] };
+      return { components: [], joined: [], unjoined: [] };
     }
     const shapes = JSON.stringify([
       doc.parts.map((p, i) => [p.id ?? null, p.quantity, shapeKey(doc, i, maxStitches)]),
@@ -316,7 +328,15 @@ export class AssemblyComputer {
       this.joinedCache = { key, models: buildJoinedModels(doc, doc.overview.gauge, { maxStitches }) };
     }
     const ok = (part: number) => parts[part]?.status === "model";
-    const components = this.joinedCache.models.components.filter((c) => c.parts.every((p) => ok(p.part)));
+    const partsOf = (list: ReadonlyArray<{ part: number }>) => [...new Set(list.map((x) => x.part))].sort((a, b) => a - b);
+    const unjoined: UnjoinedComponent[] = this.joinedCache.models.skipped.map((s) => ({ parts: partsOf(s.instances), reason: s.reason }));
+    // Never hand on positions that are not finite: such a component is shown unjoined.
+    const components = this.joinedCache.models.components.filter((c) => {
+      if (!c.parts.every((p) => ok(p.part))) return false;
+      if (isFiniteComponent(c)) return true;
+      unjoined.push({ parts: partsOf(c.parts), reason: "invalid" });
+      return false;
+    });
     const palette = paletteIds(doc);
     const joined: JoinedMeshResult[] = [];
     for (const c of components) {
@@ -335,8 +355,17 @@ export class AssemblyComputer {
         joined.push(out);
       });
     }
-    return { components, joined };
+    return { components, joined, unjoined };
   }
+}
+
+/** Whether every position of a joined component (copies and the bridge) is finite. */
+export function isFiniteComponent(c: Pick<JoinedComponent, "parts" | "bridge">): boolean {
+  const finite = (a: ArrayLike<number>) => {
+    for (let i = 0; i < a.length; i++) if (!Number.isFinite(a[i]!)) return false;
+    return true;
+  };
+  return c.parts.every((p) => finite(p.graph.positions)) && finite(c.bridge.positions);
 }
 
 /** Meshes of the joined part copies of a result by `joinedKey(part, copy)` (held ones by key). */

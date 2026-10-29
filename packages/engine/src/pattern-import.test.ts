@@ -775,6 +775,24 @@ describe("parsePatternText — joining parts while crocheting (B5b)", () => {
     ]);
   });
 
+  it("keeps a join in the middle of a part that would leave the own previous round unworked as a hint", () => {
+    const r = parsePatternText(
+      ["Head", "1. 6 sc in MR (6)", "2. inc x 6 (12)", "3. 12 sc (12)", "", "Body", "1. 6 sc in MR (6)", "2. inc x 6 (12)", "3. 12 sc (12)", "4. 12 sc on the head (12)", "5. 12 sc (12)"].join("\n"),
+      { locale: "en_us" },
+    );
+    const body = r.parts[1]!;
+    expect(body.rows.some((row) => JSON.stringify(row.ops).includes('"from"'))).toBe(false);
+    expect(r.issues.filter((i) => i.code === "UNSUPPORTED_JOIN").map((i) => i.text)).toEqual(["4. 12 sc on the head (12)"]);
+    // As the first round of a part it is read: the pot starts on the base.
+    const pot = parsePatternText(["Base", "1. 6 sc in MR (6)", "2. inc x 6 (12)", "", "Pot", "1. 12 sc at the base (12)", "2. 12 sc (12)"].join("\n"), { locale: "en_us" });
+    expect(pot.parts[1]!.rows[0]!.ops).toEqual([{ kind: "stitch", code: "SC", count: 12, from: { part: "base" } }]);
+  });
+
+  it("does not take “in ring” for a join to a part called Ring", () => {
+    const r = parsePatternText(["Ring", "1. ch 12, sl st to join (12)", "", "Ball", "1. 6 sc in ring (6)", "2. inc x 6 (12)"].join("\n"), { locale: "en_us" });
+    expect(JSON.stringify(r.parts[1]!.rows)).not.toContain('"from"');
+  });
+
   it("reports a round split into branches as a join it cannot read, but not folding in half", () => {
     const split = parsePatternText(
       [

@@ -24,6 +24,7 @@ import { partName } from "../state/parts.js";
 import type { PickResult } from "../three/mapping.js";
 import type { AssemblyCanvasProps } from "./AssemblyCanvas.js";
 import { rowKey, scenePick, sceneSize, type CombinedScene, type ScenePick } from "./combine.js";
+import type { UnjoinedComponent } from "./compute.js";
 import { useAssemblyScene, type AssemblySceneOptions } from "./useAssemblyScene.js";
 import { partIndexById, placementText, rowPositionText, rowWord } from "./wording.js";
 import "./assembly.css";
@@ -114,6 +115,20 @@ export function assemblyFindingText(f: AssemblyFinding): string {
       return "Beide Kopien landen an derselben Stelle (0°, 180° oder mittig auf dem Ende) – Winkel ändern oder für jede Kopie eine eigene Platzierung anlegen.";
     case "JOINED":
       return "Das Teil wird beim Häkeln mit einem anderen verbunden – dort sitzt es; diese Platzierung wird nicht verwendet.";
+  }
+}
+
+/** Why parts crocheted together are shown without their joins. */
+export function unjoinedText(reason: UnjoinedComponent["reason"]): string {
+  switch (reason) {
+    case "cycle":
+      return "Diese Teile werden im Kreis ineinander gehäkelt";
+    case "overBudget":
+      return "Zu viele Maschen für die gemeinsame Form";
+    case "empty":
+      return "Ein verbundenes Teil hat noch keine Maschen";
+    case "invalid":
+      return "Die gemeinsame Form ließ sich nicht berechnen";
   }
 }
 
@@ -290,6 +305,7 @@ export function AssemblyWorkspace({
   const findingsOf = (id: string) => scene.scene?.findings.filter((f) => f.placementId === id) ?? [];
   const parts = doc.parts;
   const skipped = scene.parts.filter((p) => p.status === "skipped").map((p) => partName(parts[p.part]?.name ?? "", p.part));
+  const unjoined = scene.unjoined.map((u) => ({ ...u, names: u.parts.map((i) => partName(parts[i]?.name ?? "", i)).join(", ") }));
 
   let overlay: ReactNode = null;
   if (!webgl) overlay = <Message title="3D-Ansicht nicht verfügbar">Dein Browser kann hier kein WebGL anzeigen.</Message>;
@@ -359,6 +375,11 @@ export function AssemblyWorkspace({
           {scene.maxTotal.toLocaleString("de-DE")} Maschen zusammen).
         </p>
       )}
+      {unjoined.map((u) => (
+        <p key={u.parts.join(",")} className="model-note assembly-unjoined" role="note">
+          {unjoinedText(u.reason)} – ohne Verbindung gezeigt: {u.names}.
+        </p>
+      ))}
       <p className="sr-only" aria-live="polite">
         {announcement}
       </p>

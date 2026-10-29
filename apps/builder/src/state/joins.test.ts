@@ -8,7 +8,7 @@ import {
   joinFindingsByRow,
   joinFindingMessage,
   joinPartsFor,
-  nextFreeStitch,
+  defaultJoinStart,
   withJoinFindings,
   withJoinIds,
 } from "./joins.js";
@@ -80,10 +80,8 @@ describe("defaults, findings and the hint", () => {
     return d;
   };
 
-  it("finds the next free stitch of a row and reports what is left free on the joining row", () => {
+  it("reports what is left free on the joining row", () => {
     const d = joined();
-    expect(nextFreeStitch(d, 0, 2, "l3", "from")).toBe(10);
-    expect(nextFreeStitch(d, 0, 1, "l3", "through")).toBe(0);
     const byRow = joinFindingsByRow(d);
     const f = byRow.get("b1")!;
     expect(f.map((x) => x.code)).toEqual(["JOIN_UNDERFLOW"]);
@@ -134,5 +132,57 @@ describe("snippet “Beine verbinden”", () => {
     expect(snippetRounds("joinLegs", params({ legA: "bein:1", legB: "bein:1" }), undefined, "round", parts)).toEqual({ ok: false, message: "Zwei verschiedene Beine wählen." });
     expect(snippetRounds("joinLegs", params({ bridge: 0 }), undefined, "round", parts)).toMatchObject({ ok: false });
     expect(snippetRounds("joinLegs", params(), undefined, "row", parts)).toMatchObject({ ok: false });
+  });
+});
+
+describe("review fixes (B5b)", () => {
+  /** A tail of 12 (part 0) and two branches (parts 1 and 2) of 6 stitches each. */
+  function branches(): BuilderDoc {
+    const tail = [rnd("t1", [{ kind: "stitch", code: "MR", count: 1 }, sc(6)], 6), rnd("t2", [{ kind: "stitch", code: "INC", count: 6 }], 12)];
+    return {
+      schemaVersion: 2,
+      title: "Ast",
+      overview: {},
+      parts: [
+        { id: "tail", name: "Schwanz", quantity: 1, content: { schemaVersion: 2, rows: tail } },
+        { id: "a", name: "Ast A", quantity: 1, content: { schemaVersion: 2, rows: [rnd("a1", [sc(6)], 6)] } },
+        { id: "b", name: "Ast B", quantity: 1, content: { schemaVersion: 2, rows: [rnd("b1", [sc(6, { from: { part: "tail", start: 6 } })], 6)] } },
+      ],
+    };
+  }
+
+  it("proposes the stitch planJoins would use there (document order), not the furthest end", () => {
+    const d = branches();
+    const op = d.parts[1]!.content.rows[0]!.ops[0] as Extract<Op, { kind: "stitch" }>;
+    // Branch B (later in the document) already takes stitches 7–12; branch A comes first.
+    expect(defaultJoinStart(d, 1, op, { kind: "from", part: 0 })).toBe(0);
+    // With A worked into stitches 1–6 without a start, a new join of B continues after it.
+    d.parts[1]!.content.rows[0]!.ops = [sc(6, { from: { part: "tail" } })];
+    const opB = d.parts[2]!.content.rows[0]!.ops[0] as Extract<Op, { kind: "stitch" }>;
+    expect(defaultJoinStart(d, 2, opB, { kind: "from", part: 0 })).toBe(6);
+  });
+
+  it("stores the proposed start explicitly when a join is set without one", () => {
+    let s = initEditorState(branches(), [], 1);
+    const op = s.doc.parts[1]!.content.rows[0]!.ops[0] as Extract<Op, { kind: "stitch" }>;
+    const start = defaultJoinStart(s.doc, 1, op, { kind: "from", part: 0 });
+    s = run(s, { type: "setOpJoin", rowId: "a1", path: [0], join: { kind: "from", part: 0, start } });
+    expect(s.doc.parts[1]!.content.rows[0]!.ops[0]).toEqual(sc(6, { from: { part: "tail", start: 0 } }));
+    // Moving the parts no longer shifts which stitches it takes.
+    s = run(s, { type: "movePart", index: 2, delta: -1 });
+    expect(joinFindingsByRow(s.doc).size).toBe(0);
+  });
+
+  it("removes the joins to a deleted part in the same undo step", () => {
+    let s = initEditorState(branches(), [], 0);
+    s = run(s, { type: "deletePart", index: 0 });
+    expect(JSON.stringify(s.doc.parts)).not.toContain('"from"');
+    expect(s.doc.parts.map((p) => p.id)).toEqual(["a", "b"]);
+    s = run(s, { type: "undo" });
+    expect(s.doc.parts[2]!.content.rows[0]!.ops[0]).toEqual(sc(6, { from: { part: "tail", start: 6 } }));
+  });
+
+  it("names the new finding for `from` into a gathered round", () => {
+    expect(joinFindingMessage({ severity: "warning", code: "JOIN_INTO_GATHERED", message: "", partIndex: 0 })).toContain("zusammengezogen");
   });
 });

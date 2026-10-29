@@ -201,6 +201,9 @@ export {
   partHasJoin,
   joinCapacity,
   gathersByDefault,
+  droppedPlacements,
+  placeableCopies,
+  joinedNonRootKeys,
 } from "./join.js";
 export type {
   JoinDocument,

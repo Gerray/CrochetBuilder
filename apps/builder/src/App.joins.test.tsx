@@ -77,8 +77,10 @@ describe("Joins in the row editor", () => {
     fireEvent.change(within(dialog).getByLabelText("Kopie"), { target: { value: "2" } });
     expect((within(dialog).getByLabelText("Ab Masche") as HTMLInputElement).placeholder).toBe("nächste freie (1)");
     fireEvent.click(within(dialog).getByRole("button", { name: "Übernehmen" }));
-    await waitFor(() => expect(input.value).toBe("6 fM, 4 fM zusammen mit Teil Bein 2"));
-    expect(screen.getByRole("button", { name: /^Verbindung mit Bein 2, Masche 2 von Runde 1/ })).toBeTruthy();
+    await waitFor(() => expect(input.value).toBe("6 fM, 4 fM zusammen mit Teil Bein 2 (ab M 1)"));
+    // The picker stores the first stitch it showed, so moving parts later cannot shift it.
+    await storedDoc((doc) => expect(doc.parts[0]!.content.rows[0]!.ops[1]).toMatchObject({ through: { part: "bein", copy: 2, start: 0 } }));
+    expect(screen.getByRole("button", { name: /^Verbindung mit Bein 2 \(ab M 1\), Masche 2 von Runde 1/})).toBeTruthy();
     // A round of 12 offers 6 places (pairs); 4 are taken.
     // On the row card and in the findings panel.
     expect((await screen.findAllByText(/Von 6 Maschen des anderen Teils werden nur 4 verbunden – 2 bleiben frei/)).length).toBeGreaterThanOrEqual(1);

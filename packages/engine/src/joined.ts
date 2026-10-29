@@ -15,8 +15,9 @@
  *     round both stitches of the flattened pair, which are also pulled onto each other — half a
  *     stitch height below its top: the other part's edge is caught in the stitch's foot.
  *
- * Start pose: the largest part copy of the component (most stitches) stays where its layout
- * puts it; the others are placed one after the other, each rigidly next to an already placed
+ * Start pose: the component's root (`JoinPlan.roots`: most stitches, ties by part id) stays
+ * where its layout puts it; the others are placed one after the other, each rigidly next to an
+ * already placed
  * one it is joined to: a part worked `from` another continues that part's growth (its rounds
  * stacked on the source row; a join that takes only some of the row's stitches leans outwards
  * by how much it leaves free, so branches split and an ear picked up on the side points
@@ -28,7 +29,10 @@
  * join goes on from that round); its default stuffing stays that of a closed piece.
  *
  * The result is in one common frame: the canonical pose (see `relax`) of the component's
- * largest part copy, every other copy moved with it. Deterministic (seeded like `relax`).
+ * root, every other copy moved with it. Deterministic (seeded like `relax`) and independent of
+ * the order of the parts in the document: the copies are relaxed in the order of their part
+ * ids (the stitches a join takes without `start` still follow the document order, see join.ts).
+ * Components whose parts are joined in a circle (`JOIN_CYCLE`) are not relaxed (`skipped`).
  *
  * Pure functions, no UI or framework imports.
  */
@@ -79,7 +83,7 @@ export interface JoinBridge {
 
 export interface JoinedComponent {
   parts: JoinedPart[];
-  /** Index into `parts` of the copy whose pose the component takes (the largest). */
+  /** Index into `parts` of the copy whose pose the component takes (`JoinPlan.roots`). */
   root: number;
   bridge: JoinBridge;
 }
@@ -88,8 +92,8 @@ export interface JoinedModels {
   plan: JoinPlan;
   /** Components that could be built (all their parts have stitches and are within the budget). */
   components: JoinedComponent[];
-  /** Components of `plan.components` left out, with the reason. */
-  skipped: Array<{ instances: JoinInstance[]; reason: "empty" | "overBudget" }>;
+  /** Components of `plan.components` left out, with the reason (`cycle`: `JOIN_CYCLE`). */
+  skipped: Array<{ instances: JoinInstance[]; reason: "empty" | "overBudget" | "cycle" }>;
 }
 
 /** Key of a part copy (`part:copy`, 0-based copy). */
@@ -157,7 +161,7 @@ function centroidOf(points: readonly V3[]): V3 {
 // Rows of a graph as joins see them
 // ---------------------------------------------------------------------------
 
-interface RowInfo {
+export interface RowInfo {
   row: GraphRow;
   /** Slots offered to a `from` join (as to the part's next row): node and its k-th stitch. */
   slots: Array<{ node: number; k: number }>;
@@ -165,7 +169,8 @@ interface RowInfo {
   fabric: Array<{ node: number; k: number }>;
 }
 
-function rowInfo(graph: StitchGraph, rowId: string): RowInfo | null {
+/** The places a row of `graph` offers to joins: slots for `from`, fabric stitches for `through`. */
+export function rowInfo(graph: StitchGraph, rowId: string): RowInfo | null {
   const row = graph.rows.find((r) => r.rowId === rowId);
   if (!row) return null;
   const slots: RowInfo["slots"] = [];
@@ -174,7 +179,8 @@ function rowInfo(graph: StitchGraph, rowId: string): RowInfo | null {
     const node = graph.nodes[id]!;
     const p = row.kind === "chain" ? 1 : STITCH_PROPERTIES[node.code].producesStitches;
     for (let k = 0; k < p; k++) slots.push({ node: id, k });
-    if (isFabricNode(node)) for (let k = 0; k < stitchParticles(node); k++) fabric.push({ node: id, k });
+    // Chains inside a row of stitches are no place to work through (`joinCapacity`).
+    if (isFabricNode(node) && (row.kind === "chain" || node.code !== "CH")) for (let k = 0; k < stitchParticles(node); k++) fabric.push({ node: id, k });
   }
   return { row, slots, fabric };
 }
@@ -220,18 +226,48 @@ export function buildJoinedModels(doc: JoinDocument, gauge?: Gauge, opts: ModelO
   };
   const components: JoinedComponent[] = [];
   const skipped: JoinedModels["skipped"] = [];
-  for (const instances of plan.components) {
+  const cyclic = new Set(plan.findings.filter((f) => f.code === "JOIN_CYCLE").map((f) => f.partIndex));
+  const idOf = (part: number) => doc.parts[part]!.id ?? "";
+  plan.components.forEach((instances, c) => {
+    if (instances.some((x) => cyclic.has(x.part))) {
+      skipped.push({ instances, reason: "cycle" });
+      return;
+    }
     const built = instances.map((x) => graphOf(x.part));
     if (built.some((g) => g.overBudget)) {
       skipped.push({ instances, reason: "overBudget" });
-      continue;
+      return;
     }
     if (built.some((g) => g.nodes.length === 0)) {
       skipped.push({ instances, reason: "empty" });
-      continue;
+      return;
     }
-    components.push(relaxComponent(doc, plan, instances, built, opts));
-  }
+    // Relax in the order of the part ids (not of the parts in the document), report in the
+    // component's order.
+    const order = instances.map((_, i) => i).sort((a, b) => {
+      const x = instances[a]!;
+      const y = instances[b]!;
+      return idOf(x.part) < idOf(y.part) ? -1 : idOf(x.part) > idOf(y.part) ? 1 : x.copy - y.copy || x.part - y.part;
+    });
+    const rootAt = order.indexOf(plan.roots[c] ?? 0);
+    const relaxed = relaxComponent(
+      doc,
+      plan,
+      order.map((i) => instances[i]!),
+      order.map((i) => built[i]!),
+      rootAt,
+      opts,
+    );
+    const back = new Array<number>(order.length);
+    order.forEach((i, k) => (back[k] = i));
+    const parts = new Array<JoinedPart>(order.length);
+    relaxed.parts.forEach((p, k) => (parts[back[k]!] = p));
+    components.push({
+      parts,
+      root: back[relaxed.root]!,
+      bridge: { ...relaxed.bridge, vertices: relaxed.bridge.vertices.map((v) => ({ instance: back[v.instance]!, node: v.node })) },
+    });
+  });
   return { plan, components, skipped };
 }
 
@@ -240,6 +276,7 @@ function relaxComponent(
   plan: JoinPlan,
   instances: JoinInstance[],
   graphs: StitchGraph[],
+  root: number,
   opts: ModelOptions,
 ): JoinedComponent {
   const index = new Map(instances.map((x, i) => [joinedKey(x.part, x.copy), i]));
@@ -304,12 +341,10 @@ function relaxComponent(
     }
     if (places.length > 0) wires.push({ link, consumer, source, node, places });
   }
+  // In body order, not document order: the relaxation does not depend on the parts' order.
+  wires.sort((a, b) => a.consumer - b.consumer || a.node - b.node || a.source - b.source || a.places[0]!.node - b.places[0]!.node);
 
-  // Root: the largest copy; then place the others next to placed ones.
-  let root = 0;
-  bodies.forEach((b, i) => {
-    if (b.graph.nodes.length > bodies[root]!.graph.nodes.length) root = i;
-  });
+  // The root stays; the others are placed next to placed ones.
   const placement = placeBodies(bodies, wires, root);
 
   // Springs and the fabric across `from` joins.
@@ -436,14 +471,87 @@ function fromBridges(bodies: Body[], wires: Wire[]): Array<[ParticleRef, Particl
       if (i + 1 < list.length && adjacent(w, list[i + 1]!)) zip(w, list[i + 1]!);
     }
     // A closed round worked entirely into one row (a stem): close the ring.
-    const fabric = [];
+    const fabric: number[] = [];
     for (let id = row.firstNode; id < row.firstNode + row.nodeCount; id++) if (isFabricNode(body.graph.nodes[id]!)) fabric.push(id);
     const whole =
       row.closed &&
       list.length >= 3 &&
       list.length === fabric.length &&
       list.every((w) => w.link.source === list[0]!.link.source);
-    if (whole) zip(list[list.length - 1]!, list[0]!);
+    if (whole) {
+      zip(list[list.length - 1]!, list[0]!);
+      continue;
+    }
+
+    // Where a run of joined stitches meets the row's own stitches (worked into its own
+    // previous row, e.g. a chain bridge), zip the two as neighbours: the own stitch's parent
+    // stands in for the joined stitch's places. A run that goes all the way round its source
+    // row (a leg) is closed between its last and first place and that parent.
+    const byNode = new Map(list.map((w) => [w.node, w]));
+    const ownParent = (id: number): ParticleRef | null => {
+      const parent = body.graph.nodes[id]!.parents[0];
+      return parent === undefined ? null : { body: list[0]!.consumer, node: parent };
+    };
+    const n = fabric.length;
+    const ends = row.closed ? n : n - 1;
+    for (let i = 0; i < ends; i++) {
+      const a = fabric[i]!;
+      const b = fabric[(i + 1) % n]!;
+      const wa = byNode.get(a);
+      const wb = byNode.get(b);
+      if ((wa === undefined) === (wb === undefined)) continue;
+      const ca: ParticleRef = { body: list[0]!.consumer, node: a };
+      const cb: ParticleRef = { body: list[0]!.consumer, node: b };
+      if (wa) {
+        // End of a run: …, joined a | own b.
+        const last = parents(wa).at(-1)!;
+        const pb = ownParent(b);
+        if (!pb) continue;
+        tri(ca, last, cb);
+        tri(cb, last, pb);
+        // The run's first place, when the run covers its whole source row.
+        const first = runStart(wa);
+        if (first && wholeSource(first, wa)) {
+          const p0 = parents(first)[0]!;
+          if (!same(p0, last)) tri(pb, last, p0);
+        }
+      } else if (wb) {
+        // Start of a run: own a | joined b, ….
+        const pa = ownParent(a);
+        if (!pa) continue;
+        const first = parents(wb)[0]!;
+        tri(ca, pa, cb);
+        tri(cb, pa, first);
+      }
+    }
+
+    /** The first wire of the run that ends with `w` (neighbouring stitches, one source). */
+    function runStart(w: Wire): Wire | null {
+      let cur = w;
+      for (let guard = 0; guard < n; guard++) {
+        const at = fabric.indexOf(cur.node);
+        if (at < 0) return null;
+        const prev = byNode.get(fabric[(at - 1 + n) % n]!);
+        if (!prev || prev === w || prev.link.source !== cur.link.source || prev.source !== cur.source) return cur;
+        cur = prev;
+      }
+      return null;
+    }
+    /** Whether the run from `first` to `last` takes every place of its source row once. */
+    function wholeSource(first: Wire, last: Wire): boolean {
+      const src = bodies[first.source]!.graph;
+      const info = rowInfo(src, src.nodes[first.places[0]!.node]!.rowId);
+      if (!info) return false;
+      let count = 0;
+      let at = fabric.indexOf(first.node);
+      for (let guard = 0; guard < n; guard++) {
+        const w = byNode.get(fabric[at]!)!;
+        count += w.places.length;
+        if (w === last) break;
+        at = (at + 1) % n;
+      }
+      return count === info.slots.length && first.link.slot === 0;
+    }
   }
   return out;
 }
@@ -486,6 +594,8 @@ function fitBody(
   tx: { rotation: M3; translation: V3 },
 ): { rotation: M3; translation: V3 } {
   const up: V3 = [0, 1, 0];
+  // One direction of joins between the two (a cycle is never relaxed, see buildJoinedModels).
+  wires = wires.filter((wire) => wire.consumer === wires[0]!.consumer && wire.link.kind === wires[0]!.link.kind);
   const kind = wires[0]!.link.kind;
   const toWorld = (p: V3): V3 => add(apply(tx.rotation, p), tx.translation);
   const consumerBody = wires[0]!.consumer;

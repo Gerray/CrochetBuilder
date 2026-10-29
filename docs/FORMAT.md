@@ -336,9 +336,12 @@ Both hold a reference `{ part, copy?, row?, start? }`:
 | `start` | index (from 0, in working order) of the first stitch (or place) of that row the op works into. Without it the op continues where the previous join into the same row — same part copy, row and kind — stopped, the first one at 0, in document order: parts, then the copies of a part, then rows. Two branches worked from one round without `start` take its first and its second half |
 
 A part's `quantity` copies all make their own joins, one after the other, so the second copy
-of a branch continues where the first stopped. Not on a stitch that is worked into nothing
-(chains, magic ring, picots), not inside a stitch group, and not `from` and `through` on one
-op: validation reports `INVALID_JOIN` (error).
+of a branch continues where the first stopped. On a part ×2, `start` applies to its first copy
+only; the second continues after it (`"start": 0` on a branch ×2 takes stitches 1–6 and 7–12).
+Without `start`, the order of the parts in the document decides which stitches a join takes;
+the builder's join picker therefore always writes `start`. Not on a stitch that is worked into
+nothing (chains, magic ring, picots), not inside a stitch group, and not `from` and `through`
+on one op: validation reports `INVALID_JOIN` (error), and such a stitch makes no join.
 
 **Legs into the body.** Leg ×2 (rounds of 18, the first leg fastened off, the second not);
 the body starts with a bridge of 3 chains and a round around leg 1, along the bridge, around
@@ -392,37 +395,52 @@ whose first round works into 6 stitches: copy 1 takes stitches 1–6, copy 2 con
 ```
 
 - **Validation of one part** (`validate`): `from` stitches do not count against the own
-  previous row; a first round of only `from` stitches needs no previous row.
+  previous row; a first round of only `from` stitches needs no previous row. A row in the
+  middle of a part worked only into another part leaves its own previous row unworked:
+  `CONSUMES_UNDERFLOW` (warning).
 - **Validation across parts** (`validateExport`, see `planJoins`): `JOIN_UNKNOWN_PART`,
   `JOIN_UNKNOWN_COPY`, `JOIN_UNKNOWN_ROW` (the row does not exist or has no stitches),
   `JOIN_SELF` (a part joined to itself), `JOIN_CYCLE` (parts joined into each other in a
   circle), `JOIN_OVERFLOW` (beyond the end of the other part's row), `JOIN_OVERLAP` (stitches
   another join already took) — all errors; `JOIN_UNDERFLOW` (stitches of the other row left
   free), `THROUGH_NOT_FLAT` (`through` on a row that is not the other part's edge, or on an end
-  that is gathered shut — set its finish to `flat` or `open`) and `JOINED_AND_PLACED` (a joined
-  part that also has an `attach` placement) — warnings. The own next row of the other part may
-  work into the same row as usual (front and back loops); it is not counted.
+  that is gathered shut — set its finish to `flat` or `open`), `JOIN_INTO_GATHERED` (`from` into
+  a last round whose `finish` is `gather` — the work goes on from it, set it to `open`) and
+  `JOINED_AND_PLACED` (an `attach` placement the join overrides, see Assembly) — warnings. The
+  own next row of the other part may work into the same row as usual (front and back loops);
+  it is not counted.
 - **Shape.** Parts joined this way form one component; `buildJoinedModels(doc)` relaxes it as
   one piece: every part copy keeps its own stitch graph, finish and stuffing, the joins become
   links (a `from` stitch to the stitches it is worked into, a `through` stitch half a stitch
   height above the place it goes through, the two stitches of a pair pulled onto each other).
-  The largest copy keeps its canonical pose; the others start fitted onto it — a `from` part
-  continues the growth of the row it works into (leaning outwards by what it leaves free), a
-  `through` part sticks out along the surface normal. A part whose last round is worked into
-  by `from` is not gathered by default. The fabric across `from` joins is handed out as a
-  bridge mesh (`JoinedComponent.bridge`). `buildModel` of a single part is unchanged: a part
-  with `from` rows shows on its own, those stitches without parents.
+  The component's root — its copy with the most stitches, ties broken by part id, then copy —
+  keeps its canonical pose; the others start fitted onto it — a `from` part continues the
+  growth of the row it works into (leaning outwards by what it leaves free), a `through` part
+  sticks out along the surface normal. A part whose last round is worked into by `from` is not
+  gathered by default. The fabric across `from` joins, including where a run of joined stitches
+  meets the row's own stitches (a leg next to the bridge), is handed out as a bridge mesh
+  (`JoinedComponent.bridge`). The result does not depend on the order of the parts (only which
+  stitches a join without `start` takes does). Parts joined in a circle (`JOIN_CYCLE`) are not
+  relaxed together and show unjoined. `buildModel` of a single part is unchanged: a part with
+  `from` rows shows on its own, those stitches without parents.
 - **Assembly.** `composeAssembly(doc, models, { joined })` draws the copies of a joined
-  component where the joint relaxation put them, as one group around its largest copy; an
-  `attach` placement of a joined part is ignored (finding `JOINED`). Other parts are sewn onto
-  joined parts, and eyes set on them, as usual.
+  component where the joint relaxation put them, moving rigidly with the component's root.
+  The root is placed like any part: an `attach` placement sews it — and everything crocheted
+  onto it — on (a tail with its branches onto a body); without one it stands as a group of its
+  own. The other copies of a component take no placement: a part's placements go, in order,
+  to its copies that are not joined below a root (of legs ×3 whose first two are joined into
+  the body, the third takes the first placement); a placement left over for a part with
+  joined copies is ignored (`JOINED_AND_PLACED`, in the assembly `JOINED`). Other parts are
+  sewn onto joined parts, and eyes set on them, as usual.
 - **Notation.** A join follows its stitch: `18 fM aus Teil Bein 1`, `21 fM aus Teil Kürbis
   (Runde 12)`, `6 fM aus Teil Robbe (Runde 15, ab M 7)`, `5 fM zusammen mit Teil Arm` (US/UK:
   `18 sc from part Leg 1`, `5 sc together with part Arm`); the copy number shows for a part
   ×2, a row by its number in the other part, a start by its stitch counted from 1. With the
   document's parts the row notation reads these back and what patterns write: `18 fM um Bein
   1`, `18 fM um das erste Bein`, `18 sc around the second leg`, `5 fM mit dem Arm`, `4 sc on the
-  arm`, `5 sc through both layers of the arm and the body`.
+  arm`, `5 sc through both layers of the arm and the body`. Plain “in” names no part (“6 sc in
+  ring” is the magic ring, also with a part called “Ring”); words for where a stitch goes in its
+  own work (ring, chain, loop, stitch) name a part only after `aus Teil` / `from part`.
 
 ### Finish and stuffing
 
@@ -650,14 +668,14 @@ JSON is validated against `TmcEnvelope` instead of `BuilderExport`. The saved fi
 | `title` | `title` (trimmed; left out when empty) |
 | part `name`, `quantity` | `name` (empty → `Teil n`), `quantity` |
 | row without version-2 features | same row (colours removed); `stitchCountTarget` 0 on a row with stitches ("no number given") → the counted stitches |
-| row with stitch groups, BOBBLE/PUFF/POPCORN/PICOT or FP/BP, with `around`, or with a join (`from`, `through`) | **text**: free instruction, `label` = "Runde 3", `note` = the full German line, e.g. `Runde 3: 6× ((3 fM) in dieselbe M) (18)`, `Runde 2: um die Lm-Kette: 5 fM, (3 fM) in dieselbe M, 4 fM, 1 Zun (14)`, `Runde 2: um die Lm-Kette: 18 fM aus Teil Bein 1, 3 fM, 18 fM aus Teil Bein 2, 3 fM (42)` |
+| row with stitch groups, BOBBLE/PUFF/POPCORN/PICOT or FP/BP, with `around`, or with a join (`from`, `through`) | **text**: free instruction, `label` = "Runde 3", `note` = the full German line, e.g. `Runde 3: 6× ((3 fM) in dieselbe M) (18)`, `Runde 2: um die Lm-Kette: 5 fM, (3 fM) in dieselbe M, 4 fM, 1 Zun (14)`, `Runde 2: um die Lm-Kette: 18 fM aus Teil Bein 1, 3 fM, 18 fM aus Teil Bein 2, 3 fM (42)`; a join writes the stitch each copy starts at, one line per copy when they differ: `Flosse 1: Runde 1: 6 fM aus Teil Robbe (6) · Flosse 2: Runde 1: 6 fM aus Teil Robbe (ab M 7) (6)` |
 | rows after such a row | keep their number as `label` ("Runde 4"), because the receiver numbers only rows with stitches |
 | free instruction (no stitches, with text) | same row; with both label and note the note reads `Label: note` (the receiver shows the note, else the label); rows with neither stitches nor text are left out |
 | colour at the start of a row | **text**: an instruction before the row, `Farbwechsel: Weiß`, when the colour really changes; with two or more palette colours each part first states its starting colour, `Farbe: …` |
 | colour change inside a row | **text**: appended to the row's `note`, `Farbwechsel in dieser Runde: 6 fM, [Farbe: Weiß] 6 fM` (`Reihe` for rows); marks that repeat the working colour are left out, here and in rows that became text |
 | `stuffing`, `finish` | **text**: instructions at the end of the part (`Füllung: fest mit Füllwatte füllen.`, `Abschluss: …`) |
 | `overview.notes`, `overview.gauge` | **text**: instructions at the start of the first part (`Hinweise: …`, `Maschenprobe: … · Garn: DK · Nadel: 3,5 mm`) |
-| `assembly` | **text**: an extra last part `Zusammensetzen` (quantity 1), one instruction per placement, e.g. `Kopf: Sicherheitsaugen 12 mm vorne zwischen Runde 8 und 9 einsetzen, 6 Maschen Abstand.` |
+| `assembly` | **text**: an extra last part `Zusammensetzen` (quantity 1), one instruction per placement, e.g. `Kopf: Sicherheitsaugen 12 mm vorne zwischen Runde 8 und 9 einsetzen, 6 Maschen Abstand.`; a placement the join overrides (`JOINED_AND_PLACED`) is left out |
 | `overview.colors` (palette) | colour names added to the yarn material (one yarn: its `colors`; none: a new yarn `Garn`; several: a new yarn `Garnfarben`) |
 | `overview.materials` | trimmed; entries with an empty label are left out, empty colours and amounts dropped |
 | part without rows | one instruction `Für dieses Teil sind noch keine Reihen angegeben.` |

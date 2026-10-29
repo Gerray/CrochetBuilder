@@ -89,3 +89,28 @@ describe("reading what people write", () => {
     expect(parseRowText("sc around", "en_us", { previousCount: 6, parts: EN_PARTS })).toEqual(parseRowText("sc around", "en_us", { previousCount: 6 }));
   });
 });
+
+describe("review fixes (B5b)", () => {
+  it("reports an error after a join phrase at its place in the text as written", () => {
+    const text = "6 sc around the second leg, xx, 3 sc";
+    const r = parse(text, "en_us", EN_PARTS);
+    expect(r).toMatchObject({ ok: false, position: text.indexOf("xx") });
+    // Without a join phrase before it, unchanged.
+    expect(parse("6 sc, xx, 3 sc", "en_us", EN_PARTS)).toMatchObject({ ok: false, position: 6 });
+    const de = "18 fM aus Teil Bein 1, 3 fM, qq";
+    expect(parse(de)).toMatchObject({ ok: false, position: de.indexOf("qq") });
+  });
+
+  it("does not read a stitch target as a part called like it (“in ring”), but does after “aus Teil”", () => {
+    const ring: JoinNotationPart[] = [{ id: "ring", name: "Ring", quantity: 1 }];
+    for (const text of ["6 sc in ring", "6 sc into ring", "6 sc around ring"]) {
+      const r = parseRowText(text, "en_us", { parts: ring });
+      expect(r.ok && JSON.stringify(r.ops).includes('"from"'), text).toBe(false);
+    }
+    expect(opsOf("6 fM aus Teil Ring", "de", ring)).toEqual([{ kind: "stitch", code: "SC", count: 6, from: { part: "ring" } }]);
+    // Plain "in" names no part at all any more; the other intros still do.
+    expect(JSON.stringify(parseRowText("18 sc in leg 1", "en_us", { parts: EN_PARTS }))).not.toContain('"from"');
+    expect(opsOf("18 sc around leg 1", "en_us", EN_PARTS)).toEqual([{ kind: "stitch", code: "SC", count: 18, from: { part: "leg", copy: 1 } }]);
+    expect(extractJoins("6 fM in den Ring", ring).joins).toEqual([]);
+  });
+});

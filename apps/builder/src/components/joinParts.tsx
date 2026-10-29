@@ -7,7 +7,7 @@
 import { createContext, useContext, useId, useState } from "react";
 import type { JoinNotationPart, JoinRef, StitchOp } from "@crochetbuilder/engine";
 import type { BuilderDoc } from "../state/document.js";
-import { defaultJoinRow, nextFreeStitch, partIndexOfId, stitchRowsOf, withAllPartIds, type JoinDraft } from "../state/joins.js";
+import { defaultJoinRow, defaultJoinStart, partIndexOfId, stitchRowsOf, withAllPartIds, type JoinDraft } from "../state/joins.js";
 import { PopoverButton } from "./palette.js";
 
 export interface JoinPartsInfo {
@@ -92,17 +92,17 @@ function JoinPicker({ doc, own, op, onSet }: { doc: BuilderDoc; own: number; op:
   const rows = part >= 0 ? stitchRowsOf(doc, part) : [];
   const lastRow = part >= 0 ? defaultJoinRow(doc, part) : undefined;
   const rowId = row || lastRow;
-  // The next free stitch of that row, without this op's own join.
-  const free = part >= 0 && rowId ? nextFreeStitch(withoutOwnJoin(withIds, op), part, Math.min(copy, quantity), rowId, kind) : 0;
+  const draft: JoinDraft = { kind, part };
+  if (quantity >= 2) draft.copy = Math.min(copy, quantity);
+  if (row) draft.row = row;
+  // The stitch this join would take without a start (the cursor `planJoins` uses here, in
+  // document order); stored explicitly so that moving parts later cannot shift it.
+  const free = part >= 0 && rowId ? defaultJoinStart(withIds, own, op, draft) : 0;
   const startNumber = start.trim() === "" ? undefined : Number(start);
   const startValid = startNumber === undefined || (Number.isInteger(startNumber) && startNumber >= 1);
   const apply = () => {
     if (part < 0 || !startValid) return;
-    const draft: JoinDraft = { kind, part };
-    if (quantity >= 2) draft.copy = Math.min(copy, quantity);
-    if (row) draft.row = row;
-    if (startNumber !== undefined) draft.start = startNumber - 1;
-    onSet(draft);
+    onSet({ ...draft, start: startNumber !== undefined ? startNumber - 1 : free });
   };
   if (others.length === 0) {
     return (
@@ -207,24 +207,4 @@ function JoinPicker({ doc, own, op, onSet }: { doc: BuilderDoc; own: number; op:
       </div>
     </>
   );
-}
-
-/** `doc` without the join of `op` (found by identity), so the picker counts the other joins only. */
-function withoutOwnJoin(doc: BuilderDoc, op: StitchOp): BuilderDoc {
-  if (!op.from && !op.through) return doc;
-  const strip = (ops: readonly StitchOp[] | readonly unknown[]): unknown[] =>
-    (ops as Array<StitchOp | { kind: string; ops: unknown[] }>).map((o) => {
-      if ("code" in o) {
-        if (o.from === op.from && o.through === op.through) {
-          const { from: _f, through: _t, ...rest } = o;
-          return rest;
-        }
-        return o;
-      }
-      return { ...o, ops: strip(o.ops) };
-    });
-  return {
-    ...doc,
-    parts: doc.parts.map((p) => ({ ...p, content: { ...p.content, rows: p.content.rows.map((r) => ({ ...r, ops: strip(r.ops) as typeof r.ops })) } })),
-  };
 }

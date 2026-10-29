@@ -36,7 +36,7 @@ import { emptyRow, instructionRow, type BuilderDoc } from "./document.js";
 import * as tree from "./op-tree.js";
 import type { OpPath } from "./op-tree.js";
 import { colorNameProblem, replaceColorInRow } from "./palette.js";
-import { joinRefOf, withJoinIds, type JoinDraft } from "./joins.js";
+import { joinRefOf, withJoinIds, withoutJoinsTo, type JoinDraft } from "./joins.js";
 
 export const HISTORY_LIMIT = 200;
 
@@ -694,8 +694,8 @@ function applyEdit(state: EditorState, action: EditorAction): DocResult {
       const gone = new Set(part.content.rows.map((r) => r.id));
       const parts = doc.parts.filter((_, i) => i !== action.index);
       return {
-        // Placements on or of the deleted part go with it (undo brings both back).
-        doc: withoutPlacementsOf({ ...doc, parts }, part.id),
+        // Placements on or of the deleted part, and joins to it, go with it (undo brings all back).
+        doc: withoutJoinsTo(withoutPlacementsOf({ ...doc, parts }, part.id), part.id),
         pinned: pinned.some((id) => gone.has(id)) ? pinned.filter((id) => !gone.has(id)) : pinned,
         scope: action.index,
         // The next part takes its place in view (the previous one after the last part).

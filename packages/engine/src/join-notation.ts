@@ -108,7 +108,16 @@ const ORDINAL = Object.keys(ORDINALS)
   .join("|");
 const ARTICLES = "the|both|dem|den|das|die|der|des|einem|einen|ein";
 
-const FROM_INTRO = "aus\\s+Teil|aus|um|an|from\\s+part|from|a?round|into|in";
+// Not plain "in" ("6 sc in ring", "in the next st"): that names where a stitch goes in its own
+// row far more often than another part.
+const FROM_INTRO = "aus\\s+Teil|aus|um|an|from\\s+part|from|a?round|into";
+/** Intros that name a part explicitly ("aus Teil Ring"), so any part name is taken. */
+const EXPLICIT_INTRO = /^(?:aus\s+Teil|from\s+part|zusammen\s+mit\s+Teil|together\s+with\s+part)$/iu;
+/**
+ * Words that name where a stitch goes in its own work (the ring, a chain, a loop): a part
+ * called like that is only joined to after an explicit intro ("aus Teil Ring").
+ */
+const GENERIC_TARGET = /^(?:ring|rings|magic\s+ring|mr|fadenring|magischer\s+ring|kreis|ch|chain|chains|kette|lm|lm-kette|loop|loops|schlinge|st|sts|stitch|stitches|m|masche|maschen|space|sp|bogen)$/iu;
 const THROUGH_INTRO =
   "zusammen\\s+mit(?:\\s+Teil)?|mit|durch(?:\\s+beide\\s+Lagen(?:\\s+(?:von|vom))?)?|together\\s+with(?:\\s+part)?|with|on|through(?:\\s+both\\s+layers(?:\\s+of)?)?";
 const ROW_WORDS = "Runde|Rd\\.?|Reihe|R\\.?|round|rnd\\.?|row|Zeile|line";
@@ -119,24 +128,42 @@ const START_WORDS = "ab\\s+(?:M(?:asche)?\\.?|Masche)|from\\s+(?:st(?:itch)?\\.?
  * (N: index into `joins`), so the stitch parser can attach them. Only parts in `parts` (with
  * an id) are recognised. Text without such a phrase comes back unchanged.
  */
-export function extractJoins(text: string, parts: readonly JoinNotationPart[] | undefined): { text: string; joins: FoundJoin[] } {
+export function extractJoins(
+  text: string,
+  parts: readonly JoinNotationPart[] | undefined,
+): { text: string; joins: FoundJoin[]; position: (at: number) => number } {
   const joins: FoundJoin[] = [];
-  if (!parts || parts.length === 0) return { text, joins };
+  /** Replaced spans: start in the new text, its length there, start and length in `text`. */
+  const spans: Array<{ at: number; length: number; from: number; was: number }> = [];
+  let shift = 0;
+  /** A position in the returned text → the same place in `text` (a placeholder: its phrase). */
+  const position = (at: number) => {
+    let delta = 0;
+    for (const s of spans) {
+      if (at < s.at) break;
+      if (at < s.at + s.length) return s.from;
+      delta = s.from + s.was - (s.at + s.length);
+    }
+    return at + delta;
+  };
+  if (!parts || parts.length === 0) return { text, joins, position };
   const forms: Array<{ form: string; part: number }> = [];
   parts.forEach((p, i) => {
     if (!p.id) return;
     for (const f of nameForms(p, i)) forms.push({ form: f, part: i });
   });
-  if (forms.length === 0) return { text, joins };
+  if (forms.length === 0) return { text, joins, position };
   forms.sort((a, b) => b.form.length - a.form.length);
   const names = forms.map((f) => escape(f.form).replace(/ /g, "\\s+")).join("|");
   const tail = `(?:\\s+(?:${ARTICLES}))?(?:\\s+(${ORDINAL}))?\\s+(${names})(?![\\p{L}\\d])(?:\\s+(?:Nr\\.?\\s*|#)?(\\d+)(?![\\d.]))?(?:\\s*\\(\\s*((?:${ROW_WORDS})\\s*\\d+|(?:${START_WORDS})\\s*\\d+|(?:Zeile|line)\\s*„[^“]*“)(?:\\s*,\\s*((?:${START_WORDS})\\s*\\d+))?\\s*\\))?`;
   // `through`: "… and (the) body" / "… und (dem) Körper" after the part is the own part.
   const own = "(?:\\s+(?:and|und|&)(?:\\s+(?:the|dem|den|das|die|der))?\\s+[\\p{L}][\\p{L}\\-]*)?";
   const pattern = new RegExp(`(?<=[\\p{L}\\d.)\\]])\\s+(?:(${THROUGH_INTRO})${tail}${own}|(${FROM_INTRO})${tail})(?=\\s*(?:[,;)\\]]|\\(\\s*\\d|=|$|[–-]\\s*\\d))`, "giu");
-  const out = text.replace(pattern, (whole, tIntro, tOrd, tName, tCopy, tSpec, tSpec2, fIntro, fOrd, fName, fCopy, fSpec, fSpec2) => {
+  const out = text.replace(pattern, (whole: string, tIntro, tOrd, tName, tCopy, tSpec, tSpec2, fIntro, fOrd, fName, fCopy, fSpec, fSpec2, offset: number) => {
     const kind: "from" | "through" = tIntro !== undefined ? "through" : "from";
     const name = (kind === "through" ? tName : fName) as string;
+    const intro = ((kind === "through" ? tIntro : fIntro) as string).replace(/\s+/g, " ");
+    if (GENERIC_TARGET.test(name.trim()) && !EXPLICIT_INTRO.test(intro)) return whole;
     const ordinal = (kind === "through" ? tOrd : fOrd) as string | undefined;
     const copyText = (kind === "through" ? tCopy : fCopy) as string | undefined;
     const specs = [kind === "through" ? tSpec : fSpec, kind === "through" ? tSpec2 : fSpec2].filter((s): s is string => !!s);
@@ -171,7 +198,10 @@ export function extractJoins(text: string, parts: readonly JoinNotationPart[] | 
     }
     // A copy number on a part that has fewer copies stays as written (validation reports it).
     joins.push({ kind, ref });
-    return ` §j${joins.length - 1}§`;
+    const placeholder = ` §j${joins.length - 1}§`;
+    spans.push({ at: offset + shift, length: placeholder.length, from: offset, was: whole.length });
+    shift += placeholder.length - whole.length;
+    return placeholder;
   });
-  return { text: out, joins };
+  return { text: out, joins, position };
 }

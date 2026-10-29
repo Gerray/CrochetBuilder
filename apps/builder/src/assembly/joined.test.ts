@@ -2,7 +2,8 @@
 import { describe, expect, it } from "vitest";
 import type { Op, Row } from "@crochetbuilder/engine";
 import { combineScene } from "./combine.js";
-import { AssemblyComputer, assemblyTransferables, joinedMeshesOf, meshesByPart, type AssemblyDoc, type AssemblyResult } from "./compute.js";
+import { AssemblyComputer, assemblyTransferables, isFiniteComponent, joinedMeshesOf, meshesByPart, type AssemblyDoc, type AssemblyResult } from "./compute.js";
+import { unjoinedText } from "./AssemblyWorkspace.js";
 
 const st = (code: "MR" | "SC" | "INC" | "DEC" | "CH", count: number, extra: Partial<Extract<Op, { kind: "stitch" }>> = {}): Op => ({ kind: "stitch", code, count, ...extra });
 const rnd = (id: string, ops: Op[], t: number, extra: Partial<Row> = {}): Row => ({ id, type: "round", ops, stitchCountTarget: t, ...extra });
@@ -119,5 +120,27 @@ describe("Montage of parts crocheted together", () => {
     edited.parts[1]!.content.rows[1]!.ops = [st("SC", 12, { from: { part: "leg", copy: 1 } }), st("SC", 2), st("SC", 12, { from: { part: "leg", copy: 2 } }), st("SC", 2)];
     const third = scene(computer.compute({ id: 3, doc: edited, style: "surface", have }));
     expect(third.joined.every((j) => j.mesh !== undefined)).toBe(true);
+  });
+});
+
+describe("Montage of parts joined in a circle", () => {
+  it("shows them unjoined, says why, and never hands on positions that are not finite", () => {
+    const doc = legsDoc();
+    // The leg also works into the body: a circle.
+    doc.parts[0]!.content.rows.push(rnd("l5", [st("SC", 6, { from: { part: "body", row: "b2" } }), st("SC", 6)], 12));
+    const res = scene(new AssemblyComputer().compute({ id: 1, doc, style: "surface", have: [] }));
+    expect(res.joined).toEqual([]);
+    expect(res.unjoined).toEqual([{ parts: [0, 1], reason: "cycle" }]);
+    expect(unjoinedText("cycle")).toContain("im Kreis");
+    expect(res.scene.instances.every((i) => i.joined === undefined)).toBe(true);
+    for (const i of res.scene.instances) expect([...i.transform.rotation, ...i.transform.translation].every(Number.isFinite)).toBe(true);
+  });
+
+  it("recognises a joint result with a position that is not finite", () => {
+    const graph = { positions: Float64Array.from([0, 1, 2]) };
+    const ok = { parts: [{ graph }], bridge: { positions: new Float64Array(0) } };
+    expect(isFiniteComponent(ok as never)).toBe(true);
+    const bad = { parts: [{ graph: { positions: Float64Array.from([0, Number.NaN, 2]) } }], bridge: { positions: new Float64Array(0) } };
+    expect(isFiniteComponent(bad as never)).toBe(false);
   });
 });

@@ -8,7 +8,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { joinedKey, type AssemblyScene, type MeshStyle } from "@crochetbuilder/engine";
 import { sharedAssemblyClient, type AssemblyClient } from "./client.js";
 import { combineScene, type CombinedScene } from "./combine.js";
-import { meshesByPart, type AssemblyDoc, type AssemblyPartResult, type JoinedMeshResult, type PartMesh } from "./compute.js";
+import { meshesByPart, type AssemblyDoc, type AssemblyPartResult, type JoinedMeshResult, type PartMesh, type UnjoinedComponent } from "./compute.js";
 
 export interface AssemblySceneState {
   status: "pending" | "scene" | "error";
@@ -17,6 +17,8 @@ export interface AssemblySceneState {
   parts: AssemblyPartResult[];
   /** Copies of parts crocheted together, drawn from the joint relaxation. */
   joined: JoinedMeshResult[];
+  /** Joined parts shown without their joins (a circle, the budget, no finite result). */
+  unjoined: UnjoinedComponent[];
   combined: CombinedScene | null;
   /** A computation is scheduled or running: the scene may not match the document yet. */
   computing: boolean;
@@ -43,7 +45,7 @@ export function useAssemblyScene(
   { debounceMs = 120, createClient = sharedAssemblyClient }: AssemblySceneOptions = {},
 ): AssemblySceneState {
   const [state, setState] = useState<Held>({
-    base: { status: "pending", scene: null, parts: [], joined: [], computing: true, maxTotal: 0 },
+    base: { status: "pending", scene: null, parts: [], joined: [], unjoined: [], computing: true, maxTotal: 0 },
     meshes: new Map(),
   });
   // Bumped when a request was superseded by another user of the shared client: ask again.
@@ -103,7 +105,7 @@ export function useAssemblyScene(
         }
         meshesRef.current = meshes;
         setState({
-          base: { status: "scene", scene: result.scene, parts: result.parts, joined: result.joined, computing: client.busy, maxTotal: result.maxTotal },
+          base: { status: "scene", scene: result.scene, parts: result.parts, joined: result.joined, unjoined: result.unjoined, computing: client.busy, maxTotal: result.maxTotal },
           meshes,
         });
       });

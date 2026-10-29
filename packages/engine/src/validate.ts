@@ -24,8 +24,10 @@
  * fewer is a warning (stitches left unworked — legitimate for shaping, often a mistake).
  * A stitch group (format v2) consumes one anchor, whatever its stitches. Stitches worked into
  * another part (`StitchOp.from`) consume nothing of the own previous row; what they take from
- * the other part is checked across parts by `validateExport` (see join.ts). Stitches worked
- * `through` another part consume their own previous row as usual.
+ * the other part is checked across parts by `validateExport` (see join.ts); a row in the
+ * middle of a part worked only into another part leaves its own previous row unworked
+ * (`CONSUMES_UNDERFLOW`). Stitches worked `through` another part consume their own previous
+ * row as usual.
  *
  * Further checks: joins that cannot be worked (`INVALID_JOIN`), relief modifiers on stitches
  * without a post (`INVALID_MODIFIER`), colours
@@ -212,7 +214,9 @@ export function checkConsumes(content: PartContent): Finding[] {
 
     if (!isRingRow(row)) {
       const consumed = anchorsConsumed(row);
-      if (consumed > 0) {
+      // A row worked only into another part, in the middle of a part, leaves its own previous
+      // row unworked (an underflow); as the first row of a part it needs no previous row.
+      if (consumed > 0 || (previous && rowWorksFromOtherPart(row))) {
         if (!previous) {
           findings.push({
             rowId: row.id,

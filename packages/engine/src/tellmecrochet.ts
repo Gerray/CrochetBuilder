@@ -21,6 +21,7 @@ import type { Placement } from "./assembly.js";
 import { isMirroredPair } from "./assembly-text.js";
 import { instructionText, rowOrdinals } from "./expand.js";
 import { joinPartsOf, renderedRowLine, type BuilderExport, type BuilderPart, type Material, type PaletteColor } from "./export.js";
+import { droppedPlacements, planJoins, rowHasJoin, type JoinPlan } from "./join.js";
 import type { Gauge, YarnWeight } from "./gauge.js";
 import { renderRow, rowLabel } from "./notation.js";
 import type { Op, Row, StitchCode } from "./schema.js";
@@ -502,6 +503,27 @@ function toTmcOps(ops: readonly Op[]): TmcOp[] {
  * order (a repeat's body once). Marks with ids outside the palette (`known`) stay as they are.
  * Returns the ops, the working colour after them and how many real changes they hold.
  */
+/**
+ * `row` (with ops of the source row, possibly copied shallowly) with the start every join of
+ * copy `copy` of part `part` resolves to (`planJoins`) written out: "ab M 7" for the second
+ * branch of a split tail, which takes the second half without saying so.
+ */
+function withResolvedStarts(row: Row, part: number, copy: number, plan: JoinPlan): Row {
+  const slots = new Map<object, number>();
+  for (const l of plan.links) if (l.part === part && l.copy === copy && l.rowId === row.id && !slots.has(l.ref)) slots.set(l.ref, l.slot);
+  const walk = (ops: readonly Op[]): Op[] =>
+    ops.map((op): Op => {
+      if (op.kind !== "stitch") return { ...op, ops: walk(op.ops) } as Op;
+      const kind = op.from ? "from" : op.through ? "through" : undefined;
+      if (!kind) return op;
+      const ref = op[kind]!;
+      const slot = slots.get(ref);
+      if (slot === undefined || (slot === 0 && ref.start === undefined)) return op;
+      return { ...op, [kind]: { ...ref, start: slot } };
+    });
+  return { ...row, ops: walk(row.ops) };
+}
+
 function cleanColors(
   ops: readonly Op[],
   current: string | undefined,
@@ -621,6 +643,7 @@ export function toTellmeCrochetDraft(doc: BuilderExport, opts: TmcDraftOptions =
   const assemblyName = opts.assemblyPartName?.trim() || TMC_ASSEMBLY_PART_NAME;
   // Joins name the other part as TellmeCrochet shows it ("aus Teil Bein 1 (Runde 5)").
   const joinParts = joinPartsOf(doc);
+  const plan = doc.parts.some((p) => p.content.rows.some(rowHasJoin)) ? planJoins(doc) : null;
 
   const parts: TmcDraftPart[] = doc.parts.map((part, partIndex) => {
     const sourceRows = part.content.rows;
@@ -710,7 +733,16 @@ export function toTellmeCrochetDraft(doc: BuilderExport, opts: TmcDraftOptions =
       // Format version 1 has no rounds around a chain (oval start).
       if (row.around) features.add("around");
       if (features.size > 0) {
-        const line = renderedRowLine(shown, ordinals[i] ?? 0, "de", palette, target, joinParts);
+        let line = renderedRowLine(shown, ordinals[i] ?? 0, "de", palette, target, joinParts);
+        if (plan && rowHasJoin(row)) {
+          // Each copy with the stitches its joins take; one line when all copies read the same.
+          const copies = Math.max(1, Math.floor(part.quantity));
+          const lines = Array.from({ length: copies }, (_, copy) =>
+            renderedRowLine(withResolvedStarts(shown, partIndex, copy, plan), ordinals[i] ?? 0, "de", palette, target, joinParts),
+          );
+          const name = partDisplayName(part.name, partIndex);
+          line = lines.every((l) => l === lines[0]) ? lines[0]! : lines.map((l, copy) => `${name} ${copy + 1}: ${l}`).join(" · ");
+        }
         rows.push({ id: takeSource(row.id), type: row.type, ops: [], stitchCountTarget: 0, label, note: line });
         shifted = true;
         const list = FEATURE_ORDER.filter((f) => features.has(f));
@@ -763,7 +795,12 @@ export function toTellmeCrochetDraft(doc: BuilderExport, opts: TmcDraftOptions =
     return finishPart(partDisplayName(part.name, partIndex), part.quantity, rows);
   });
 
-  const placements = doc.assembly ?? [];
+  // Placements the join overrides (the part is crocheted on there) are no step.
+  const dropped = new Set(plan ? droppedPlacements(doc, plan).map((d) => d.placement.id) : []);
+  for (const id of dropped) {
+    losses.push({ code: "assembly", placementId: id, partName: assemblyName, message: `Die Platzierung „${id}“ entfällt: das Teil wird beim Häkeln angesetzt.` });
+  }
+  const placements = (doc.assembly ?? []).filter((pl) => !dropped.has(pl.id));
   if (placements.length > 0) {
     const ids = new IdPool();
     const rows = placements.map((pl) => {

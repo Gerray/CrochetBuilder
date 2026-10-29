@@ -1532,8 +1532,9 @@ export function parseRowText(
   if (context.parts && !(context as JoinContext).foundJoins) {
     const found = extractJoins(text, context.parts);
     if (found.joins.length > 0) {
-      text = found.text;
-      context = { ...context, foundJoins: found.joins } as JoinContext;
+      // Parse the text with placeholders; an error position points into the text as written.
+      const result = parseRowText(found.text, locale, { ...context, foundJoins: found.joins } as JoinContext);
+      return result.ok || result.position === undefined ? result : { ...result, position: found.position(result.position) };
     }
   }
   const strict = runParser(text, locale, false, context);

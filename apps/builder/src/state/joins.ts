@@ -20,6 +20,7 @@ import {
   type Finding,
   type Op,
   type Row,
+  type StitchOp,
 } from "@crochetbuilder/engine";
 import { withPartId } from "./assembly.js";
 import type { BuilderDoc } from "./document.js";
@@ -104,17 +105,58 @@ export function defaultJoinRow(doc: BuilderDoc, part: number): string | undefine
 }
 
 /**
- * The next free stitch (0-based) of row `rowId` of copy `copy` (1-based) of part `part` for a
- * join of `kind`: where the joins of the document into that row stopped (0 when none).
+ * The first stitch (0-based) the join `draft` would take when set on `op` (a stitch op of
+ * part `own`) without a `start`: the cursor `planJoins` uses there, in document order — what
+ * the picker shows and then stores explicitly, so moving parts later cannot shift it.
  */
-export function nextFreeStitch(doc: BuilderDoc, part: number, copy: number, rowId: string, kind: JoinKind): number {
-  const plan = planJoins(withAllPartIds(doc));
-  let end = 0;
-  plan.links.forEach((l) => {
-    const s = plan.sources[l.source]!;
-    if (s.part === part && s.copy === copy - 1 && s.rowId === rowId && s.kind === kind) end = Math.max(end, l.slot + l.count);
+export function defaultJoinStart(doc: BuilderDoc, own: number, op: StitchOp, draft: Omit<JoinDraft, "start">): number {
+  const made = joinRefOf(doc, draft);
+  if (!made || !made.doc.parts[own]) return 0;
+  const probe = made.ref;
+  let found = false;
+  const swap = (ops: readonly Op[]): Op[] =>
+    ops.map((o): Op => {
+      if (o === op) {
+        found = true;
+        const { from: _from, through: _through, ...rest } = op;
+        return { ...rest, [draft.kind]: probe };
+      }
+      return o.kind === "stitch" ? o : ({ ...o, ops: swap(o.ops) } as Op);
+    });
+  const parts = made.doc.parts.map((p, i) => (i !== own ? p : { ...p, content: { ...p.content, rows: p.content.rows.map((r) => ({ ...r, ops: swap(r.ops) })) } }));
+  if (!found) return 0;
+  const plan = planJoins(withAllPartIds({ ...made.doc, parts }));
+  return plan.links.find((l) => l.ref === probe && l.copy === 0)?.slot ?? 0;
+}
+
+/**
+ * `doc` without the joins to part `id` (when that part is deleted): the stitches work into
+ * their own previous row again. The same object when nothing joins to it.
+ */
+export function withoutJoinsTo(doc: BuilderDoc, id: string | undefined): BuilderDoc {
+  if (id === undefined) return doc;
+  let changed = false;
+  const strip = (ops: readonly Op[]): Op[] =>
+    ops.map((o): Op => {
+      if (o.kind !== "stitch") {
+        const inner = strip(o.ops);
+        return inner.every((x, i) => x === o.ops[i]) ? o : ({ ...o, ops: inner } as Op);
+      }
+      if (o.from?.part !== id && o.through?.part !== id) return o;
+      changed = true;
+      const next: StitchOp = { ...o };
+      if (o.from?.part === id) delete next.from;
+      if (o.through?.part === id) delete next.through;
+      return next;
+    });
+  const parts = doc.parts.map((p) => {
+    const rows = p.content.rows.map((r) => {
+      const ops = strip(r.ops);
+      return ops.every((x, i) => x === r.ops[i]) ? r : { ...r, ops };
+    });
+    return rows.every((r, i) => r === p.content.rows[i]) ? p : { ...p, content: { ...p.content, rows } };
   });
-  return end;
+  return changed ? { ...doc, parts } : doc;
 }
 
 /** Cross-part findings of joins (`planJoins`) by the joining row's id. */
@@ -198,6 +240,8 @@ export function joinFindingMessage(f: JoinFinding): string {
     }
     case "THROUGH_NOT_FLAT":
       return "„Zusammen mit“ braucht eine Kante: die letzte Runde des anderen Teils, flach zusammengelegt oder offen – nicht zusammengezogen.";
+    case "JOIN_INTO_GATHERED":
+      return "Die letzte Runde des anderen Teils ist als „zusammengezogen“ abgeschlossen – hier wird aber weitergehäkelt. Abschluss dort auf „offen“ stellen.";
     case "JOINED_AND_PLACED":
       return "Das Teil wird angehäkelt und hat außerdem eine Platzierung zum Annähen – es sitzt dort, wo es angehäkelt ist.";
   }

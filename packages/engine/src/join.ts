@@ -16,23 +16,33 @@
  *     offers 5 places; a flat row offers one place per stitch.
  *
  * Where an op starts in the source row: at its `start` when it has one (applied at the op's
- * first stitch, once per row); otherwise where the previous join into the same source row —
- * the same part copy, row and kind — stopped, in document order across all parts (the first
- * one at 0). Two branches worked from one round without `start` thus take its first and its
- * second half. Copies: `copy` is 1-based (default 1); every copy of a joined part makes its own
- * joins, one after the other (the second copy of a branch continues where the first stopped).
+ * first stitch, once per row, for the first copy of the joining part); otherwise where the
+ * previous join into the same source row — the same part copy, row and kind — stopped, in
+ * document order across all parts (the first one at 0). Two branches worked from one round
+ * without `start` thus take its first and its second half. Copies: `copy` is 1-based (default
+ * 1); every copy of a joined part makes its own joins, one after the other: the second copy of
+ * a branch continues where the first stopped, also when the first had a `start`.
+ *
+ * A stitch that is worked into nothing (chain, magic ring, picot) makes no join; validation
+ * reports it (`INVALID_JOIN`).
  *
  * Findings (`validateExport` reports them): unknown part, copy or row; a part joined to itself;
  * a cycle (A works from B, B from A); a source row worked into beyond its end (overflow), the
  * same stitches taken twice (overlap) or not all of them taken (underflow, a warning — the
  * stitches stay free); `through` on a row that is not an edge finished flat or open (warning:
- * a gathered end has no edge to work through); and a part that is joined AND has an attach
- * placement (warning: the join decides where it sits).
+ * a gathered end has no edge to work through); `from` into a last round that is explicitly
+ * gathered (warning: the join goes on from it, it cannot be pulled shut); and an attach
+ * placement of a joined part copy that is not its component's root (warning: the join decides
+ * where it sits — see `droppedPlacements`).
+ *
+ * Each component has a root (`JoinPlan.roots`): its copy with the most stitches, ties broken by
+ * part id, then copy — independent of the order of the parts. The root takes the component's
+ * pose in the joint relaxation and may be sewn on like any part, carrying the others along.
  *
  * Pure functions, no UI or framework imports.
  */
 
-import { expandRow, isInstructionRow, type AtomJoin } from "./expand.js";
+import { countRowAtoms, expandRow, isInstructionRow, type AtomJoin } from "./expand.js";
 import type { JoinRef, PartContent, Row } from "./schema.js";
 import { computeRowStitches } from "./stitch-count.js";
 import { anchorsOffered, consumesOfAtom, isChainRow, isRingRow, worksAroundChain } from "./validate.js";
@@ -74,6 +84,8 @@ export interface JoinLink {
   /** First place it takes in the source row and how many (`count` ≥ 1). */
   slot: number;
   count: number;
+  /** The reference of the joining op (the object in the document). */
+  ref: JoinRef;
 }
 
 export type JoinFindingCode =
@@ -86,6 +98,7 @@ export type JoinFindingCode =
   | "JOIN_OVERLAP"
   | "JOIN_UNDERFLOW"
   | "THROUGH_NOT_FLAT"
+  | "JOIN_INTO_GATHERED"
   | "JOINED_AND_PLACED";
 
 export interface JoinFinding {
@@ -113,6 +126,8 @@ export interface JoinPlan {
    * then copy); components in order of their first copy. Unjoined copies are in none.
    */
   components: JoinInstance[][];
+  /** Per component: index into it of its root (see the module doc). */
+  roots: number[];
 }
 
 /** The last row of a part that has stitches (the default source row of a join). */
@@ -257,6 +272,7 @@ export function planJoins(doc: JoinDocument): JoinPlan {
       cursors.push(0);
       taken.push([]);
       if (join.kind === "through") checkThroughEdge(doc, target, row, consumer, rowId, report);
+      else checkFromEdge(doc, target, row, consumer, rowId, report);
     }
     const out = edges.get(consumer) ?? new Set<number>();
     out.add(target);
@@ -273,17 +289,20 @@ export function planJoins(doc: JoinDocument): JoinPlan {
           const join = atom.join;
           // Inside a stitch group a join is invalid (`INVALID_JOIN`) and ignored.
           if (!join || atom.group !== undefined || atom.code === "NOTE") return;
-          const count = join.kind === "from" ? consumesOfAtom(atom) : 1;
-          if (count === 0) return;
+          // Worked into nothing (chain, magic ring, picot): no join (`INVALID_JOIN`).
+          const consumes = consumesOfAtom(atom);
+          if (consumes === 0) return;
+          const count = join.kind === "from" ? consumes : 1;
           const source = resolveSource(p, row.id, join);
           if (source === null) return;
-          if (join.first && join.ref.start !== undefined && !started.has(join.ref)) {
+          // `start` places the first copy; later copies continue after it.
+          if (copy === 0 && join.first && join.ref.start !== undefined && !started.has(join.ref)) {
             started.add(join.ref);
             cursors[source] = join.ref.start;
           }
           const slot = cursors[source]!;
           cursors[source] = slot + count;
-          links.push({ kind: join.kind, part: p, copy, rowId: row.id, offset, source, slot, count });
+          links.push({ kind: join.kind, part: p, copy, rowId: row.id, offset, source, slot, count, ref: join.ref });
           const list = taken[source]!;
           const last = list[list.length - 1];
           if (last && last.part === p && last.rowId === row.id && last.slot + last.count === slot) last.count += count;
@@ -399,23 +418,90 @@ export function planJoins(doc: JoinDocument): JoinPlan {
     .map((list) => list.sort((a, b) => a.part - b.part || a.copy - b.copy))
     .sort((a, b) => a[0]!.part - b[0]!.part || a[0]!.copy - b[0]!.copy);
 
-  // A joined part that is also sewn on: the join decides.
-  const joinedParts = new Set(components.flat().map((x) => x.part));
-  for (const pl of doc.assembly ?? []) {
-    if (pl.kind !== "attach" || pl.part === undefined) continue;
-    const p = byId.get(pl.part);
-    if (p === undefined || !joinedParts.has(p)) continue;
+  // Roots: the copy with the most stitches; ties by part id, then copy (not by part order).
+  const size = new Map<number, number>();
+  const sizeOf = (part: number) => {
+    let n = size.get(part);
+    if (n === undefined) {
+      n = doc.parts[part]!.content.rows.reduce((s, r) => s + (isInstructionRow(r) ? 0 : countRowAtoms(r)), 0);
+      size.set(part, n);
+    }
+    return n;
+  };
+  const idOf = (part: number) => doc.parts[part]!.id ?? "";
+  const roots = components.map((list) => {
+    let best = 0;
+    list.forEach((x, i) => {
+      const b = list[best]!;
+      const d = sizeOf(x.part) - sizeOf(b.part);
+      if (d > 0 || (d === 0 && (idOf(x.part) < idOf(b.part) || (idOf(x.part) === idOf(b.part) && x.copy < b.copy)))) best = i;
+    });
+    return best;
+  });
+
+  // An attach placement of a joined copy that is not a root: the join decides.
+  const plan: JoinPlan = { links, sources, findings, components, roots };
+  for (const { placement: pl, part: p } of droppedPlacements(doc, plan)) {
     report({
       severity: "warning",
       code: "JOINED_AND_PLACED",
       message: `Part ${partLabel(doc, p)} is crocheted onto another part and also sewn on by placement "${pl.id}"; the crocheted join decides where it sits.`,
       partIndex: p,
       placementId: pl.id,
-      ref: pl.part,
+      ...(pl.part !== undefined ? { ref: pl.part } : {}),
     });
   }
 
-  return { links, sources, findings, components };
+  return plan;
+}
+
+/**
+ * Copies of part `part` that take attach placements, in copy order: all copies except those
+ * crocheted onto a component whose root they are not (`joinedNonRoot`: keys `part:copy`).
+ */
+export function placeableCopies(quantity: number, part: number, joinedNonRoot: ReadonlySet<string>): number[] {
+  const out: number[] = [];
+  for (let copy = 0; copy < quantity; copy++) if (!joinedNonRoot.has(`${part}:${copy}`)) out.push(copy);
+  return out;
+}
+
+/** Keys `part:copy` of the joined copies that are not their component's root. */
+export function joinedNonRootKeys(plan: Pick<JoinPlan, "components" | "roots">): Set<string> {
+  const out = new Set<string>();
+  plan.components.forEach((list, c) => list.forEach((x, i) => i !== plan.roots[c] && out.add(`${x.part}:${x.copy}`)));
+  return out;
+}
+
+/**
+ * Attach placements the join overrides: a part's placements go, in order, to its copies that
+ * are not crocheted onto another component's root (see `placeableCopies`); a placement left
+ * over while some copy of the part is joined is dropped — the join decides where that copy
+ * sits. The assembly (`composeAssembly`) applies the same rule.
+ */
+export function droppedPlacements<P extends { id: string; kind: string; part?: string | undefined }>(
+  doc: { parts: JoinDocument["parts"]; assembly?: ReadonlyArray<P> | undefined },
+  plan: Pick<JoinPlan, "components" | "roots">,
+): Array<{ placement: P; part: number }> {
+  const nonRoot = joinedNonRootKeys(plan);
+  if (nonRoot.size === 0) return [];
+  const byId = new Map<string, number>();
+  doc.parts.forEach((p, i) => {
+    if (p.id !== undefined && !byId.has(p.id)) byId.set(p.id, i);
+  });
+  const seen = new Map<number, number>();
+  const out: Array<{ placement: P; part: number }> = [];
+  for (const pl of doc.assembly ?? []) {
+    if (pl.kind !== "attach" || pl.part === undefined) continue;
+    const p = byId.get(pl.part);
+    if (p === undefined) continue;
+    const q = Math.max(1, Math.floor(doc.parts[p]!.quantity));
+    const free = placeableCopies(q, p, nonRoot);
+    if (free.length === q) continue; // no copy of the part is joined below a root
+    const k = seen.get(p) ?? 0;
+    seen.set(p, k + 1);
+    if (k >= free.length) out.push({ placement: pl, part: p });
+  }
+  return out;
 }
 
 /** `through` needs an edge: the part's last row, a flat row or a round finished flat or open. */
@@ -439,6 +525,27 @@ function checkThroughEdge(
     message: edge
       ? `Row is worked through the end of part ${partLabel(doc, target)}, which is gathered shut; set its finish to flat or open.`
       : `Row is worked through row "${row.id}" of part ${partLabel(doc, target)}, which is not its edge.`,
+    partIndex: consumer,
+    rowId,
+    ref: doc.parts[target]!.id,
+  });
+}
+
+/** `from` into a last round that is explicitly gathered: the join goes on from it. */
+function checkFromEdge(
+  doc: JoinDocument,
+  target: number,
+  row: Row,
+  consumer: number,
+  rowId: string,
+  report: (f: JoinFinding) => void,
+): void {
+  const content = doc.parts[target]!.content;
+  if (content.finish !== "gather" || row.type !== "round" || lastStitchRow(content) !== row) return;
+  report({
+    severity: "warning",
+    code: "JOIN_INTO_GATHERED",
+    message: `Row is worked into the last round of part ${partLabel(doc, target)}, which is gathered shut; set its finish to open.`,
     partIndex: consumer,
     rowId,
     ref: doc.parts[target]!.id,
