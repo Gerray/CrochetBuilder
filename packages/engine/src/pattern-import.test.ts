@@ -775,6 +775,31 @@ describe("parsePatternText — joining parts while crocheting (B5b)", () => {
     ]);
   });
 
+  it("reports a round split into branches as a join it cannot read, but not folding in half", () => {
+    const split = parsePatternText(
+      [
+        "Body",
+        "1. 6 sc in MR (6)",
+        "2. inc x 6 (12)",
+        "3. 12 sc (12)",
+        "Now sc the round in half: one sc across to the other side, you get two openings of 6.",
+        "Repeat the last two rounds once more.",
+        "Arm",
+        "1. 6 sc in MR (6)",
+        "2. 6 sc (6)",
+        "Fold in half and crochet 3 sc through both layers.",
+      ].join("\n"),
+      { locale: "en_us" },
+    );
+    expect(split.issues.filter((i) => i.code === "UNSUPPORTED_JOIN").map((i) => i.text)).toEqual([
+      "Now sc the round in half: one sc across to the other side, you get two openings of 6.",
+    ]);
+    const de = parsePatternText(["Körper", "1. 6 fM in einen Fadenring (6)", "2. 6 Zun (12)", "Die Runde in zwei Hälften teilen und jede Hälfte einzeln weiterhäkeln."].join("\n"), {
+      locale: "de",
+    });
+    expect(de.issues.map((i) => i.code)).toContain("UNSUPPORTED_JOIN");
+  });
+
   it("reads German joins too", () => {
     const r = parsePatternText(["Bein (2x)", "1. 6 fM in einen Fadenring (6)", "2. 6 Zun (12)", "Körper", "1. 12 fM um das erste Bein, 12 fM um das zweite Bein (24)"].join("\n"), { locale: "de" });
     expect(r.parts[1]!.rows[0]!.ops).toEqual([

@@ -49,7 +49,8 @@
  *     side of the chain" in such a round work into a chain bridge before it (the round is
  *     marked `around` when it needs both sides).
  *   - Text the format cannot represent yet becomes an instruction row with the raw text and
- *     an issue: `UNSUPPORTED_JOIN`, `UNSUPPORTED_SPECIAL_STITCH` (clusters, bullions, shells
+ *     an issue: `UNSUPPORTED_JOIN` (also a round split into branches, "sc the round in
+ *     half"), `UNSUPPORTED_SPECIAL_STITCH` (clusters, bullions, shells
  *     …), `UNSUPPORTED_CHAIN_SPACE`; a round closed with a slip stitch is
  *     `UNSUPPORTED_ROUND_JOIN` (info, imported as a spiral round), a colour change without a
  *     name `COLOR_UNNAMED` (info). Unreadable stitch text is `UNREADABLE`.
@@ -408,6 +409,13 @@ function ovalText(text: string): string {
     .replace(/,\s*(?=[[(]\s*\d+\s*(?:sts?|stitches|maschen|m)?\s*[\])]\s*$)/iu, " ")
     .replace(/,\s*(?=(?:=|->|→)\s*\d)/u, " ");
 }
+/**
+ * A round split into two openings that are worked on separately ("sc the round in half",
+ * "split the round into two circles", "Runde in zwei Hälften teilen"): a branch the importer
+ * cannot read yet. Not "fold in half" (a flat finish) or "the last two rounds".
+ */
+const SPLIT =
+  /\b(?:round|circle|opening)\s+in\s+(?:half|two)\b|\bsplit\s+(?:the\s+)?(?:round|circle|work|opening)\b|\binto\s+two\s+(?:separate\s+)?(?:circles|openings|holes|branches)\b|(?<![\p{L}])(?:Runde|Öffnung)\s+(?:in\s+zwei\s+(?:Hälften|Teile|Kreise|Öffnungen)\s+)?teilen(?![\p{L}])|(?<![\p{L}])in\s+zwei\s+(?:Hälften|Kreise|Öffnungen)\s+teilen(?![\p{L}])/iu;
 const JOIN =
   /\b\d+\s*(?:sc|fM|sts?|hdc|dc|M|sl\s*st)\s+(?:with|on|onto|at|to|into|from|of|mit|am|an|auf)\s+(?:the\s+|dem\s+|der\s+|den\s+)?(?:(?:left|right|first|second|other|next|1st|2nd|linken|rechten|ersten|zweiten|anderen)\s+)?(?:legs?|arms?|handles?|ears?|foot|feet|fingers?|toes?|body|head|parts?|pieces?|paws?|Bein|Beine|Beinen|Arm|Arme|Armen|Fuß|Körper|Kopf|Teil)\b|\bjoin(?:ing)?\s+(?:the\s+)?(?:two\s+|both\s+)?(?:legs?|arms?|parts?|pieces?)\b|\b(?:Beine|Teile)\s+(?:verbinden|zusammenhäkeln)\b/iu;
 /** Words for which copy of a part ×2 is meant: left = first, right = second. */
@@ -1231,6 +1239,8 @@ class Importer {
     const rowIndex = this.pushRow({ type: part.lastType, ops: [], stitchCountTarget: 0, note });
     // A row that joins parts but does not read stays a join that was not read.
     if (codes.includes("UNREADABLE") && JOIN.test(note)) codes = [...codes, "UNSUPPORTED_JOIN"];
+    // A round split into branches (seal's tail): the rounds after it belong to new parts.
+    if (SPLIT.test(note)) codes = [...codes, "UNSUPPORTED_JOIN"];
     for (const code of new Set(codes)) this.issue(code, line, note, undefined, rowIndex);
     this.harvest(note, line, rowIndex);
   }

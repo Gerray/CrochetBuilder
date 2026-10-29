@@ -22,7 +22,9 @@ All notable changes to this project are documented here. The format follows
 - `validate` no longer counts stitches with `from` against the own previous row, and
   `hookSkipOf` ignores them. `RowStitch` gains `join`, `StitchNode` gains `joined`.
 - `UNSUPPORTED_JOIN` of the pattern import now means a join that names no part of the pattern
-  (or a row that does not read); joins that name one are read.
+  (or a row that does not read); joins that name one are read. A round split into branches
+  in prose ("sc the round in half", "Runde in zwei Hälften teilen") is reported as
+  `UNSUPPORTED_JOIN` too.
 
 ### Added
 
