@@ -40,6 +40,14 @@
  *     or further unlabelled rows ("… = 12. (3 sc, inc) × 3 = 15.").
  *   - Stitch groups ("3 sc in next st", "hdc inc"), bobbles, puffs, popcorns, picots and relief
  *     stitches are read into format v2 rows (`parseRowText`).
+ *   - Joins to parts read before (`StitchOp.from` / `.through`, B5b) when the text names such
+ *     a part: "18 sc around the first leg", "join to the second leg, 18 sc around it", "5 sc
+ *     through both layers of the arm and the body"; "N sc with / on / at the arm" is worked
+ *     into it when N is all stitches of its last round, else through it; left / right are
+ *     copy 1 / 2, a part named twice in a row without a copy is copy 1, then 2 (a copy beyond
+ *     the part's quantity raises it, `JOIN_QUANTITY_RAISED`). "N sc in ch" / "on the other
+ *     side of the chain" in such a round work into a chain bridge before it (the round is
+ *     marked `around` when it needs both sides).
  *   - Text the format cannot represent yet becomes an instruction row with the raw text and
  *     an issue: `UNSUPPORTED_JOIN`, `UNSUPPORTED_SPECIAL_STITCH` (clusters, bullions, shells
  *     …), `UNSUPPORTED_CHAIN_SPACE`; a round closed with a slip stitch is
@@ -67,6 +75,7 @@
 import type { Placement } from "./assembly.js";
 import { LOCALE_CONFIDENCE_THRESHOLD, detectNotationLocale } from "./detect-locale.js";
 import { rowOrdinals } from "./expand.js";
+import { extractJoins, type JoinNotationPart } from "./join-notation.js";
 import { parseRowText, resolveStitchTerm, type NotationLocale, type ParseRowResult } from "./notation.js";
 import {
   MAX_DETAIL_SENTENCE,
@@ -84,7 +93,7 @@ import {
   type PlacementDraft,
   type StuffingStatement,
 } from "./pattern-details.js";
-import type { Finish, Op, Row, Stuffing } from "./schema.js";
+import type { Finish, JoinRef, Op, Row, Stuffing } from "./schema.js";
 import { computeRowStitches } from "./stitch-count.js";
 import { anchorsConsumed, anchorsOffered, isChainRow } from "./validate.js";
 
@@ -102,8 +111,17 @@ export type ImportIssueCode =
    * are read since format v2.)
    */
   | "UNSUPPORTED_SPECIAL_STITCH"
-  /** Joining parts while crocheting ("5 sc with the leg", "join the legs"). */
+  /**
+   * Joining parts while crocheting that could not be read: the text names no part of the
+   * pattern ("5 sc with the leg" without a part "leg"), or the row does not read. Joins that
+   * name a part are read since B5b ("18 sc around the first leg", "5 sc with the arm").
+   */
   | "UNSUPPORTED_JOIN"
+  /**
+   * A join named a copy of a part that has fewer ("6 sc with the right leg" on "Legs" without
+   * "make 2"): the part's quantity was raised to that copy (informational).
+   */
+  | "JOIN_QUANTITY_RAISED"
   /** Working into chain spaces. */
   | "UNSUPPORTED_CHAIN_SPACE"
   /**
@@ -217,6 +235,7 @@ const SEVERITY: Record<ImportIssueCode, ImportIssueSeverity> = {
   UNREADABLE: "warning",
   UNSUPPORTED_SPECIAL_STITCH: "warning",
   UNSUPPORTED_JOIN: "warning",
+  JOIN_QUANTITY_RAISED: "info",
   UNSUPPORTED_CHAIN_SPACE: "warning",
   UNSUPPORTED_FOUNDATION_OVAL: "warning",
   COLOR_UNNAMED: "info",
@@ -391,6 +410,80 @@ function ovalText(text: string): string {
 }
 const JOIN =
   /\b\d+\s*(?:sc|fM|sts?|hdc|dc|M|sl\s*st)\s+(?:with|on|onto|at|to|into|from|of|mit|am|an|auf)\s+(?:the\s+|dem\s+|der\s+|den\s+)?(?:(?:left|right|first|second|other|next|1st|2nd|linken|rechten|ersten|zweiten|anderen)\s+)?(?:legs?|arms?|handles?|ears?|foot|feet|fingers?|toes?|body|head|parts?|pieces?|paws?|Bein|Beine|Beinen|Arm|Arme|Armen|Fuß|Körper|Kopf|Teil)\b|\bjoin(?:ing)?\s+(?:the\s+)?(?:two\s+|both\s+)?(?:legs?|arms?|parts?|pieces?)\b|\b(?:Beine|Teile)\s+(?:verbinden|zusammenhäkeln)\b/iu;
+/** Words for which copy of a part ×2 is meant: left = first, right = second. */
+const SIDE_WORDS: Record<string, string> = {
+  left: "first",
+  right: "second",
+  linken: "ersten",
+  linke: "erste",
+  linkes: "erste",
+  rechten: "zweiten",
+  rechte: "zweite",
+  rechtes: "zweite",
+};
+const JOIN_ORDINAL = "left|right|first|second|other|1st|2nd|linken|linke|linkes|rechten|rechte|rechtes|ersten|erste|zweiten|zweite|anderen";
+const JOIN_STITCH = "sc|fM|hdc|hStb|dc|Stb|sts?|M|sl\\s*st|Km";
+/** Prepositions that say "joined" without saying how: decided by the count (see `joinPhrases`). */
+const JOIN_LOOSE = "with|on|onto|at|to|mit|am|an|auf";
+
+/** Provisional id of work part `i` in join references, replaced by its final id in `finish`. */
+const workId = (i: number) => `wp${i}`;
+
+/**
+ * Join phrases of pattern text in the form the notation reads (`extractJoins`), for the parts
+ * `parts` (with their stitch count `count` at the end):
+ *   - "N sc with / on / at the (left|right|first|second) X": all stitches of X's last round
+ *     → "around X" (worked into it, `from`); fewer → "through X" (through both layers);
+ *   - "join to the second leg, 18 sc around (it)" → "18 sc around the second leg";
+ *   - left / right become first / second (copy 1 / copy 2).
+ */
+function joinPhrases(text: string, parts: ReadonlyArray<JoinNotationPart & { count: number }>): string {
+  if (parts.length === 0) return text;
+  const forms: Array<{ form: string; part: (typeof parts)[number] }> = [];
+  for (const p of parts) {
+    const name = p.name?.trim().toLowerCase() ?? "";
+    if (name.length < 2) continue;
+    const set = new Set([name, name.replace(/(?:es|s|e|n)$/u, ""), `${name}s`]);
+    for (const f of set) if (f.length >= 2) forms.push({ form: f, part: p });
+  }
+  if (forms.length === 0) return text;
+  forms.sort((a, b) => b.form.length - a.form.length);
+  const names = forms.map((f) => f.form.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|");
+  const side = (w: string | undefined) => (w ? `${SIDE_WORDS[w.toLowerCase()] ?? w} ` : "");
+  let out = text.replace(
+    new RegExp(`\\bjoin(?:ing)?\\s+(?:it\\s+)?to\\s+(?:the\\s+)?(?:(${JOIN_ORDINAL})\\s+)?(${names})\\s*[,;]?\\s*(?:and\\s+)?(?:work\\s+)?(\\d+)\\s*(${JOIN_STITCH})\\s+(?:a?round|in\\s+each\\s+st(?:itch)?)(?:\\s+(?:it|of\\s+it|the\\s+leg))?\\b`, "giu"),
+    (_m, ord: string | undefined, name: string, n: string, stitch: string) => `${n} ${stitch} around the ${side(ord)}${name}`,
+  );
+  // "9 sc in ch", "9 sc on the other side of the chain": into the bridge before the round.
+  out = out.replace(
+    new RegExp(
+      `\\b(\\d+\\s*(?:${JOIN_STITCH}))\\s+(?:in(?:to)?|along|on)\\s+(?:the\\s+|each\\s+)?(?:other\\s+side\\s+of\\s+(?:the\\s+)?)?(?:\\d+\\s+)?(?:ch|chains?|chain\\s+sts?|Lm)\\b`,
+      "giu",
+    ),
+    "$1",
+  );
+  out = out.replace(
+    new RegExp(`\\b(\\d+)\\s*(${JOIN_STITCH})\\s+(?:${JOIN_LOOSE})\\s+(?:the\\s+|dem\\s+|der\\s+|den\\s+|das\\s+)?(?:(${JOIN_ORDINAL})\\s+)?(${names})(?![\\p{L}])`, "giu"),
+    (_m, n: string, stitch: string, ord: string | undefined, name: string) => {
+      const hit = forms.find((f) => f.form === name.toLowerCase());
+      const how = hit && Number(n) === hit.part.count ? "around" : "through";
+      return `${n} ${stitch} ${how} the ${side(ord)}${name}`;
+    },
+  );
+  return out;
+}
+
+/** Join references of `ops` in working order (a repeat's body once). */
+function joinRefsOf(ops: readonly Op[], out: JoinRef[] = []): JoinRef[] {
+  for (const op of ops) {
+    if (op.kind === "stitch") {
+      const ref = op.from ?? op.through;
+      if (ref) out.push(ref);
+    } else joinRefsOf(op.ops, out);
+  }
+  return out;
+}
+
 /**
  * Stitches the format has no code for (bobble, puff, popcorn, picot, relief stitches and
  * groups are read since format v2): clusters, bullions, spike and crab stitches, "a lump of
@@ -898,6 +991,21 @@ class Importer {
       const name = p.implicit ? `Teil ${i + 1}` : p.name;
       return { id: uniqueId(slugOf(name), ids), name, quantity: p.quantity, rows: p.rows };
     });
+    // Joins named the work parts by provisional ids: now the final ones.
+    const finalId = new Map<string, string>();
+    this.parts.forEach((work, i) => {
+      const to = moved.get(i);
+      const index = to === undefined ? undefined : newIndex.get(to.index);
+      if (index !== undefined) finalId.set(workId(i), parts[index]!.id);
+    });
+    for (const p of parts) {
+      for (const row of p.rows) {
+        for (const ref of joinRefsOf(row.ops)) {
+          const id = finalId.get(ref.part);
+          if (id) ref.part = id;
+        }
+      }
+    }
 
     // Where a work part ended up: the final part, and the offset of its rows there.
     const finalOf = (work: WorkPart): { part: ImportedPart; index: number; offset: number } | undefined => {
@@ -1121,6 +1229,8 @@ class Importer {
     if (note === "") return;
     const part = this.part();
     const rowIndex = this.pushRow({ type: part.lastType, ops: [], stitchCountTarget: 0, note });
+    // A row that joins parts but does not read stays a join that was not read.
+    if (codes.includes("UNREADABLE") && JOIN.test(note)) codes = [...codes, "UNSUPPORTED_JOIN"];
     for (const code of new Set(codes)) this.issue(code, line, note, undefined, rowIndex);
     this.harvest(note, line, rowIndex);
   }
@@ -1131,10 +1241,10 @@ class Importer {
     // An oval start that is read never gets here (`ovalRound`); a mere mention ("see page 11
     // for working on the other side of the chain") is no stitch text, and without a chain to
     // work around "on the other side" means something else.
-    if (OVAL.test(text) && looksLikeStitches(text, this.locale) && this.chainContext(text)) {
+    if (OVAL.test(text) && looksLikeStitches(text, this.locale) && this.chainContext(text) && !this.readsJoin(text)) {
       codes.push("UNSUPPORTED_FOUNDATION_OVAL");
     }
-    if (JOIN.test(text)) codes.push("UNSUPPORTED_JOIN");
+    if (JOIN.test(text) && !this.readsJoin(text)) codes.push("UNSUPPORTED_JOIN");
     if (blockingOnly) return codes;
     if (SPECIAL.test(text)) codes.push("UNSUPPORTED_SPECIAL_STITCH");
     if (CHAIN_SPACE.test(text)) codes.push("UNSUPPORTED_CHAIN_SPACE");
@@ -1177,10 +1287,19 @@ class Importer {
       this.pushRow(chain);
       ops = ops.slice(1);
     }
+    this.settleJoinCopies(ops, line, raw);
     const firstIndex = part.rows.length;
     // An oval round: read by `ovalRound`, or written with the mark ("around the chain: …").
-    const around = this.aroundNext || result.around === true;
+    let around = this.aroundNext || result.around === true;
     this.aroundNext = false;
+    // "9 ch, 12 sc around the leg, 9 sc in the ch, 12 sc around the other leg, 9 sc": a round
+    // worked into other parts and along both sides of the bridge before it.
+    const before = part.rows.filter((r) => r.ops.length > 0);
+    const bridge = before[before.length - 1];
+    if (!around && type === "round" && bridge && isChainRow(bridge) && joinRefsOf(ops).length > 0) {
+      const own = anchorsConsumed({ id: "", type, ops, stitchCountTarget: 0 });
+      if (own > anchorsOffered(bridge) && own <= 2 * anchorsOffered(bridge)) around = true;
+    }
     for (let n = first; n <= last; n++) {
       const row: Omit<Row, "id"> = { type, ops: JSON.parse(JSON.stringify(ops)) as Op[], stitchCountTarget: 0 };
       if (around && n === first) {
@@ -1214,6 +1333,50 @@ class Importer {
     }
   }
 
+  // -- joins between parts (B5b) -----------------------------------------------
+
+  /**
+   * The other parts read so far, as join phrases name them: provisional ids (`workId`),
+   * names, quantities, rows and the stitch count of their last row.
+   */
+  private joinParts(): Array<JoinNotationPart & { count: number }> {
+    const out: Array<JoinNotationPart & { count: number }> = [];
+    this.parts.forEach((p, i) => {
+      if (p === this.current || p.implicit) return;
+      const last = [...p.rows].reverse().find((r) => r.ops.length > 0);
+      out.push({ id: workId(i), name: p.name, quantity: p.quantity, rows: p.rows, count: last ? anchorsOffered(last) : 0 });
+    });
+    return out;
+  }
+
+  /** Whether the join phrases of `text` name parts of the pattern (they are then read). */
+  private readsJoin(text: string): boolean {
+    const parts = this.joinParts();
+    return parts.length > 0 && extractJoins(joinPhrases(text, parts), parts).joins.length > 0;
+  }
+
+  /**
+   * Copies of a part ×2 named twice in a row without saying which ("12 sc on the leg, …,
+   * 12 sc on the leg"): the first is copy 1, the second copy 2. A copy beyond the part's
+   * quantity raises it (`JOIN_QUANTITY_RAISED`).
+   */
+  private settleJoinCopies(ops: readonly Op[], line: number, raw: string): void {
+    const refs = joinRefsOf(ops);
+    if (refs.length === 0) return;
+    const byPart = new Map<string, JoinRef[]>();
+    for (const r of refs) byPart.set(r.part, [...(byPart.get(r.part) ?? []), r]);
+    for (const [id, list] of byPart) {
+      const work = this.parts[Number(id.slice(2))];
+      if (!work) continue;
+      if (list.length >= 2 && list.every((r) => r.copy === undefined)) list.forEach((r, k) => (r.copy = k + 1));
+      const most = Math.max(...list.map((r) => r.copy ?? 1));
+      if (most > work.quantity) {
+        this.issue("JOIN_QUANTITY_RAISED", line, raw, `A join names copy ${most} of "${work.name}"; its quantity was set to ${most}.`);
+        work.quantity = most;
+      }
+    }
+  }
+
   /**
    * Longest prefix of `text` (at a cut point) that reads as a row. A readable prefix that
    * still names something the format cannot represent is `blocked` instead of accepted.
@@ -1227,7 +1390,12 @@ class Importer {
       const prefix = text.slice(0, cut).trim();
       if (prefix === "" || prefix.length > MAX_ROW_TEXT) continue;
       if (requireSubstance && !/\d/.test(prefix) && !FILL_HINT.test(prefix)) continue;
-      const result = parseRowText(prefix, this.locale, { previousCount: this.part().lastCount });
+      const parts = this.joinParts();
+      // Join phrases are read in the form the notation knows ("6 sc with the leg" → "through").
+      const result = parseRowText(parts.length > 0 ? joinPhrases(prefix, parts) : prefix, this.locale, {
+        previousCount: this.part().lastCount,
+        ...(parts.length > 0 ? { parts } : {}),
+      });
       if (result.ok) {
         if (result.ops.length === 0) continue;
         const blocked = this.unsupported(prefix, false);
@@ -1465,7 +1633,9 @@ class Importer {
     }
 
     // An oval start: the round around both sides of the foundation chain.
-    const oval = this.ovalRound(raw, label.rowWord);
+    // A round around a chain bridge that joins parts ("… on the other side of the chain") is
+    // read with its joins (`stitchRows` marks it `around`), not as an oval start.
+    const oval = this.readsJoin(raw) ? null : this.ovalRound(raw, label.rowWord);
     if (oval === "unread") {
       this.instruction(noteText, line, ["UNSUPPORTED_FOUNDATION_OVAL"]);
       part.lastCount = declaredCount(raw) ?? part.lastCount;

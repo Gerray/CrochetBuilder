@@ -16,7 +16,9 @@ export function importIssueMessage(issue: Pick<ImportIssue, "code" | "message">)
     case "UNSUPPORTED_SPECIAL_STITCH":
       return "Diese Spezialmasche (z. B. zusammen abgemaschte Maschen, Bullion, Muschel oder V-Masche ohne Ausschreibung) kann der Builder nicht darstellen – bleibt als Hinweis stehen. Muschel und V-Masche lassen sich als Gruppe ausschreiben, z. B. „(2 Stb, 1 Lm, 2 Stb) in dieselbe M“.";
     case "UNSUPPORTED_JOIN":
-      return "Teile beim Häkeln verbinden geht noch nicht – bleibt als Hinweis stehen.";
+      return "Verbindung mit einem anderen Teil nicht gelesen (kein passendes Teil in der Anleitung oder die Runde ist unlesbar) – bleibt als Hinweis stehen. Ausschreiben z. B. als „18 fM um Bein 1“ oder „5 fM mit dem Arm“.";
+    case "JOIN_QUANTITY_RAISED":
+      return "Die Runde verbindet eine weitere Kopie dieses Teils (z. B. rechtes Bein) – die Anzahl des Teils wurde erhöht, bitte prüfen.";
     case "UNSUPPORTED_CHAIN_SPACE":
       return "Häkeln in Luftmaschenbögen geht noch nicht – bleibt als Hinweis stehen.";
     case "UNSUPPORTED_FOUNDATION_OVAL":
