@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { renderOps, renderRow, resolveStitchTerm } from "./notation.js";
 import { parsePatternText, type ImportedPart, type PatternImport } from "./pattern-import.js";
-import type { Row } from "./schema.js";
+import type { PartContent, Row } from "./schema.js";
+import { renderedRows } from "./export.js";
 import { validate } from "./validate.js";
 
 /** Compact view of a part: "ops (target)" per stitch row, "> note" per instruction row. */
@@ -1027,14 +1028,103 @@ describe("parsePatternText — oval starts (rounds around a foundation chain)", 
   });
 
   it("keeps an oval it cannot read as text with UNSUPPORTED_FOUNDATION_OVAL", () => {
-    // No chain to work around.
+    // No chain to work around: no oval, the text stays unread.
     const noChain = read("Body\nRnd 1: 6 sc in MR (6)\nRnd 2: 3 sc, working on the other side of the chain: 3 sc (6)");
     expect(noChain.rows[1]).toBe("> Rnd 2: 3 sc, working on the other side of the chain: 3 sc (6)");
-    expect(noChain.codes).toEqual(["UNSUPPORTED_FOUNDATION_OVAL"]);
+    expect(noChain.codes).toEqual(["UNREADABLE"]);
     // After a chain, but with stitches the format cannot hold.
     const bullion = read("Foot\nCh 7\nRnd 1: sc in 2nd ch from hook, 4 sc, 3 sc in last ch, on the other side: 4 bullion st, inc (14)");
     expect(bullion.rows[1]).toMatch(/^> Rnd 1: /);
     expect(bullion.codes).toEqual(["UNSUPPORTED_FOUNDATION_OVAL"]);
+  });
+
+  it("reads its own export back as an oval in every locale", () => {
+    const content: PartContent = {
+      schemaVersion: 2,
+      rows: [
+        { id: "c", type: "round", ops: [{ kind: "stitch", code: "CH", count: 7 }], stitchCountTarget: 0 },
+        {
+          id: "o",
+          type: "round",
+          around: true,
+          ops: [
+            { kind: "stitch", code: "SC", count: 5 },
+            { kind: "group", ops: [{ kind: "stitch", code: "SC", count: 3 }] },
+            { kind: "stitch", code: "SC", count: 4 },
+            { kind: "stitch", code: "INC", count: 1 },
+          ],
+          stitchCountTarget: 14,
+        },
+        { id: "p", type: "round", ops: [{ kind: "stitch", code: "SC", count: 14 }], stitchCountTarget: 14 },
+      ],
+    };
+    for (const locale of ["de", "en_us", "en_uk"] as const) {
+      const text = ["Foot", ...renderedRows(content, locale)].join("\n");
+      const res = parsePatternText(text, { locale });
+      const rows = res.parts[0]!.rows;
+      expect(rows.map((r) => [r.ops, r.stitchCountTarget, r.around ?? false]), locale).toEqual(
+        content.rows.map((r) => [r.ops, r.stitchCountTarget, r.around ?? false]),
+      );
+      expect(codes(res), locale).toEqual([]);
+      expect(validate({ schemaVersion: 2, rows }), locale).toEqual([]);
+    }
+  });
+
+  it("reads a dc oval (two chains skipped at the hook)", () => {
+    const r = read("Sole\nCh 10\nRnd 1: dc in 3rd ch from hook, 6 dc, 5 dc in last ch, working on the other side of the chain: 6 dc, 4 dc in last ch (22)\nRnd 2: 22 dc (22)");
+    expect(r.rows).toEqual(["10 ch (0)", "@ 1 dc, 6 dc, (5 dc) in same st, 6 dc, (4 dc) in same st (22)", "22 dc (22)"]);
+    expect(r.codes).toEqual([]);
+    expect(r.findings).toEqual([]);
+  });
+
+  it("reads 'unroll' after a chain as a turn when the row works only one side of it", () => {
+    const bag = parsePatternText("Bag\nCh 9\nRow 1: hdc in 3rd ch from hook, 6 hdc, unroll the work (7)\nRow 2: ch 2, 7 hdc (7)", { locale: "en_us" });
+    const rows = bag.parts[0]!.rows;
+    expect(rows[1]).toMatchObject({ type: "row", ops: [{ code: "HDC", count: 1 }, { code: "HDC", count: 6 }], stitchCountTarget: 7 });
+    expect(rows[1]!.around).toBeUndefined();
+    expect(codes(bag)).toEqual([]);
+    // A round label that works only one side: a turn too, never an oval.
+    const flap = parsePatternText("Flap\nCh 11\nRnd 1: sc in 2nd ch from hook, 9 sc, unroll (10)", { locale: "en_us" });
+    expect(flap.parts[0]!.rows[1]).toMatchObject({ type: "row", ops: [{ code: "SC", count: 1 }, { code: "SC", count: 9 }] });
+    expect(flap.parts[0]!.rows[1]!.around).toBeUndefined();
+  });
+
+  it("does not take the back of the chain (back bumps) for an oval, and never hides stitch text in a plain note", () => {
+    const back = parsePatternText(
+      "Scarf\nCh 21.\nRow 1: working in the back of the chain, sc in 2nd ch from hook and in each ch across (20), turn.\nRow 2: ch 1, 20 sc (20), turn",
+      { locale: "en_us" },
+    );
+    expect(back.parts[0]!.rows.some((r) => r.around)).toBe(false);
+    expect(codes(back)).toContain("UNREADABLE");
+    expect(codes(back)).not.toContain("UNSUPPORTED_FOUNDATION_OVAL");
+    const bumps = parsePatternText(
+      "Scarf\nCh 21.\nRow 1: sc into the back side of the chain, starting in 2nd ch from hook, 20 sc (20). Turn.\nRow 2: ch 1, 20 sc (20), turn",
+      { locale: "en_us" },
+    );
+    expect(bumps.parts[0]!.rows.some((r) => r.around)).toBe(false);
+    expect(codes(bumps)).not.toContain("UNSUPPORTED_FOUNDATION_OVAL");
+    // The 20 sc are read as the row into the chain; the where-to stays as a note.
+    expect(view(bumps.parts[0]!).slice(0, 3)).toEqual(["21 ch (0)", "> Row 1: sc into the back side of the chain,", "20 sc (20)"]);
+  });
+
+  it("names the other side only as an oval where there is a chain", () => {
+    for (const [text, locale] of [
+      ["Ear\nRnd 1: 6 sc in MR (6)\nRnd 2: 6 inc (12)\nRnd 3: 6 sc on the second side (12)", "en_us"],
+      ["Mütze\nR1: 6 fM in MR (6)\nR2: 6 Zun (12)\nR3: auf der anderen Seite 12 fM (12)", "de"],
+    ] as const) {
+      const res = parsePatternText(text, { locale });
+      expect(codes(res), text).not.toContain("UNSUPPORTED_FOUNDATION_OVAL");
+      expect(res.parts[0]!.rows.some((r) => r.around), text).toBe(false);
+    }
+  });
+
+  it("does not take a German ordinal ('ab der 2. Lm') for a round label", () => {
+    const oval = read("Fuß\n8 Lm\nR1: ab der 2. Lm von der Nadel aus 6 fM, 3 fM in die letzte Lm, auf der anderen Seite 5 fM, 2 fM in die letzte M (16)\nR2: 16 fM (16)", "de");
+    expect(oval.rows).toEqual(["8 Lm (0)", "@ 6 fM, (3 fM) in dieselbe M, 5 fM, 1 Zun (16)", "16 fM (16)"]);
+    expect(oval.codes).toEqual([]);
+    const flat = read("Schal\n8 Lm\nR1: ab der 2. Lm von der Nadel aus 7 fM (7)\nR2: 7 fM (7)", "de");
+    expect(flat.rows).toEqual(["8 Lm (0)", "7 fM (7)", "7 fM (7)"]);
+    expect(flat.codes).toEqual([]);
   });
 
   it("keeps a mere mention of the other side of the chain as a plain note", () => {
