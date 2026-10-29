@@ -73,7 +73,7 @@ function usePopoverDismiss(open: boolean, root: React.RefObject<HTMLElement | nu
 }
 
 /** A button that opens a small popover dialog below it. */
-function PopoverButton({
+export function PopoverButton({
   label,
   title,
   className,

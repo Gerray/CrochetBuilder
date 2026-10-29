@@ -1323,6 +1323,30 @@ input[aria-invalid="true"]:focus-visible {
   color: var(--c-text);
 }
 
+/* Joins to other parts (B5b): "aus Bein 1", "mit Arm" and the picker. */
+.op-join.is-set {
+  color: var(--c-text);
+}
+.join-popover {
+  display: grid;
+  gap: 6px;
+  max-width: 22em;
+}
+.join-popover select,
+.join-popover input {
+  width: 100%;
+}
+.join-field {
+  font-size: 0.85em;
+  color: var(--c-text-mute);
+}
+.join-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 4px;
+}
+
 .color-popover {
   min-width: 18em;
 }

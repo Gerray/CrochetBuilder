@@ -4,9 +4,12 @@
  */
 
 import { MAX_COUNT, MAX_ROW_STITCHES, type Finding, type ParseRowResult, type Row } from "@crochetbuilder/engine";
+import { isJoinFinding, joinFindingMessage } from "./joins.js";
 
 /** German message for a validation finding of `row`. */
 export function findingMessage(finding: Finding, row: Row | undefined): string {
+  // Joins between parts (checked across the document, see joins.ts).
+  if (isJoinFinding(finding)) return joinFindingMessage(finding.join);
   const previous = row?.type === "row" ? "die Vorreihe" : "die Vorrunde";
   const { expected, actual } = finding;
   switch (finding.code) {
