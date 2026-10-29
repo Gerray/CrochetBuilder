@@ -11,7 +11,7 @@
  * around a chain — are not offered (a flat piece starts with a chain).
  */
 
-import type { Row } from "@crochetbuilder/engine";
+import { computeRowStitches, type JoinNotationPart, type Op, type Row } from "@crochetbuilder/engine";
 import {
   chainRow,
   decreaseRound,
@@ -25,7 +25,7 @@ import {
   type RoundSpec,
 } from "./rounds.js";
 
-export type SnippetKind = "ballStart" | "even" | "decreaseTo" | "sphere" | "tube" | "oval";
+export type SnippetKind = "ballStart" | "even" | "decreaseTo" | "sphere" | "tube" | "oval" | "joinLegs";
 
 export interface SnippetParams {
   /** Largest stitch count (ball start, sphere, tube). */
@@ -38,6 +38,11 @@ export interface SnippetParams {
   chain: number;
   /** Increase rounds after the first round around the chain (oval start). */
   increases: number;
+  /** Chains of the bridge between the legs ("Beine verbinden"). */
+  bridge: number;
+  /** The two legs (`LegChoice.key`; empty: the default pair). */
+  legA: string;
+  legB: string;
 }
 
 /** Longest foundation chain of an oval start snippet. */
@@ -61,6 +66,11 @@ export const SNIPPETS: ReadonlyArray<{ kind: SnippetKind; label: string; descrip
     kind: "oval",
     label: "Ovaler Anfang",
     description: "Luftmaschenkette, eine Runde um die Kette herum (3 fM an den Enden), dann Zunahmerunden",
+  },
+  {
+    kind: "joinLegs",
+    label: "Beine verbinden",
+    description: "Luftmaschen-Brücke, dann eine Runde um das erste Bein, die Brücke, das zweite Bein und die andere Seite der Brücke",
   },
 ];
 
@@ -139,10 +149,66 @@ export function ovalStart(chain: number, increases: number): RoundSpec[] {
   return rounds;
 }
 
+/** A leg the "Beine verbinden" snippet can join: a copy of another part, by its last round. */
+export interface LegChoice {
+  /** `partId:copy` (copy 1-based). */
+  key: string;
+  /** "Bein 1", "Bein links". */
+  label: string;
+  part: string;
+  /** 1-based copy; absent for a part that exists once. */
+  copy?: number;
+  /** Stitches of its last stitch row (what the body's round works into). */
+  count: number;
+}
+
+/** Every copy of the other parts that ends in stitches, for "Beine verbinden". */
+export function legChoices(parts: readonly JoinNotationPart[]): LegChoice[] {
+  return parts.flatMap((p) => {
+    const rows = p.rows ?? [];
+    let last: Row | undefined;
+    for (let i = rows.length - 1; i >= 0 && !last; i--) if (rows[i]!.ops.length > 0) last = rows[i];
+    const count = last ? computeRowStitches(last) : 0;
+    if (count <= 0) return [];
+    const q = Math.max(1, Math.min(20, p.quantity ?? 1));
+    const name = p.name?.trim() || p.id;
+    if (q === 1) return [{ key: `${p.id}:1`, label: name, part: p.id, count }];
+    return Array.from({ length: q }, (_, k) => ({ key: `${p.id}:${k + 1}`, label: `${name} ${k + 1}`, part: p.id, copy: k + 1, count }));
+  });
+}
+
+/** The two legs to join by default: copies 1 and 2 of a part ×2, else the first two parts. */
+export function defaultLegs(choices: readonly LegChoice[]): [string, string] | null {
+  const pair = choices.find((c) => c.copy === 1 && choices.some((d) => d.part === c.part && d.copy === 2));
+  if (pair) return [pair.key, `${pair.part}:2`];
+  return choices.length >= 2 ? [choices[0]!.key, choices[1]!.key] : null;
+}
+
+/**
+ * "Beine verbinden": a bridge of `bridge` chains and the round worked around both legs and both
+ * sides of the bridge — `n₁ fM aus Bein 1, b fM, n₂ fM aus Bein 2, b fM` (n₁ + n₂ + 2b).
+ */
+export function joinLegs(a: LegChoice, b: LegChoice, bridge: number): RoundSpec[] {
+  const leg = (c: LegChoice): Op => ({
+    kind: "stitch",
+    code: "SC",
+    count: c.count,
+    from: c.copy === undefined ? { part: c.part } : { part: c.part, copy: c.copy },
+  });
+  const side: Op = { kind: "stitch", code: "SC", count: bridge };
+  return [
+    chainRow(bridge),
+    { ops: [leg(a), side, leg(b), { ...side }], count: a.count + b.count + 2 * bridge, around: true },
+  ];
+}
+
+/** Longest bridge between the legs. */
+export const MAX_BRIDGE = 20;
+
 /** Snippets that begin with a magic ring (not for pieces worked in rows). */
 export const RING_SNIPPETS: readonly SnippetKind[] = ["ballStart", "sphere", "tube"];
 /** Snippets worked in rounds from their start (not for pieces worked in rows). */
-export const ROUND_ONLY_SNIPPETS: readonly SnippetKind[] = [...RING_SNIPPETS, "oval"];
+export const ROUND_ONLY_SNIPPETS: readonly SnippetKind[] = [...RING_SNIPPETS, "oval", "joinLegs"];
 
 /**
  * The rounds of snippet `kind`, or a German reason why it does not fit. `current` is the
@@ -154,19 +220,33 @@ export function snippetRounds(
   params: SnippetParams,
   current: number | undefined,
   type: Row["type"] = "round",
+  parts: readonly JoinNotationPart[] = [],
 ): SnippetResult {
-  if (type !== "row") return roundSnippet(kind, params, current);
+  if (type !== "row") return roundSnippet(kind, params, current, parts);
   if (RING_SNIPPETS.includes(kind)) {
     return fail("Beginnt mit einem Magischen Ring – das Teil wird hier in Reihen gehäkelt und beginnt mit einer Luftmaschenkette.");
   }
   if (kind === "oval") return fail("Ein ovaler Anfang wird in Runden um die Kette herum gehäkelt – hier wird in Reihen gehäkelt.");
-  const result = roundSnippet(kind, params, current);
+  if (kind === "joinLegs") return fail("Die Beine werden in einer Runde um beide Beine verbunden – hier wird in Reihen gehäkelt.");
+  const result = roundSnippet(kind, params, current, parts);
   if (!result.ok) return result;
   return { ok: true, rounds: result.rounds.map((r) => ({ ops: withTurningChain(r.ops), count: r.count })) };
 }
 
-function roundSnippet(kind: SnippetKind, params: SnippetParams, current: number | undefined): SnippetResult {
+function roundSnippet(kind: SnippetKind, params: SnippetParams, current: number | undefined, parts: readonly JoinNotationPart[] = []): SnippetResult {
   switch (kind) {
+    case "joinLegs": {
+      const choices = legChoices(parts);
+      const fallback = defaultLegs(choices);
+      if (!fallback) return fail("Erst die Beine als eigene Teile anlegen (ein Teil ×2 oder zwei Teile) – dann werden sie hier verbunden.");
+      const a = choices.find((c) => c.key === (params.legA || fallback[0]));
+      const b = choices.find((c) => c.key === (params.legB || fallback[1]));
+      if (!a || !b) return fail("Bitte beide Beine wählen.");
+      if (a.key === b.key) return fail("Zwei verschiedene Beine wählen.");
+      if (!Number.isInteger(params.bridge) || params.bridge < 1) return fail("Brücke: mindestens 1 Lm.");
+      if (params.bridge > MAX_BRIDGE) return fail(`Brücke: höchstens ${MAX_BRIDGE} Lm.`);
+      return { ok: true, rounds: joinLegs(a, b, params.bridge) };
+    }
     case "ballStart":
     case "sphere": {
       const problem = sizeProblem(params.max, "Maschenzahl");

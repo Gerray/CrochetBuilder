@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { Row } from "@crochetbuilder/engine";
 import type { RoundSpec } from "../state/rounds.js";
 import {
+  MAX_BRIDGE,
   MAX_OVAL_CHAIN,
   MAX_OVAL_INCREASES,
   MAX_SNIPPET_ROUNDS,
@@ -9,12 +10,15 @@ import {
   RING_SNIPPETS,
   ROUND_ONLY_SNIPPETS,
   SNIPPETS,
+  defaultLegs,
+  legChoices,
   snippetRounds,
   snippetSummary,
   type SnippetKind,
   type SnippetParams,
 } from "../state/snippets.js";
 import { NumberField } from "./fields.js";
+import { useJoinParts } from "./joinParts.js";
 
 interface SnippetButtonProps {
   /** Stitches of the row the snippet is inserted after (undefined: none yet). */
@@ -41,7 +45,10 @@ const notForRows = (kind: SnippetKind) =>
 export function SnippetButton({ currentCount, placeText, type, onInsert }: SnippetButtonProps) {
   const [open, setOpen] = useState(false);
   const [kind, setKind] = useState<SnippetKind>("ballStart");
-  const [params, setParams] = useState<SnippetParams>({ max: 36, rounds: 4, min: 6, chain: 7, increases: 2 });
+  const [params, setParams] = useState<SnippetParams>({ max: 36, rounds: 4, min: 6, chain: 7, increases: 2, bridge: 3, legA: "", legB: "" });
+  const joins = useJoinParts();
+  const legs = useMemo(() => legChoices(joins.parts), [joins.parts]);
+  const legDefaults = defaultLegs(legs);
   const wrap = useRef<HTMLDivElement>(null);
   const button = useRef<HTMLButtonElement>(null);
   const firstKind = useRef<HTMLButtonElement>(null);
@@ -58,7 +65,7 @@ export function SnippetButton({ currentCount, placeText, type, onInsert }: Snipp
     return () => document.removeEventListener("mousedown", onDown);
   }, [open]);
 
-  const result = useMemo(() => snippetRounds(kind, params, currentCount, type), [kind, params, currentCount, type]);
+  const result = useMemo(() => snippetRounds(kind, params, currentCount, type, joins.parts), [kind, params, currentCount, type, joins.parts]);
   const set = (patch: Partial<SnippetParams>) => setParams((p) => ({ ...p, ...patch }));
   const close = () => {
     setOpen(false);
@@ -219,6 +226,38 @@ export function SnippetButton({ currentCount, placeText, type, onInsert }: Snipp
                     onValue={(increases) => increases !== undefined && set({ increases })}
                   />
                   <span className="unit">Zunahmerunden (je 3 Zun an beiden Enden)</span>
+                </label>
+              </>
+            )}
+            {kind === "joinLegs" && legs.length >= 2 && (
+              <>
+                {(["legA", "legB"] as const).map((which, i) => (
+                  <label key={which} className="snippet-param">
+                    <span className="snippet-param-label">{i === 0 ? "Erstes" : "Zweites"}</span>
+                    <select
+                      aria-label={i === 0 ? "Erstes Bein" : "Zweites Bein"}
+                      value={params[which] || legDefaults?.[i] || ""}
+                      onChange={(e) => set({ [which]: e.target.value })}
+                    >
+                      {legs.map((leg) => (
+                        <option key={leg.key} value={leg.key}>
+                          {leg.label} ({leg.count} M)
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                ))}
+                <label className="snippet-param">
+                  <span className="snippet-param-label">Brücke</span>
+                  <NumberField
+                    className="narrow"
+                    aria-label="Luftmaschen der Brücke"
+                    min={1}
+                    max={MAX_BRIDGE}
+                    value={params.bridge}
+                    onValue={(bridge) => bridge !== undefined && set({ bridge })}
+                  />
+                  <span className="unit">Lm zwischen den Beinen</span>
                 </label>
               </>
             )}
