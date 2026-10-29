@@ -262,7 +262,9 @@ Feet, muzzles, hands and fins start oval: a chain, then a round worked **around*
 one side of the chain, around its far end, and back along the other side. `Row.around: true`
 marks such a round. It must come right after a foundation chain (a row of only chains; free
 instructions in between do not count); otherwise validation reports `AROUND_WITHOUT_CHAIN`
-(error) and the round is built as a plain round.
+(error) and the round is built as a plain round. Only a round goes around: on a row
+(`type: "row"`, it turns at its end) `around` is the error `AROUND_ON_ROW`, and the row is
+built as a plain row.
 
 ```json
 [
@@ -285,10 +287,12 @@ instructions in between do not count); otherwise validation reports `AROUND_WITH
 of the chain: 4 sc, 2 sc in the last ch (14). Round 2: inc, 4 sc, 3 inc, 4 sc, 2 inc (20)."
 
 - **What it works into.** Both sides of every chain: up to twice the chain length. A round
-  that works into more is `CONSUMES_OVERFLOW`. Patterns skip the chain next to the hook on
-  both sides and turn around the far end with one stitch group ("3 sc in the last ch"), so a
-  round usually works into 2 × length − 3 places (11 on 7 chains); only fewer than that is
-  `CONSUMES_UNDERFLOW` (its `expected` is that usual number).
+  that works into more is `CONSUMES_OVERFLOW`. Patterns skip the chains next to the hook on
+  both sides — as many as the first stitch is tall: 1 for sc ("in the 2nd ch from the hook"),
+  2 for hdc and dc ("in the 3rd ch"), 3 for tr — and turn around the far end with one stitch
+  group ("3 sc in the last ch"). So a round usually works into 2 × length − 2 × skip − 1
+  places: 2n − 3 for sc (11 on 7 chains), 2n − 5 for hdc and dc, 2n − 7 for tr. Only fewer
+  than that is `CONSUMES_UNDERFLOW` (its `expected` is that usual number).
 - **In the stitch graph** the round walks the chain from the hook end to the far end (side 1)
   and back (side 2): the stitches of side 2 have the same chain nodes as parents, so the
   chain lies inside the oval. With fewer stitches than places, the places are skipped in
