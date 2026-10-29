@@ -156,6 +156,38 @@ export function geometryKey(content: PartContent, gauge: Gauge | undefined, maxS
 }
 
 /**
+ * The view's model of a relaxed graph: its mesh in `style`, closed as the relaxation closed
+ * the piece (`model.finish`), with rows, colours (with a palette) and sizes. Used for a part's
+ * own model and for a part copy of a joint relaxation (Montage).
+ */
+export function previewModelOf(
+  model: Pick<Model, "graph" | "finish" | "size" | "maxDiameter" | "estimated">,
+  style: MeshStyle,
+  content: PartContent,
+  palette?: readonly string[],
+): PreviewModel {
+  const { graph } = model;
+  const mesh = toMesh(graph, style, { smooth: "auto", finish: model.finish });
+  return {
+    style: mesh.style,
+    primitive: mesh.primitive,
+    positions: mesh.positions,
+    normals: mesh.normals,
+    indices: mesh.indices,
+    nodeIndex: mesh.nodeIndex,
+    ...nodeRows(model),
+    ...modelColors(graph, content, palette),
+    size: model.size,
+    maxDiameter: model.maxDiameter,
+    estimated: model.estimated,
+    stitchCount: graph.stitchCount,
+    stitchWidthMm: graph.gauge.stitchWidthMm,
+    yarnDiameterMm: graph.gauge.yarnDiameterMm,
+    ...(style === "stitches" ? { backing: backingOf(graph, model.finish) } : {}),
+  };
+}
+
+/**
  * Computes preview results. Keeps the last relaxed model, so switching only the mesh style
  * does not relax again.
  */
@@ -184,29 +216,7 @@ export class PreviewComputer {
       const { graph } = model;
       if (graph.overBudget) return { id, kind: "overBudget", stitchCount: graph.stitchCount, maxStitches };
       if (graph.nodes.length === 0) return { id, kind: "empty" };
-      // Close the mesh as the relaxation closed the piece (the part's finish, else the guess).
-      const mesh = toMesh(graph, req.style, { smooth: "auto", finish: model.finish });
-      return {
-        id,
-        kind: "model",
-        model: {
-          style: mesh.style,
-          primitive: mesh.primitive,
-          positions: mesh.positions,
-          normals: mesh.normals,
-          indices: mesh.indices,
-          nodeIndex: mesh.nodeIndex,
-          ...nodeRows(model),
-          ...modelColors(graph, req.content, req.palette),
-          size: model.size,
-          maxDiameter: model.maxDiameter,
-          estimated: model.estimated,
-          stitchCount: graph.stitchCount,
-          stitchWidthMm: graph.gauge.stitchWidthMm,
-          yarnDiameterMm: graph.gauge.yarnDiameterMm,
-          ...(req.style === "stitches" ? { backing: backingOf(graph, model.finish) } : {}),
-        },
-      };
+      return { id, kind: "model", model: previewModelOf(model, req.style, req.content, req.palette) };
     } catch (err) {
       this.lastKey = null;
       this.lastModel = null;

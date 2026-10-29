@@ -5,16 +5,18 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { AssemblyScene, MeshStyle } from "@crochetbuilder/engine";
+import { joinedKey, type AssemblyScene, type MeshStyle } from "@crochetbuilder/engine";
 import { sharedAssemblyClient, type AssemblyClient } from "./client.js";
 import { combineScene, type CombinedScene } from "./combine.js";
-import { meshesByPart, type AssemblyDoc, type AssemblyPartResult, type PartMesh } from "./compute.js";
+import { meshesByPart, type AssemblyDoc, type AssemblyPartResult, type JoinedMeshResult, type PartMesh } from "./compute.js";
 
 export interface AssemblySceneState {
   status: "pending" | "scene" | "error";
   scene: AssemblyScene | null;
   /** Per part: the computation's status ("model", "empty", "overBudget", "error", "skipped"). */
   parts: AssemblyPartResult[];
+  /** Copies of parts crocheted together, drawn from the joint relaxation. */
+  joined: JoinedMeshResult[];
   combined: CombinedScene | null;
   /** A computation is scheduled or running: the scene may not match the document yet. */
   computing: boolean;
@@ -41,7 +43,7 @@ export function useAssemblyScene(
   { debounceMs = 120, createClient = sharedAssemblyClient }: AssemblySceneOptions = {},
 ): AssemblySceneState {
   const [state, setState] = useState<Held>({
-    base: { status: "pending", scene: null, parts: [], computing: true, maxTotal: 0 },
+    base: { status: "pending", scene: null, parts: [], joined: [], computing: true, maxTotal: 0 },
     meshes: new Map(),
   });
   // Bumped when a request was superseded by another user of the shared client: ask again.
@@ -94,9 +96,14 @@ export function useAssemblyScene(
           const mesh = byPart[i];
           if (mesh) meshes.set(p.key, mesh);
         });
+        // Copies crocheted onto others: their meshes of the joint relaxation, by mesh key.
+        for (const j of result.joined) {
+          const mesh = j.mesh ?? meshesRef.current.get(j.key);
+          if (mesh) meshes.set(j.key, mesh);
+        }
         meshesRef.current = meshes;
         setState({
-          base: { status: "scene", scene: result.scene, parts: result.parts, computing: client.busy, maxTotal: result.maxTotal },
+          base: { status: "scene", scene: result.scene, parts: result.parts, joined: result.joined, computing: client.busy, maxTotal: result.maxTotal },
           meshes,
         });
       });
@@ -110,10 +117,16 @@ export function useAssemblyScene(
   const { base, meshes } = state;
   const combined = useMemo(() => {
     if (!base.scene) return null;
+    const joined = new Map<string, PartMesh>();
+    for (const j of base.joined) {
+      const mesh = meshes.get(j.key);
+      if (mesh) joined.set(joinedKey(j.part, j.copy), mesh);
+    }
     return combineScene(
       base.scene,
       base.parts.map((p) => meshes.get(p.key)),
+      joined,
     );
-  }, [base.scene, base.parts, meshes]);
+  }, [base.scene, base.parts, base.joined, meshes]);
   return { ...base, combined };
 }

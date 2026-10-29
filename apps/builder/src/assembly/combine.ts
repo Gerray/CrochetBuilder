@@ -9,7 +9,7 @@
  * without the same round of the other. Pure (no Three.js), so it is unit-tested.
  */
 
-import type { AssemblyScene, EyeInstance, MarkInstance, PartInstance, RigidTransform } from "@crochetbuilder/engine";
+import { joinedKey, type AssemblyScene, type EyeInstance, type MarkInstance, type PartInstance, type RigidTransform } from "@crochetbuilder/engine";
 import type { PickResult, ViewMesh } from "../three/mapping.js";
 import type { PartMesh } from "./compute.js";
 
@@ -92,11 +92,17 @@ function transformInto(src: Float32Array, t: RigidTransform, out: Float32Array, 
 
 /**
  * One mesh of all drawn instances of `scene`; `meshes[part]` is the part's mesh (instances
- * of parts without one are left out). Null when nothing can be drawn.
+ * of parts without one are left out). A copy crocheted onto others (`PartInstance.joined`) is
+ * drawn with its mesh of the joint relaxation, `joined.get(joinedKey(part, copy))`. Null when
+ * nothing can be drawn.
  */
-export function combineScene(scene: AssemblyScene, meshes: ReadonlyArray<PartMesh | undefined>): CombinedScene | null {
+export function combineScene(
+  scene: AssemblyScene,
+  meshes: ReadonlyArray<PartMesh | undefined>,
+  joined: ReadonlyMap<string, PartMesh> = new Map(),
+): CombinedScene | null {
   const items = scene.instances
-    .map((inst, i) => ({ inst, i, mesh: meshes[inst.part] }))
+    .map((inst, i) => ({ inst, i, mesh: inst.joined ? joined.get(joinedKey(inst.part, inst.copy)) : meshes[inst.part] }))
     .filter((x): x is { inst: PartInstance; i: number; mesh: PartMesh } => !!x.mesh && x.mesh.model.positions.length > 0);
   if (items.length === 0) return null;
   const first = items[0]!.mesh.model;

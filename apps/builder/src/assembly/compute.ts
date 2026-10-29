@@ -11,23 +11,36 @@
  *   after the view (any style) relaxes nothing again.
  * - A total stitch budget keeps big documents responsive: parts beyond it (in document
  *   order) are left out and reported as `skipped`.
+ * - Parts crocheted together (`StitchOp.from` / `.through`) are relaxed together
+ *   (`buildJoinedModels`, cached by the shapes of all parts): every copy of a joined component
+ *   gets its own mesh (`joined`), with the fabric across the joins (`JoinBridge`) added to the
+ *   copy that works the join, and `composeAssembly` draws them in their common frame.
  */
 
 import {
+  buildJoinedModels,
   buildModel,
   composeAssembly,
   countPartAtoms,
   DEFAULT_MAX_STITCHES,
+  joinedKey,
+  maxRoundDiameter,
+  measure,
   nodeAnchorAngles,
+  partHasJoin,
   type AssemblyScene,
   type BuilderExport,
   type Gauge,
+  type JoinBridge,
+  type JoinedComponent,
+  type JoinedModels,
   type MeshStyle,
   type Model,
 } from "@crochetbuilder/engine";
 import {
   geometryKey,
   PreviewComputer,
+  previewModelOf,
   transferablesOf,
   type PreviewModel,
   type PreviewRequest,
@@ -73,9 +86,28 @@ export interface AssemblyPartResult {
   message?: string;
 }
 
+/** A copy of a part crocheted onto others, relaxed together with them. */
+export interface JoinedMeshResult {
+  part: number;
+  /** 0-based copy. */
+  copy: number;
+  /** Key of its mesh (the shapes of the whole component's parts and the style). */
+  key: string;
+  /** The mesh (in the component's common frame), unless the client said it has it. */
+  mesh?: PartMesh;
+}
+
 /** Worker → main thread. */
 export type AssemblyResult =
-  | { id: number; kind: "scene"; parts: AssemblyPartResult[]; scene: AssemblyScene; maxTotal: number }
+  | {
+      id: number;
+      kind: "scene";
+      parts: AssemblyPartResult[];
+      /** Copies of parts crocheted together (drawn instead of the part's own mesh). */
+      joined: JoinedMeshResult[];
+      scene: AssemblyScene;
+      maxTotal: number;
+    }
   | { id: number; kind: "error"; message: string };
 
 /** Palette ids of the document (the mesh's colour indices refer to them; names and hex do not matter). */
@@ -124,9 +156,71 @@ interface CacheEntry {
   message?: string;
 }
 
+/** A short, stable hash of a string (FNV-1a, hex) for mesh keys. */
+function hash(text: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < text.length; i++) {
+    h ^= text.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return (h >>> 0).toString(16);
+}
+
+/**
+ * The fabric across joins (`JoinBridge`) worked by copy `instance` of its component, appended
+ * to that copy's mesh as extra triangles (each with its own three vertices and face normal);
+ * a vertex of another copy belongs to the joining stitch of its triangle. Point meshes stay.
+ */
+export function withBridge(model: PreviewModel, bridge: JoinBridge, instance: number): PreviewModel {
+  if (model.primitive !== "triangles") return model;
+  const tris: number[] = [];
+  for (let t = 0; t + 2 < bridge.triangles.length; t += 3) {
+    if (bridge.vertices[bridge.triangles[t]!]!.instance === instance) tris.push(t);
+  }
+  if (tris.length === 0) return model;
+  const base = model.positions.length / 3;
+  const extra = 3 * tris.length;
+  const positions = new Float32Array(model.positions.length + 3 * extra);
+  positions.set(model.positions);
+  const normals = new Float32Array(model.normals.length + 3 * extra);
+  normals.set(model.normals);
+  const nodeIndex = new Uint32Array(model.nodeIndex.length + extra);
+  nodeIndex.set(model.nodeIndex);
+  const indices = new Uint32Array(model.indices.length + extra);
+  indices.set(model.indices);
+  let v = base;
+  let k = model.indices.length;
+  const p = bridge.positions;
+  for (const t of tris) {
+    const corners = [bridge.triangles[t]!, bridge.triangles[t + 1]!, bridge.triangles[t + 2]!];
+    const at = (c: number, i: number) => p[3 * c + i]!;
+    const [a, b, c] = corners as [number, number, number];
+    const ux = at(b, 0) - at(a, 0), uy = at(b, 1) - at(a, 1), uz = at(b, 2) - at(a, 2);
+    const wx = at(c, 0) - at(a, 0), wy = at(c, 1) - at(a, 1), wz = at(c, 2) - at(a, 2);
+    let nx = uy * wz - uz * wy, ny = uz * wx - ux * wz, nz = ux * wy - uy * wx;
+    const l = Math.hypot(nx, ny, nz) || 1;
+    nx /= l;
+    ny /= l;
+    nz /= l;
+    const own = bridge.vertices[a]!.node;
+    for (const corner of corners) {
+      for (let i = 0; i < 3; i++) positions[3 * v + i] = at(corner, i);
+      normals[3 * v] = nx;
+      normals[3 * v + 1] = ny;
+      normals[3 * v + 2] = nz;
+      const vert = bridge.vertices[corner]!;
+      nodeIndex[v] = vert.instance === instance ? vert.node : own;
+      indices[k++] = v++;
+    }
+  }
+  return { ...model, positions, normals, nodeIndex, indices };
+}
+
 export class AssemblyComputer {
   /** Per shape key: the part's computer and its model (the keys of the last request). */
   private cache = new Map<string, CacheEntry>();
+  /** The last joint relaxation, by the shapes of all parts. */
+  private joinedCache: { key: string; models: JoinedModels } | null = null;
 
   constructor(
     private readonly build: typeof buildModel = buildModel,
@@ -188,14 +282,74 @@ export class AssemblyComputer {
         parts.push(out);
       });
       this.cache = next;
+      const { components, joined } = this.joinedMeshes(doc, style, maxStitches, parts, have);
       // The toy faces the viewer (the default camera looks from +Z).
-      const scene = composeAssembly(doc, models, { faceFront: true });
-      return { id, kind: "scene", parts, scene, maxTotal: this.maxTotal };
+      const scene = composeAssembly(doc, models, { faceFront: true, joined: components });
+      return { id, kind: "scene", parts, joined, scene, maxTotal: this.maxTotal };
     } catch (err) {
       this.cache.clear();
+      this.joinedCache = null;
       return { id, kind: "error", message: err instanceof Error ? err.message : String(err) };
     }
   }
+
+  /**
+   * Joint relaxation of the parts crocheted together (only components whose parts all have a
+   * model in this Montage) and the meshes of their copies (only those the client lacks).
+   */
+  private joinedMeshes(
+    doc: AssemblyDoc,
+    style: MeshStyle,
+    maxStitches: number,
+    parts: readonly AssemblyPartResult[],
+    have: ReadonlySet<string>,
+  ): { components: JoinedComponent[]; joined: JoinedMeshResult[] } {
+    if (!doc.parts.some((p) => partHasJoin(p.content))) {
+      this.joinedCache = null;
+      return { components: [], joined: [] };
+    }
+    const shapes = JSON.stringify([
+      doc.parts.map((p, i) => [p.id ?? null, p.quantity, shapeKey(doc, i, maxStitches)]),
+    ]);
+    const key = hash(shapes);
+    if (this.joinedCache?.key !== key) {
+      this.joinedCache = { key, models: buildJoinedModels(doc, doc.overview.gauge, { maxStitches }) };
+    }
+    const ok = (part: number) => parts[part]?.status === "model";
+    const components = this.joinedCache.models.components.filter((c) => c.parts.every((p) => ok(p.part)));
+    const palette = paletteIds(doc);
+    const joined: JoinedMeshResult[] = [];
+    for (const c of components) {
+      c.parts.forEach((p, instance) => {
+        const meshKey = `${style}|joined|${key}|${p.part}:${p.copy}`;
+        const out: JoinedMeshResult = { part: p.part, copy: p.copy, key: meshKey };
+        if (!have.has(meshKey)) {
+          const model = previewModelOf(
+            { graph: p.graph, finish: p.finish, size: measure(p.graph), maxDiameter: maxRoundDiameter(p.graph), estimated: p.graph.estimated },
+            style,
+            doc.parts[p.part]!.content,
+            palette.length > 0 ? palette : undefined,
+          );
+          out.mesh = { key: meshKey, model: withBridge(model, c.bridge, instance), nodeAngle: Float32Array.from(nodeAnchorAngles(p.graph)) };
+        }
+        joined.push(out);
+      });
+    }
+    return { components, joined };
+  }
+}
+
+/** Meshes of the joined part copies of a result by `joinedKey(part, copy)` (held ones by key). */
+export function joinedMeshesOf(
+  result: Extract<AssemblyResult, { kind: "scene" }>,
+  held: ReadonlyMap<string, PartMesh> = new Map(),
+): Map<string, PartMesh> {
+  const out = new Map<string, PartMesh>();
+  for (const j of result.joined) {
+    const mesh = j.mesh ?? held.get(j.key);
+    if (mesh) out.set(joinedKey(j.part, j.copy), mesh);
+  }
+  return out;
 }
 
 /** The part meshes of a result by part, also for parts whose mesh came with an earlier part. */
@@ -209,9 +363,10 @@ export function meshesByPart(result: Extract<AssemblyResult, { kind: "scene" }>,
 export function assemblyTransferables(result: AssemblyResult): ArrayBuffer[] {
   if (result.kind !== "scene") return [];
   const out: ArrayBuffer[] = [];
-  for (const p of result.parts) {
-    if (!p.mesh) continue;
-    out.push(...transferablesOf({ id: 0, kind: "model", model: p.mesh.model }), p.mesh.nodeAngle.buffer as ArrayBuffer);
+  const meshes = [...result.parts.map((p) => p.mesh), ...result.joined.map((j) => j.mesh)];
+  for (const mesh of meshes) {
+    if (!mesh) continue;
+    out.push(...transferablesOf({ id: 0, kind: "model", model: mesh.model }), mesh.nodeAngle.buffer as ArrayBuffer);
   }
   return out;
 }

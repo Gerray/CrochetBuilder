@@ -251,16 +251,16 @@ export interface AssembledModel {
 
 /**
  * The assembled toy from an assembly result: every drawn part (also parts sharing a mesh with
- * an earlier part), eyes and size; null when nothing is placed.
+ * an earlier part, copies crocheted onto others), eyes and size; null when nothing is placed.
  */
 export async function assembledFromResult(result: AssemblyResult | null): Promise<AssembledModel | null> {
-  if (result?.kind !== "scene" || !result.scene.instances.some((i) => i.placement)) return null;
-  const [{ combineScene, sceneSize }, { sceneSpheres }, { meshesByPart }] = await Promise.all([
+  if (result?.kind !== "scene" || !result.scene.instances.some((i) => i.placement || i.joined)) return null;
+  const [{ combineScene, sceneSize }, { sceneSpheres }, { meshesByPart, joinedMeshesOf }] = await Promise.all([
     import("../assembly/combine.js"),
     import("../assembly/spheres.js"),
     import("../assembly/compute.js"),
   ]);
-  const combined = combineScene(result.scene, meshesByPart(result));
+  const combined = combineScene(result.scene, meshesByPart(result), joinedMeshesOf(result));
   const size = combined ? sceneSize(combined) : null;
   return combined && size ? { mesh: combined.mesh, spheres: sceneSpheres(combined), size } : null;
 }
