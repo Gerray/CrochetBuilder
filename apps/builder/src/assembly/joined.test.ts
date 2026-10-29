@@ -28,6 +28,27 @@ function legsDoc(): AssemblyDoc {
   };
 }
 
+/** Body and two legs of about 1,500 stitches in all: legs of 24 stitches, body of 54. */
+function bigLegsDoc(): AssemblyDoc {
+  const rep = (times: number, ops: Op[]): Op => ({ kind: "repeat", times, ops });
+  const leg: Row[] = [rnd("l1", [st("MR", 1), st("SC", 6)], 6)];
+  for (let k = 1; k <= 3; k++) leg.push(rnd(`l${k + 1}`, [rep(6, [...(k > 1 ? [st("SC", k - 1)] : []), st("INC", 1)])], 6 * (k + 1)));
+  for (let e = 1; e <= 12; e++) leg.push(rnd(`le${e}`, [st("SC", 24)], 24));
+  const body: Row[] = [
+    { id: "br", type: "round", ops: [st("CH", 3)], stitchCountTarget: 0 },
+    rnd("b1", [st("SC", 24, { from: { part: "leg", copy: 1 } }), st("SC", 3), st("SC", 24, { from: { part: "leg", copy: 2 } }), st("SC", 3)], 54, { around: true }),
+  ];
+  for (let e = 1; e <= 12; e++) body.push(rnd(`be${e}`, [st("SC", 54)], 54));
+  for (let k = 8; k >= 1; k--) body.push(rnd(`bd${k}`, [rep(6, [...(k > 1 ? [st("SC", k - 1)] : []), st("DEC", 1)])], 6 * k));
+  return {
+    overview: {},
+    parts: [
+      { id: "leg", name: "Bein", quantity: 2, content: { schemaVersion: 2, rows: leg } },
+      { id: "body", name: "Körper", quantity: 1, content: { schemaVersion: 2, rows: body } },
+    ],
+  };
+}
+
 function scene(result: AssemblyResult) {
   if (result.kind !== "scene") throw new Error(result.message);
   return result;
@@ -68,6 +89,24 @@ describe("Montage of parts crocheted together", () => {
     expect(body.indices.length).toBeGreaterThan(own.indices.length);
     // Every added vertex belongs to a stitch of the body.
     expect(Math.max(...body.nodeIndex)).toBeLessThan(body.nodeRow.length);
+  });
+
+  it("computes a body with two legs of ~1,500 stitches within the budget (relaxation + meshes)", () => {
+    const big = bigLegsDoc();
+    const run = () => {
+      const t0 = performance.now();
+      const res = scene(new AssemblyComputer().compute({ id: 1, doc: big, style: "surface", have: [] }));
+      return { res, ms: performance.now() - t0 };
+    };
+    run(); // warm-up (JIT)
+    const runs = [run(), run(), run()];
+    const stitches = runs[0]!.res.joined.reduce((s, j) => s + j.mesh!.model.nodeRow.length, 0);
+    expect(stitches).toBeGreaterThan(1450);
+    expect(stitches).toBeLessThan(1700);
+    const ms = runs.map((r) => r.ms).sort((a, b) => a - b);
+    console.info(`Montage, body + 2 legs (${stitches} stitches): median ${ms[1]!.toFixed(0)} ms`);
+    // Budgets: relaxation of ~1,500 stitches < 1 s, meshing < 300 ms.
+    expect(ms[1]!).toBeLessThan(1300);
   });
 
   it("sends joined meshes only once, and again after a change of the joined parts", () => {

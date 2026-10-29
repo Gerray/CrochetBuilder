@@ -11,7 +11,7 @@ import { gathersByDefault, joinCapacity, planJoins } from "./join.js";
 import { buildJoinedModels, type JoinedComponent } from "./joined.js";
 import { buildModel } from "./model.js";
 import { relax } from "./relax.js";
-import { PartContentSchema, StitchOpSchema, usesFormatV2 } from "./schema.js";
+import { PartContentSchema, StitchOpSchema, usesFormatV2, type Op, type PartContent, type Row } from "./schema.js";
 import { anchorsConsumed, checkConsumes, validate } from "./validate.js";
 import { summarizeTmcLosses, TmcDraftSchema, toTellmeCrochetDraft } from "./tellmecrochet.js";
 import { armDoc, content, legsDoc, pumpkinDoc, rep, rnd, sealDoc, st, tube } from "./test/join-fixtures.js";
@@ -362,6 +362,91 @@ describe("assembly of joined parts", () => {
     const bodyGraph = joined[0]!.parts.find((p) => p.part === 1)!.graph;
     const headBase = applyTransform(head.transform, centroid(rowPoints(models[2]!.graph, "hd")));
     expect(headBase[1]).toBeGreaterThan(yRange(bodyGraph).max - 2 * bodyGraph.gauge.stitchHeightMm);
+  });
+});
+
+describe("a part both crocheted on and sewn on", () => {
+  it("gets a finding, and the join decides where it sits", () => {
+    // Sewn on alone, the leg would sit at the side of the body, at the height of round be3.
+    const doc = legsDoc();
+    doc.assembly = [{ id: "side", kind: "attach", part: "leg", target: "body", row: "be3", angle: 90 }];
+    expect(validateExport(doc).filter((f) => f.code === "JOINED_AND_PLACED")).toEqual([
+      expect.objectContaining({ severity: "warning", placementId: "side", partIndex: 0 }),
+    ]);
+    const models = doc.parts.map((p) => buildModel(p.content));
+    const legCentroid = (scene: ReturnType<typeof composeAssembly>, graphOf: (copy: number) => StitchGraph) =>
+      scene.instances
+        .filter((i) => i.part === 0)
+        .map((i) => centroid(allPoints(graphOf(i.copy)).map((p) => applyTransform(i.transform, p))));
+
+    // Control: without the joint relaxation the placement is used.
+    const sewn = composeAssembly(doc, models);
+    expect(sewn.findings.map((f) => f.code)).not.toContain("JOINED");
+    const be3 = centroid(rowPoints(models[1]!.graph, "be3"));
+    const sewnLeg = legCentroid(sewn, () => models[0]!.graph)[0]!;
+    const h = models[1]!.graph.gauge.stitchHeightMm;
+    expect(Math.abs(sewnLeg[1] - be3[1])).toBeLessThan(3 * h);
+
+    // With it, the join wins: the placement is dropped and both legs hang under the body.
+    const joined = buildJoinedModels(doc).components;
+    const c = joined[0]!;
+    const scene = composeAssembly(doc, models, { joined });
+    expect(scene.findings).toEqual([expect.objectContaining({ code: "JOINED", placementId: "side", part: 0 })]);
+    const bodyAt = scene.instances.find((i) => i.part === 1)!.transform;
+    const body = allPoints(only(c, 1).graph).map((p) => applyTransform(bodyAt, p));
+    const joinedBe3 = centroid(rowPoints(only(c, 1).graph, "be3").map((p) => applyTransform(bodyAt, p)));
+    const legs = legCentroid(scene, (copy) => only(c, 0, copy).graph);
+    expect(legs).toHaveLength(2);
+    for (const leg of legs) {
+      expect(leg[1]).toBeLessThan(Math.min(...body.map((p) => p[1])));
+      expect(leg[1]).toBeLessThan(joinedBe3[1] - 5 * h);
+    }
+  });
+});
+
+describe("parts without joins", () => {
+  // Measures of `buildModel` taken from the engine before joins existed (main at bedcb4f,
+  // positions were bit-identical): joins must not change a part that has none.
+  const grp = (ops: Op[]): Op => ({ kind: "group", ops }) as Op;
+  const CASES: Array<[string, PartContent, { nodes: number; extent: V; centroid: V; meanRadius: number }]> = [
+    ["leg", legsDoc().parts[0]!.content, { nodes: 97, extent: [28.390525, 23.286201, 28.807711], centroid: [-0.004308, 12.134203, 0.007136], meanRadius: 15.590301 }],
+    ["pumpkin", pumpkinDoc().parts[0]!.content, { nodes: 319, extent: [59.368693, 48.678938, 58.805686], centroid: [-0.010617, 25.756845, 0.000782], meanRadius: 28.762161 }],
+    ["seal", sealDoc().parts[0]!.content, { nodes: 229, extent: [38.068574, 41.774665, 38.162151], centroid: [-0.006956, 21.14211, 0.007381], meanRadius: 21.318249 }],
+    ["arm (flat finish)", armDoc().parts[1]!.content, { nodes: 53, extent: [14.353178, 29.120494, 12.498821], centroid: [0.004829, 15.350077, -0.020295], meanRadius: 10.753767 }],
+    ["tube", content(tube("t", 30, 5)), { nodes: 217, extent: [47.555028, 30.549732, 47.760417], centroid: [-0.006042, 15.207584, -0.00362], meanRadius: 24.223876 }],
+    [
+      "oval",
+      content([
+        { id: "c", type: "round", ops: [st("CH", 7)], stitchCountTarget: 0 },
+        rnd("r1", [st("SC"), st("SC", 4), grp([st("SC", 3)]), st("SC", 4), st("INC")], 14, { around: true }),
+        rnd("r2", [st("INC"), st("SC", 4), st("INC", 3), st("SC", 4), st("INC", 2)], 20),
+        rnd("r3", [st("SC", 20)], 20),
+      ]),
+      { nodes: 54, extent: [37.096414, 10.540631, 23.39776], centroid: [0.061326, 6.464418, 0.023993], meanRadius: 12.843286 },
+    ],
+    [
+      "stuffed, flat finish",
+      content([...tube("f", 24, 3), rnd("fd", [rep(6, [st("SC", 2), st("DEC")])], 18)], { finish: "flat", stuffing: "firm" }),
+      { nodes: 133, extent: [49.927047, 27.594966, 31.038446], centroid: [0.017321, 16.036245, -0.011374], meanRadius: 17.996753 },
+    ],
+    [
+      "rows",
+      content([{ id: "ch", type: "row", ops: [st("CH", 13)], stitchCountTarget: 0 }, ...[1, 2, 3, 4, 5, 6].map((k): Row => ({ id: `w${k}`, type: "row", ops: [st("SC", 12)], stitchCountTarget: 12 }))]),
+      { nodes: 85, extent: [60.023725, 30.093762, 0.213464], centroid: [-2.100268, 14.871739, -0.000711], meanRadius: 18.678274 },
+    ],
+  ];
+
+  it.each(CASES)("keeps the shape of %s as before joins existed", (_, c, expected) => {
+    const g = buildModel(c).graph;
+    const ps = allPoints(g);
+    const mid = centroid(ps);
+    const extent = [0, 1, 2].map((k) => Math.max(...ps.map((p) => p[k]!)) - Math.min(...ps.map((p) => p[k]!)));
+    expect(g.nodes.length).toBe(expected.nodes);
+    for (let k = 0; k < 3; k++) {
+      expect(extent[k]).toBeCloseTo(expected.extent[k]!, 5);
+      expect(mid[k]).toBeCloseTo(expected.centroid[k]!, 5);
+    }
+    expect(ps.reduce((s, p) => s + dist(p, mid), 0) / ps.length).toBeCloseTo(expected.meanRadius, 5);
   });
 });
 
