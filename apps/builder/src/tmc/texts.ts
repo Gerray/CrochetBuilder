@@ -4,6 +4,7 @@ import type { TmcImpact, TmcErrorCode } from "./api.js";
 
 export const UPLOAD_TITLE = "Zu TellmeCrochet hochladen";
 export const PRIVACY_URL = "https://tellmecrochet.vercel.app/datenschutz";
+export const IMPRINT_URL = "https://tellmecrochet.vercel.app/impressum";
 export const APP_STORE_URL = "https://play.google.com/store/apps/details?id=de.tellmecrochet.app";
 
 export const SELF_CREATED_LABEL = "Ich habe diese Anleitung selbst entworfen";
@@ -11,7 +12,9 @@ export const IMPORTED_LABEL = "Nicht selbst entworfen, aber ich darf sie so verw
 export const IMPORTED_HINT = "Bleibt privat und kann nicht verkauft werden";
 
 export const SHARED_LINE = "Geteilt oder verkauft: Käufer behalten ihre Version, bis du teilst und sie selbst aktualisieren.";
-export const CHANGED_IN_APP_LINE = "Seit deinem letzten Upload wurde sie in der App geändert.";
+/** Says only what the check knows: it compares rows. Parts renamed or moved in the app do not show here. */
+export const CHANGED_IN_APP_LINE = "Seit deinem letzten Upload wurden in der App Reihen geändert.";
+export const UPDATE_SOURCE_LINE = "Name und Teile des Projekts kommen dabei aus dem Builder, auch wenn sie in der App umbenannt oder verschoben wurden.";
 export const CHANGES_LOST_LINE = "Die Änderungen aus der App gehen dabei verloren";
 export const SHARED_VERSION_KEPT_LINE = "Die zuletzt geteilte Version bleibt erhalten";
 
@@ -22,11 +25,6 @@ export const SHARE_QUESTION =
   "Das ist eine geteilte Anleitung. Möchtest du die Bearbeitung jetzt teilen? Danach kannst du nicht mehr zur ursprünglichen Version zurückkehren.";
 
 export const NEW_ACCOUNT_LINE = "Mit dieser Google-Adresse gab es noch kein Konto, deshalb wurde gerade ein neues TellmeCrochet-Konto angelegt.";
-/**
- * The legal line for an account made by signing in. PLACEHOLDER: the exact wording is still to
- * come from the project lead; replace this sentence when it does. `PRIVACY_URL` stays its link.
- */
-export const SIGN_UP_LEGAL_LINE = "Für dein Konto gelten die Datenschutzhinweise von TellmeCrochet.";
 
 export const NO_ACCOUNT_LINE = "Für diese Adresse gibt es noch kein TellmeCrochet-Konto. Installiere zuerst die App und lege dort dein Konto an.";
 export const EXPIRED_LINE = "Deine Anmeldung ist abgelaufen. Bitte melde dich neu an.";
@@ -40,9 +38,11 @@ const plural = (n: number, one: string, many: string) => (n === 1 ? `1 ${one}` :
 /** "3 Markierungen entfallen", one line per thing that changes; empty when nothing does. */
 export function impactLines(impact: TmcImpact): string[] {
   const out: string[] = [];
-  if (impact.progressMoved > 0) out.push(plural(impact.progressMoved, "Fortschritt wird verschoben", "Fortschritte werden verschoben"));
+  if (impact.progressMoved > 0) {
+    out.push(plural(impact.progressMoved, "Fortschrittsposition wird verschoben oder gekürzt", "Fortschrittspositionen werden verschoben oder gekürzt"));
+  }
   if (impact.markersDropped > 0) out.push(plural(impact.markersDropped, "Markierung entfällt", "Markierungen entfallen"));
-  if (impact.partsDropped > 0) out.push(plural(impact.partsDropped, "Teil entfällt", "Teile entfallen"));
+  if (impact.partsDropped > 0) out.push(`Bei ${plural(impact.partsDropped, "Teil", "Teilen")} geht der Fortschritt verloren`);
   return out;
 }
 
@@ -57,15 +57,15 @@ export function waitText(seconds: number): string {
 export function errorLine(code: TmcErrorCode, retryAfterSeconds?: number): string {
   switch (code) {
     case "invalid":
-      return "TellmeCrochet hat die Anleitung nicht angenommen: Format oder Maschenzahlen stimmen nicht.";
+      return "TellmeCrochet hat die Anleitung nicht angenommen, weil etwas an ihrem Aufbau nicht passt, zum Beispiel Maschenzahlen. Du kannst sie als Datei speichern.";
     case "unauthorized":
       return EXPIRED_LINE;
     case "forbidden":
       return "Dieses Projekt gehört nicht zu deinem Account.";
     case "not-found":
-      return "Dieses Projekt gibt es in deinem Account nicht mehr.";
+      return "Dieses Projekt gibt es in deinem Account nicht mehr. Du kannst die Anleitung als neues Projekt anlegen.";
     case "conflict":
-      return "Die Anleitung wurde gerade in der App geändert. Prüfe die Angaben hier noch einmal.";
+      return "Das Projekt hat sich gerade geändert. Prüfe die Angaben hier noch einmal.";
     case "key-in-use":
       return "Für diese Anleitung gibt es schon ein Projekt in deinem Account. Wähle es aus oder lege ein neues an.";
     case "too-large":
@@ -77,7 +77,7 @@ export function errorLine(code: TmcErrorCode, retryAfterSeconds?: number): strin
     case "network":
       return "Keine Verbindung zu TellmeCrochet. Prüfe deine Internetverbindung und versuche es noch einmal.";
     case "server":
-      return "Bei TellmeCrochet ist gerade etwas schiefgelaufen. Versuche es gleich noch einmal.";
+      return "Bei TellmeCrochet ist gerade etwas schiefgelaufen. Versuche es später noch einmal.";
   }
 }
 

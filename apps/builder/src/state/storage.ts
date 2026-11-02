@@ -41,7 +41,8 @@ export interface StoredState {
 
 /** The fields a stored state keeps its project link in, when it has one. */
 function linkFields(link: UploadLink | null | undefined): Pick<StoredState, "builderKey" | "lastUpload"> {
-  return link ? { builderKey: link.builderKey, lastUpload: link.lastUpload } : {};
+  if (!link) return {};
+  return { builderKey: link.builderKey, ...(link.lastUpload ? { lastUpload: link.lastUpload } : {}) };
 }
 
 /** The project link of a stored state. */

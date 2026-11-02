@@ -123,18 +123,39 @@ export function fakeTmcServices(options: { session?: TmcSession | null; projects
     next(action: Action, response: FakeResponse | (() => Promise<FakeResponse>)) {
       queued.set(action, [...(queued.get(action) ?? []), response]);
     },
-    /** What `check` says about a project, until changed again. */
-    checkResult: { changedInApp: false, impact: { progressMoved: 0, markersDropped: 0, partsDropped: 0 }, baseToken: "token-1" },
+    /** What `check` says about a project, until changed again. Each check has its own token. */
+    checkResult: { changedInApp: false, impact: { progressMoved: 0, markersDropped: 0, partsDropped: 0 } },
+  };
+
+  /** The endpoint is strict: unknown fields and bad part keys are a 400. */
+  const refused = (req: FakeRequest): boolean => {
+    const payload = ["envelope", "partKeys"];
+    const fields: Record<Action, string[]> = {
+      list: ["action"],
+      check: ["action", "patternId", ...payload],
+      create: ["action", "builderKey", "origin", ...payload],
+      update: ["action", "patternId", "baseToken", ...payload],
+      share: ["action", "patternId"],
+    };
+    if (Object.keys(req).sort().join() !== [...fields[req.action]].sort().join()) return true;
+    if (!req.partKeys) return false;
+    const keys = req.partKeys;
+    return (
+      keys.length !== req.envelope?.draft.parts.length || new Set(keys).size !== keys.length || keys.some((k) => k === "" || k.length > 200)
+    );
   };
 
   const answer = (req: FakeRequest): FakeResponse => {
+    if (refused(req)) return ERROR(400, "invalid");
     const find = (id?: string) => projects.find((p) => p.patternId === id);
     switch (req.action) {
       case "list":
         return { status: 200, body: { projects } };
       case "check": {
         const found = find(req.patternId);
-        return found ? { status: 200, body: { target: found, ...server.checkResult } } : ERROR(404, "not-found");
+        return found
+          ? { status: 200, body: { target: found, ...server.checkResult, baseToken: `token-${server.of("check").length}` } }
+          : ERROR(404, "not-found");
       }
       case "create":
         return {

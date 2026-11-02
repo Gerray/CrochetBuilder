@@ -17,6 +17,8 @@ import { withAllPartIds } from "../state/assembly.js";
 import type { BuilderDoc } from "../state/document.js";
 import { downloadBlob, exportFileName, prepareExport } from "./prepare.js";
 
+export const EMPTY_PATTERN_LINE = "Die Anleitung hat noch keine Reihen. Schreibe zuerst mindestens eine Reihe, dann kannst du sie hochladen.";
+
 export interface TmcHandoff {
   envelope: TmcEnvelope;
   /** What arrives differently in TellmeCrochet, in short German sentences (may be empty). */
@@ -35,12 +37,26 @@ export function tmcHandoff(exp: BuilderExport, originHint: TmcOriginHint): TmcHa
 }
 
 /**
+ * Why `doc` cannot be uploaded although it can be exported (German), or null. The endpoint refuses
+ * a pattern without any row. A part whose name is only spaces cannot get there: it arrives as
+ * "Teil n".
+ */
+export function uploadBlocker(doc: BuilderDoc): string | null {
+  const hasRow = doc.parts.some((part) => part.content.rows.some((r) => r.ops.length > 0 || r.note?.trim() || r.label?.trim()));
+  return hasRow ? null : EMPTY_PATTERN_LINE;
+}
+
+/**
  * What an upload of `doc` sends. Parts count with the ids they get at their first upload, so the
- * keys are the same now and later, however they are moved or renamed. Throws like `prepareExport`.
+ * keys are the same now and later, however they are moved or renamed. Without materials the list
+ * is left out, so an update does not wipe the ones added in the app. Throws like `prepareExport`.
  */
 export function tmcUpload(doc: BuilderDoc, originHint: TmcOriginHint): TmcUpload {
   const exp = prepareExport(withAllPartIds(doc));
-  return { ...tmcHandoff(exp, originHint), partKeys: tmcPartKeys(exp) };
+  const handoff = tmcHandoff(exp, originHint);
+  const { materials, ...draft } = handoff.envelope.draft;
+  const envelope = materials?.length ? handoff.envelope : { ...handoff.envelope, draft };
+  return { ...handoff, envelope, partKeys: tmcPartKeys(exp) };
 }
 
 /** File name of the saved hand-off: "amigurumi-kugel.tellmecrochet.json". */

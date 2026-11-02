@@ -10,6 +10,7 @@ import {
   gaugeText,
   summarizeTmcLosses,
   TMC_ASSEMBLY_PART_KEY,
+  TMC_PART_KEY_MAX,
   tmcPartKeys,
   TmcDraftSchema,
   TmcEnvelopeSchema,
@@ -567,6 +568,19 @@ describe("tmcPartKeys", () => {
     expect(tmcPartKeys(doc([v1, v1]))).toEqual(["teil-1", "teil-2"]);
     expect(tmcPartKeys(doc([part(SPHERE), part(SPHERE, { id: "teil-1" })]))).toEqual(["teil-1-2", "teil-1"]);
     expect(tmcPartKeys(doc([part(SPHERE, { id: "ohr" }), part(SPHERE, { id: "ohr" })]))).toEqual(["ohr", "ohr-2"]);
+  });
+
+  it("are never blank and never too long, and two long ids stay apart", () => {
+    const long = "x".repeat(TMC_PART_KEY_MAX + 50);
+    const keys = tmcPartKeys(doc([part(SPHERE, { id: long }), part(SPHERE, { id: `${long}y` }), part(SPHERE, { id: "   " })]));
+    expect(new Set(keys).size).toBe(3);
+    for (const key of keys) {
+      expect(key.trim().length).toBeGreaterThan(0);
+      expect(key.length).toBeLessThanOrEqual(TMC_PART_KEY_MAX);
+    }
+    expect(keys[2]).toBe("teil-3");
+    const exact = "y".repeat(TMC_PART_KEY_MAX);
+    expect(tmcPartKeys(doc([part(SPHERE, { id: exact })]))).toEqual([exact]);
   });
 
   it("an export without parts has the key of the draft's placeholder part", () => {

@@ -20,7 +20,7 @@ import {
 } from "./import.js";
 import { exportFileName, ExportValidationError, isDocumentEmpty, prepareExport, renderedLines } from "./prepare.js";
 import { builderBaseUrl, embedSnippet, shareLinks, viewerBaseUrl } from "./share.js";
-import { tmcFileName, tmcHandoff, tmcUpload } from "./tmc.js";
+import { EMPTY_PATTERN_LINE, tmcFileName, tmcHandoff, tmcUpload, uploadBlocker } from "./tmc.js";
 
 function ids(prefix = "row") {
   let n = 0;
@@ -201,6 +201,31 @@ describe("share links", () => {
     const keys = tmcUpload(moved, "imported").partKeys;
     expect(keys).toEqual(["ball", "ohr"]);
     expect(tmcUpload({ ...moved, parts: [...moved.parts].reverse() }, "imported").partKeys).toEqual(["ohr", "ball"]);
+  });
+
+  it("an upload never carries a blank part name, and empty materials stay out of it", () => {
+    const doc = ball();
+    doc.parts[0]!.name = "   ";
+    doc.overview.materials = [];
+    delete doc.overview.colors;
+    const { envelope } = tmcUpload(doc, "imported");
+    expect(envelope.draft.parts[0]!.name).toBe("Teil 1");
+    expect(envelope.draft).not.toHaveProperty("materials");
+    expect(TmcEnvelopeSchema.safeParse(envelope).success).toBe(true);
+    // A list with something in it goes along.
+    expect(tmcUpload(ball(), "imported").envelope.draft.materials?.length).toBeGreaterThan(0);
+  });
+
+  it("a pattern without any row cannot be uploaded; a row with stitches or text is enough", () => {
+    const empty = emptyDocument("a");
+    expect(uploadBlocker(empty)).toBe(EMPTY_PATTERN_LINE);
+    empty.title = "Nur ein Titel";
+    empty.overview.notes = "Nur Hinweise";
+    expect(uploadBlocker(empty)).toBe(EMPTY_PATTERN_LINE);
+    expect(uploadBlocker(ball())).toBeNull();
+    const text = emptyDocument("b");
+    text.parts[0]!.content.rows[0]!.note = "Faden abschneiden";
+    expect(uploadBlocker(text)).toBeNull();
   });
 
   it("the ball demo's link stays far below the length warning", async () => {

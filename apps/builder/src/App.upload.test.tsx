@@ -8,7 +8,7 @@ import { LS_KEY, resetStorageConnection } from "./state/storage.js";
 import { fakeTmcServices, MAIL, NOW, sessionFor, target } from "./test/fakeTmc.js";
 import { markRedirect } from "./tmc/redirect.js";
 import { TMC_STORAGE_KEY } from "./tmc/client.js";
-import { GOOGLE_FAILED_LINE, NEW_ACCOUNT_LINE, SELF_CREATED_LABEL, SIGN_UP_LEGAL_LINE, SUCCESS_LINE } from "./tmc/texts.js";
+import { GOOGLE_FAILED_LINE, NEW_ACCOUNT_LINE, SELF_CREATED_LABEL, SUCCESS_LINE } from "./tmc/texts.js";
 
 vi.mock("./three/modelView.js", async () => (await import("./test/fakeModelView.js")).fakeModule);
 
@@ -69,6 +69,7 @@ describe("the upload in the builder", () => {
   it("with configuration the file can be saved all the same, and nothing loads before it is needed", async () => {
     const fake = fakeTmcServices({ session: null });
     await renderApp(fake);
+    await loadBall();
     const panel = openMenu();
     expect(within(panel).getByRole("button", { name: "Für TellmeCrochet speichern (.json)" })).toBeTruthy();
     expect(fake.loadClient).not.toHaveBeenCalled();
@@ -174,11 +175,30 @@ describe("the upload in the builder", () => {
     expect(fake.server.of("list")).toHaveLength(2);
   });
 
+  it("a project deleted in the app: key stays stored, the last upload goes, a new project takes the key", async () => {
+    const fake = fakeTmcServices();
+    await renderApp(fake);
+    await loadBall();
+    await uploadNew();
+    await waitFor(() => expect(stored().builderKey).toBe("new-key-1"));
+    // "pattern-new" exists in nobody's list here: the app has deleted it.
+    const dialog = openUpload();
+    const create = await within(dialog).findByRole("button", { name: "Als neues Projekt anlegen" });
+    await waitFor(() => expect(stored()).not.toHaveProperty("lastUpload"));
+    expect(stored().builderKey).toBe("new-key-1");
+    fireEvent.click(within(dialog).getByRole("radio", { name: SELF_CREATED_LABEL }));
+    fireEvent.click(create);
+    await within(dialog).findByText(SUCCESS_LINE);
+    expect(fake.server.of("create").map((r) => r.builderKey)).toEqual(["new-key-1", "new-key-1"]);
+    await waitFor(() => expect(stored().lastUpload).toMatchObject({ patternId: "pattern-new" }));
+  });
+
   it("the header shows the account while signed in; „Abmelden“ ends this browser's session only", async () => {
     localStorage.setItem(TMC_STORAGE_KEY, "{}");
     const fake = fakeTmcServices();
     await renderApp(fake);
     await screen.findByText(`Angemeldet als ${MAIL}`);
+    await loadBall();
     fireEvent.click(screen.getByRole("button", { name: "Abmelden" }));
     await waitFor(() => expect(screen.queryByText(/Angemeldet als/)).toBeNull());
     expect(fake.auth.calls.signOut).toHaveBeenCalledWith({ scope: "local" });
@@ -199,13 +219,13 @@ async function uploadNewOrUpdate() {
 
 describe("the return from signing in with Google", () => {
   const back = (search: string, hash = "") => {
+    // The document waits in its autosave.
+    localStorage.setItem(LS_KEY, JSON.stringify({ doc: demoDocument(ids("s"), "ball"), pinned: [], savedAt: NOW }));
     markRedirect({ choice: "new", origin: "imported" }, NOW);
     history.replaceState(null, "", `/${search}${hash}`);
   };
 
   it("exchanges the code, cleans the address, opens the dialog with what was chosen", async () => {
-    const stateDoc = demoDocument(ids("s"), "ball");
-    localStorage.setItem(LS_KEY, JSON.stringify({ doc: stateDoc, pinned: [], savedAt: Date.now() }));
     back("?code=abc");
     const fake = fakeTmcServices({ session: null });
     fake.auth.exchangeSession = sessionFor();
@@ -228,15 +248,14 @@ describe("the return from signing in with Google", () => {
     expect(screen.queryByRole("dialog", { name: "Zu TellmeCrochet hochladen" })).toBeNull();
   });
 
-  it("an account created in the last minute: an honest note and the legal line", async () => {
+  it("an account created in the last minute: an honest note", async () => {
     back("?code=abc");
     const fake = fakeTmcServices({ session: null });
     fake.auth.exchangeSession = sessionFor(MAIL, new Date(NOW - 20_000).toISOString());
     await renderApp(fake);
     const dialog = await screen.findByRole("dialog", { name: "Zu TellmeCrochet hochladen" });
-    await within(dialog).findByText(NEW_ACCOUNT_LINE, { exact: false });
-    const legal = within(dialog).getByRole("link", { name: SIGN_UP_LEGAL_LINE }) as HTMLAnchorElement;
-    expect(legal.href).toBe("https://tellmecrochet.vercel.app/datenschutz");
+    // Only the note: an account needs nothing further from here.
+    expect((await within(dialog).findByText(NEW_ACCOUNT_LINE)).querySelector("a")).toBeNull();
   });
 
   it("an account older than that gets no note", async () => {

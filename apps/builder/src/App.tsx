@@ -426,7 +426,7 @@ export function App({ exportActions, pastePreviewOptions, assemblySceneOptions, 
           onReplace={replaceDocument}
           imported={state.imported}
           onUpload={tmcServices ? openUpload : undefined}
-          lastUploadAt={state.uploadLink?.lastUpload.at}
+          lastUploadAt={state.uploadLink?.lastUpload?.at}
           account={tmcAuth.status === "signedIn" ? { email: tmcAuth.email, onSignOut: () => void tmcAuth.signOut() } : undefined}
           {...(exportActions ? { exportActions } : {})}
         />
@@ -517,7 +517,7 @@ export function App({ exportActions, pastePreviewOptions, assemblySceneOptions, 
             services={tmcServices}
             auth={tmcAuth}
             onUploaded={(link) => dispatch({ type: "tmcUploaded", link })}
-            onForget={() => dispatch({ type: "tmcForget" })}
+            onForget={(keepKey) => dispatch({ type: "tmcForget", keepKey })}
             onClose={closeUpload}
           />,
           document.body,

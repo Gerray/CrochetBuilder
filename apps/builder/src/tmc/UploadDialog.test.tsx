@@ -2,7 +2,8 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { useState } from "react";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { demoDocument, type BuilderDoc } from "../state/document.js";
+import { EMPTY_PATTERN_LINE } from "../export/tmc.js";
+import { demoDocument, emptyDocument, type BuilderDoc } from "../state/document.js";
 import type { UploadLink } from "../state/uploadLink.js";
 import { ERROR, fakeTmcServices, MAIL, target } from "../test/fakeTmc.js";
 import { TMC_STORAGE_KEY } from "./client.js";
@@ -14,6 +15,7 @@ import {
   EXPIRED_LINE,
   IMPORTED_HINT,
   IMPORTED_LABEL,
+  IMPRINT_URL,
   NO_ACCOUNT_LINE,
   PRIVACY_LINE,
   PRIVACY_URL,
@@ -22,6 +24,7 @@ import {
   SHARED_LINE,
   SHARED_VERSION_KEPT_LINE,
   SUCCESS_LINE,
+  UPDATE_SOURCE_LINE,
 } from "./texts.js";
 import { UploadDialog } from "./UploadDialog.js";
 import { useTmcAuth } from "./useTmcAuth.js";
@@ -59,9 +62,9 @@ function Harness({ fake, link: initialLink = null, doc = ball(), onEvents }: Opt
         onEvents.uploaded.push(next);
         setLink(next);
       }}
-      onForget={() => {
+      onForget={(keepKey) => {
         onEvents.forgotten++;
-        setLink(null);
+        setLink((l) => (keepKey && l ? { builderKey: l.builderKey, lastUpload: null } : null));
       }}
       onClose={() => setOpen(false)}
     />
@@ -191,8 +194,9 @@ describe("the project picker", () => {
     fireEvent.click(button("Aktualisieren"));
     await screen.findByText(SUCCESS_LINE);
     expect(events.uploaded[0]!.builderKey).toBe("key-b");
-    expect(events.uploaded[0]!.lastUpload.patternId).toBe("p-b");
-    expect(fake.server.of("update")[0]).toMatchObject({ patternId: "p-b", baseToken: "token-1" });
+    expect(events.uploaded[0]!.lastUpload!.patternId).toBe("p-b");
+    // One check for what the dialog showed, a fresh one right before the update.
+    expect(fake.server.of("update")[0]).toMatchObject({ patternId: "p-b", baseToken: "token-2" });
   });
 
   it("without a matching title „Neues Projekt“ is chosen; another project can be picked and left again", async () => {
@@ -224,7 +228,7 @@ describe("the project picker", () => {
       "check",
       () =>
         new Promise((resolve) => {
-          release = () => resolve({ status: 200, body: { target: projects()[0], ...fake.server.checkResult, changedInApp: true } });
+          release = () => resolve({ status: 200, body: { target: projects()[0], ...fake.server.checkResult, changedInApp: true, baseToken: "t" } });
         }),
     );
     show(fake, { doc });
@@ -247,6 +251,7 @@ describe("an existing project", () => {
     expect(fake.server.of("list")).toHaveLength(0);
     expect(screen.queryByRole("radio")).toBeNull();
     expect(screen.getByText("Rechte: selbst entworfen")).toBeTruthy();
+    expect(screen.getByText(UPDATE_SOURCE_LINE)).toBeTruthy();
     expect(screen.queryByText(SHARED_LINE)).toBeNull();
     expect(screen.queryByRole("alert")).toBeNull();
   });
@@ -321,37 +326,98 @@ describe("an existing project", () => {
     await findButton("Speichern");
     const list = screen.getByRole("list", { name: "Folgen in der App" });
     expect(within(list).getAllByRole("listitem").map((li) => li.textContent)).toEqual([
-      "1 Fortschritt wird verschoben",
+      "1 Fortschrittsposition wird verschoben oder gekürzt",
       "3 Markierungen entfallen",
-      "1 Teil entfällt",
+      "Bei 1 Teil geht der Fortschritt verloren",
     ]);
     fireEvent.click(button("Zurück"));
     expect(screen.getByText("geschlossen")).toBeTruthy();
     expect(again.server.of("update")).toHaveLength(0);
   });
 
-  it("a stale token goes back to check; the new token uploads", async () => {
+  it("every update goes out with the token of a check made right before it", async () => {
+    const fake = withKey();
+    show(fake, { link: LINK });
+    fireEvent.click(await findButton("Aktualisieren"));
+    await screen.findByText(SUCCESS_LINE);
+    expect(fake.server.requests.map((r) => r.action)).toEqual(["check", "check", "update"]);
+    expect(fake.server.of("update")[0]!.baseToken).toBe("token-2");
+    expect(fake.server.of("update")[0]).not.toHaveProperty("origin");
+    expect(fake.server.of("check")[0]).not.toHaveProperty("origin");
+  });
+
+  it("what the check right before the update finds is shown first, nothing is overwritten", async () => {
+    const fake = withKey();
+    show(fake, { link: LINK });
+    const update = await findButton("Aktualisieren");
+    fake.server.checkResult.changedInApp = true;
+    fireEvent.click(update);
+    await screen.findByText(new RegExp(CHANGED_IN_APP_LINE));
+    expect(fake.server.of("update")).toHaveLength(0);
+    fireEvent.click(await findButton("Trotzdem aktualisieren"));
+    await screen.findByText(SUCCESS_LINE);
+    expect(fake.server.of("update")).toHaveLength(1);
+  });
+
+  it("a stale token goes back to check and shows the result, even with an unchanged document", async () => {
     const fake = withKey();
     fake.server.next("update", ERROR(409, "conflict"));
     show(fake, { link: LINK });
-    const first = await findButton("Aktualisieren");
-    fake.server.checkResult.baseToken = "token-2";
-    fireEvent.click(first);
-    expect((await screen.findByRole("alert")).textContent).toMatch(/gerade in der App geändert/);
-    await waitFor(() => expect(fake.server.of("check")).toHaveLength(2));
+    fireEvent.click(await findButton("Aktualisieren"));
+    expect((await screen.findByRole("alert")).textContent).toMatch(/Das Projekt hat sich gerade geändert/);
+    await waitFor(() => expect(fake.server.of("check")).toHaveLength(3));
     await waitFor(() => expect(button("Aktualisieren").disabled).toBe(false));
+    expect(screen.getByRole("alert").textContent).toMatch(/Das Projekt hat sich gerade geändert/);
     fireEvent.click(button("Aktualisieren"));
     await screen.findByText(SUCCESS_LINE);
-    expect(fake.server.of("update").map((r) => r.baseToken)).toEqual(["token-1", "token-2"]);
+    expect(fake.server.of("update").map((r) => r.baseToken)).toEqual(["token-2", "token-4"]);
   });
 
-  it("a project that is gone: says so, forgets the key and offers the picker", async () => {
+  it("the same pattern again: a normal success", async () => {
+    const fake = withKey();
+    show(fake, { link: LINK });
+    fireEvent.click(await findButton("Aktualisieren"));
+    await screen.findByText(SUCCESS_LINE);
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("a project deleted in the app: says so, keeps the key and offers it as a new project", async () => {
     const fake = fakeTmcServices({ projects: [] });
     const events = show(fake, { link: LINK });
     expect((await screen.findByRole("alert")).textContent).toMatch(/gibt es in deinem Account nicht mehr/);
     expect(events.forgotten).toBe(1);
-    await findButton("Hochladen");
+    const create = await findButton("Als neues Projekt anlegen");
+    expect(create.disabled).toBe(true);
     expect(radio(SELF_CREATED_LABEL).checked).toBe(false);
+    fireEvent.click(radio(SELF_CREATED_LABEL));
+    fireEvent.click(create);
+    await screen.findByText(SUCCESS_LINE);
+    expect(fake.server.of("create")[0]).toMatchObject({ builderKey: "key-1", origin: "self_created" });
+    expect(events.uploaded[0]!.lastUpload!.patternId).toBe("pattern-new");
+  });
+
+  it("deleted between the dialog's check and the update: the same, and other projects stay choosable", async () => {
+    const other = target({ title: "Ball", patternId: "p-other", builderKey: "key-other" });
+    const fake = fakeTmcServices({ projects: [target(), other] });
+    show(fake, { link: LINK });
+    const update = await findButton("Aktualisieren");
+    fake.server.projects.splice(0, 1);
+    fireEvent.click(update);
+    expect((await screen.findByRole("alert")).textContent).toMatch(/gibt es in deinem Account nicht mehr/);
+    await findButton("Als neues Projekt anlegen");
+    expect(radio("Neues Projekt").checked).toBe(true);
+    expect(radio(/Ball/).checked).toBe(false);
+  });
+
+  it("opened again after that: new project with the kept key, without a stored project id", async () => {
+    const fake = fakeTmcServices({ projects: [] });
+    show(fake, { link: { builderKey: "key-1", lastUpload: null } });
+    const create = await findButton("Als neues Projekt anlegen");
+    expect(fake.server.of("check")).toHaveLength(0);
+    fireEvent.click(radio(SELF_CREATED_LABEL));
+    fireEvent.click(create);
+    await screen.findByText(SUCCESS_LINE);
+    expect(fake.server.of("create")[0]!.builderKey).toBe("key-1");
   });
 
   it("a project of another account: says so, too", async () => {
@@ -375,7 +441,7 @@ describe("failures", () => {
   });
 
   it.each([
-    ["invalid", 400, /Format oder Maschenzahlen/],
+    ["invalid", 400, /nicht angenommen, weil etwas an ihrem Aufbau nicht passt/],
     ["too-large", 413, /zu groß zum Hochladen/],
   ])("%s has its own line", async (code, status, line) => {
     const fake = fakeTmcServices({ projects: [target()] });
@@ -383,6 +449,23 @@ describe("failures", () => {
     show(fake, { link: LINK });
     fireEvent.click(await findButton("Aktualisieren"));
     expect((await screen.findByRole("alert")).textContent).toMatch(line);
+  });
+
+  it("the endpoint's `internal` and unknown codes: try again later", async () => {
+    const fake = fakeTmcServices({ projects: [target()] });
+    fake.server.next("update", ERROR(500, "internal"));
+    show(fake, { link: LINK });
+    fireEvent.click(await findButton("Aktualisieren"));
+    expect((await screen.findByRole("alert")).textContent).toMatch(/Versuche es später noch einmal/);
+  });
+
+  it("a pattern without any row is stopped before anything is sent", async () => {
+    const fake = fakeTmcServices();
+    show(fake, { doc: emptyDocument("leer") });
+    expect((await screen.findByRole("alert")).textContent).toBe(EMPTY_PATTERN_LINE);
+    await settled(fake);
+    expect(fake.server.requests).toHaveLength(0);
+    expect(screen.queryByRole("button", { name: "Hochladen" })).toBeNull();
   });
 
   it("a list that fails can be asked for again", async () => {
@@ -432,6 +515,16 @@ describe("the sign-in", () => {
     await findButton("Hochladen");
     expect(fake.auth.calls.verifyOtp).toHaveBeenCalledWith({ email: MAIL, token: "123456", type: "email" });
     expect(fake.server.of("list")).toHaveLength(1);
+  });
+
+  it("„Datenschutz“ and „Impressum“ stand under the form, without any consent sentence", async () => {
+    const fake = fakeTmcServices({ session: null });
+    show(fake);
+    await findButton("Mit Google anmelden");
+    expect((screen.getByRole("link", { name: "Datenschutz" }) as HTMLAnchorElement).href).toBe(PRIVACY_URL);
+    expect((screen.getByRole("link", { name: "Impressum" }) as HTMLAnchorElement).href).toBe(IMPRINT_URL);
+    expect(screen.queryByRole("checkbox")).toBeNull();
+    expect(screen.queryByText(/stimmst|akzeptierst|einverstanden/)).toBeNull();
   });
 
   it("no account: the hint to install the app first, with the store link", async () => {
@@ -563,6 +656,26 @@ describe("after the upload", () => {
     expect(screen.getByText(SUCCESS_LINE)).toBeTruthy();
     fireEvent.click(await findButton("Jetzt teilen"));
     await screen.findByText("Die Bearbeitung ist jetzt geteilt.");
+  });
+
+  it("listed but not shared: no question, the endpoint would refuse", async () => {
+    const fake = fakeTmcServices({ projects: [target({ listed: true, shared: false, hasUnsharedChanges: true })] });
+    show(fake, { link: LINK });
+    fireEvent.click(await findButton("Aktualisieren"));
+    await screen.findByText(SUCCESS_LINE);
+    expect(screen.queryByText(SHARE_QUESTION)).toBeNull();
+    expect(screen.queryByRole("button", { name: "Jetzt teilen" })).toBeNull();
+  });
+
+  it("deleted in the app before sharing: back to „als neues Projekt anlegen“", async () => {
+    const fake = sharedProject();
+    show(fake, { link: LINK });
+    fireEvent.click(await findButton("Aktualisieren"));
+    const share = await findButton("Jetzt teilen");
+    fake.server.projects.splice(0, 1);
+    fireEvent.click(share);
+    expect((await screen.findByRole("alert")).textContent).toMatch(/gibt es in deinem Account nicht mehr/);
+    await findButton("Als neues Projekt anlegen");
   });
 
   it("nothing new to share (the same pattern again): no question", async () => {

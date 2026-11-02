@@ -3,7 +3,7 @@ import type { TmcOriginHint } from "@crochetbuilder/engine";
 import { trapTab } from "../components/focus.js";
 import "../components/paste.css";
 import { exportFailureText } from "../export/prepare.js";
-import { tmcUpload, type TmcUpload } from "../export/tmc.js";
+import { tmcUpload, uploadBlocker, type TmcUpload } from "../export/tmc.js";
 import type { BuilderDoc } from "../state/document.js";
 import type { TmcOrigin, UploadLink } from "../state/uploadLink.js";
 import { createTmcApi, TmcApiError, type TmcApi, type TmcCheck, type TmcTarget } from "./api.js";
@@ -25,9 +25,9 @@ import {
   SHARE_QUESTION,
   SHARED_LINE,
   SHARED_VERSION_KEPT_LINE,
-  SIGN_UP_LEGAL_LINE,
   SUCCESS_LINE,
   SUMMARY_TITLE,
+  UPDATE_SOURCE_LINE,
   uploadedWhen,
   UPLOAD_TITLE,
 } from "./texts.js";
@@ -51,13 +51,23 @@ export interface UploadDialogProps {
   services: TmcServices;
   auth: TmcAuth;
   onUploaded: (link: UploadLink) => void;
-  /** The project is gone (or someone else's): the document has none any more. */
-  onForget: () => void;
+  /**
+   * The project is out of reach: the document has none any more. `keepKey` when it was deleted (a
+   * new project may take the key), not when it belongs to another account.
+   */
+  onForget: (keepKey: boolean) => void;
   onClose: () => void;
 }
 
 const sameTitle = (a: string, b: string) => a.trim().toLocaleLowerCase("de") === b.trim().toLocaleLowerCase("de");
 const isShared = (target: TmcTarget) => target.shared || target.listed;
+
+/** Whether two checks tell the person the same; the token is only good for one update anyway. */
+function sameFindings(a: TmcCheck, b: TmcCheck): boolean {
+  const said = ({ changedInApp, impact, target: t }: TmcCheck) =>
+    JSON.stringify([changedInApp, impact.progressMoved, impact.markersDropped, impact.partsDropped, t.title, t.origin, t.shared, t.listed]);
+  return said(a) === said(b);
+}
 
 /**
  * "Zu TellmeCrochet hochladen": signs in if needed, finds the project, says what will happen and
@@ -72,7 +82,8 @@ export function UploadDialog({ doc, originHint, link, services, auth, onUploaded
   );
   const handoff = useMemo<{ upload: TmcUpload } | { blocked: string }>(() => {
     try {
-      return { upload: tmcUpload(doc, originHint) };
+      const blocked = uploadBlocker(doc);
+      return blocked ? { blocked } : { upload: tmcUpload(doc, originHint) };
     } catch (err) {
       console.error(err);
       return { blocked: exportFailureText(err) };
@@ -81,7 +92,7 @@ export function UploadDialog({ doc, originHint, link, services, auth, onUploaded
   const upload = "upload" in handoff ? handoff.upload : null;
 
   // Where the upload goes: NEW, a project's id, or null while that is not known yet.
-  const [choice, setChoice] = useState<string | null>(() => auth.resume?.choice ?? link?.lastUpload.patternId ?? null);
+  const [choice, setChoice] = useState<string | null>(() => auth.resume?.choice ?? link?.lastUpload?.patternId ?? (link ? NEW : null));
   const [origin, setOrigin] = useState<TmcOrigin | null>(auth.resume?.origin ?? null);
   const [projects, setProjects] = useState<TmcTarget[] | null>(null);
   const [checked, setChecked] = useState<TmcCheck | null>(null);
@@ -89,6 +100,8 @@ export function UploadDialog({ doc, originHint, link, services, auth, onUploaded
   const [error, setError] = useState<string | null>(null);
   const [retry, setRetry] = useState<(() => void) | null>(null);
   const [done, setDone] = useState<Done | null>(null);
+  // The project this document belonged to is gone: "new" is what is left, and it says so.
+  const [gone, setGone] = useState(link !== null && link.lastUpload === null);
 
   const dialog = useRef<HTMLDivElement>(null);
   const titleId = useId();
@@ -97,8 +110,9 @@ export function UploadDialog({ doc, originHint, link, services, auth, onUploaded
   const running = useRef(false);
   // Only the latest list or check counts, when the choice changed meanwhile.
   const latestLoad = useRef(0);
-  // The key of a new project stays the same through retries: a lost answer cannot make two.
-  const pendingKey = useRef<string | null>(null);
+  // The key of a new project stays the same through retries: a lost answer cannot make two. The
+  // key of a project deleted in the app may be used again.
+  const pendingKey = useRef<string | null>(link !== null && link.lastUpload === null ? link.builderKey : null);
 
   useEffect(() => {
     dialog.current?.focus();
@@ -117,16 +131,23 @@ export function UploadDialog({ doc, originHint, link, services, auth, onUploaded
         auth.sessionExpired();
         return;
       case "conflict":
+        // Even if the document did not change: the project did, and the person sees how.
         setError(errorLine("conflict"));
-        if (checked) void runCheck(checked.target.patternId);
+        if (choice !== null && choice !== NEW) void runCheck(choice);
         return;
       case "not-found":
-      case "forbidden":
+      case "forbidden": {
+        const keepKey = failure.code === "not-found";
         setError(errorLine(failure.code));
-        onForget();
+        onForget(keepKey);
+        pendingKey.current = keepKey ? (link?.builderKey ?? null) : null;
+        setGone(true);
         setChecked(null);
-        void runList(null);
+        setDone(null);
+        setChoice(NEW);
+        void runList(null, true);
         return;
+      }
       case "key-in-use": {
         setError(errorLine("key-in-use"));
         const key = pendingKey.current;
@@ -162,7 +183,7 @@ export function UploadDialog({ doc, originHint, link, services, auth, onUploaded
   };
 
   /** The person's projects; a matching title (or `key`) is chosen for her, else a new project. */
-  const runList = async (key: string | null) => {
+  const runList = async (key: string | null, stayNew = false) => {
     if (!api) return;
     const load = ++latestLoad.current;
     setRetry(null);
@@ -172,16 +193,17 @@ export function UploadDialog({ doc, originHint, link, services, auth, onUploaded
       if (load !== latestLoad.current) return;
       setProjects(result.projects);
       setTask(null);
-      const wanted =
-        (key !== null ? result.projects.find((p) => p.builderKey === key) : undefined) ??
-        result.projects.find((p) => p.patternId === choice) ??
-        (choice === NEW ? undefined : result.projects.find((p) => doc.title.trim() !== "" && sameTitle(p.title, doc.title)));
+      const wanted = stayNew
+        ? undefined
+        : ((key !== null ? result.projects.find((p) => p.builderKey === key) : undefined) ??
+          result.projects.find((p) => p.patternId === choice) ??
+          (choice === NEW ? undefined : result.projects.find((p) => doc.title.trim() !== "" && sameTitle(p.title, doc.title))));
       setChoice(wanted?.patternId ?? NEW);
       if (wanted) await runCheck(wanted.patternId);
     } catch (err) {
       if (load === latestLoad.current) {
         setTask(null);
-        fail(err, () => void runList(key));
+        fail(err, () => void runList(key, stayNew));
       }
     }
   };
@@ -192,7 +214,7 @@ export function UploadDialog({ doc, originHint, link, services, auth, onUploaded
   useEffect(() => {
     if (!canLoad) return;
     if (choice !== null && choice !== NEW) void runCheck(choice);
-    else void runList(null);
+    else void runList(pendingKey.current);
     // Only when the sign-in changes; later steps are started by the person.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [canLoad]);
@@ -234,7 +256,14 @@ export function UploadDialog({ doc, originHint, link, services, auth, onUploaded
           target = (await api.create(pendingKey.current, origin, payload)).target;
           pendingKey.current = null;
         } else if (existing) {
-          target = (await api.update(existing.target.patternId, existing.baseToken, payload)).target;
+          // Always a fresh token. What the person has not seen yet comes before overwriting.
+          const fresh = await api.check(existing.target.patternId, payload);
+          if (!sameFindings(fresh, existing)) {
+            setChecked(fresh);
+            setError(errorLine("conflict"));
+            return;
+          }
+          target = (await api.update(existing.target.patternId, fresh.baseToken, payload)).target;
         } else {
           return;
         }
@@ -288,7 +317,8 @@ export function UploadDialog({ doc, originHint, link, services, auth, onUploaded
 
   const uploading = task === "upload" || task === "share";
   const showSignIn = upload !== null && !signedIn && client !== null && (auth.status === "signedOut" || auth.status === "unavailable");
-  const offerShare = done !== null && !done.shared && isShared(done.target) && done.target.hasUnsharedChanges;
+  // The endpoint shares only what is shared already (`listed` alone is refused).
+  const offerShare = done !== null && !done.shared && done.target.shared && done.target.hasUnsharedChanges;
 
   return (
     <div
@@ -325,10 +355,7 @@ export function UploadDialog({ doc, originHint, link, services, auth, onUploaded
         <div className="upload-body">
           {auth.newAccount && signedIn && (
             <p className="upload-notice">
-              {NEW_ACCOUNT_LINE}{" "}
-              <a href={PRIVACY_URL} target="_blank" rel="noopener noreferrer">
-                {SIGN_UP_LEGAL_LINE}
-              </a>
+              {NEW_ACCOUNT_LINE}
             </p>
           )}
 
@@ -442,6 +469,7 @@ export function UploadDialog({ doc, originHint, link, services, auth, onUploaded
                         ? "Rechte: selbst entworfen"
                         : `Rechte: nicht selbst entworfen. ${IMPORTED_HINT}.`}
                     </span>
+                    <span className="upload-sub muted">{UPDATE_SOURCE_LINE}</span>
                   </p>
                   {isShared(existing.target) && <p className="upload-notice">{SHARED_LINE}</p>}
                   {existing.changedInApp && (
@@ -509,6 +537,7 @@ export function UploadDialog({ doc, originHint, link, services, auth, onUploaded
                         : "update"
             }
             ready={task === null && (isNew ? origin !== null : existing !== null)}
+            newLabel={gone ? "Als neues Projekt anlegen" : "Hochladen"}
             busy={uploading}
             onSend={send}
             onShare={share}
@@ -537,6 +566,7 @@ type ActionState = "cancel" | "new" | "update" | "changed" | "impact" | "share" 
 function Actions({
   state,
   ready,
+  newLabel,
   busy,
   onSend,
   onShare,
@@ -545,6 +575,7 @@ function Actions({
 }: {
   state: ActionState;
   ready: boolean;
+  newLabel: string;
   busy: boolean;
   onSend: () => void;
   onShare: () => void;
@@ -568,7 +599,7 @@ function Actions({
       return (
         <>
           {closeButton("Abbrechen")}
-          {sendButton("Hochladen")}
+          {sendButton(newLabel)}
         </>
       );
     case "update":

@@ -10,6 +10,7 @@ import type { TmcAuthClient } from "./client.js";
 import type { TmcConfig } from "./config.js";
 
 export const BUILDER_UPLOAD_PATH = "/functions/v1/builder-upload";
+const CLIENT_INFO = "crochetbuilder";
 
 export interface TmcTarget {
   patternId: string;
@@ -52,7 +53,7 @@ export type TmcErrorCode =
   | "rate-limited"
   /** The request never got an answer. */
   | "network"
-  /** An answer outside the contract. */
+  /** The endpoint's `internal`, a code we do not know or an answer outside the contract: try later. */
   | "server";
 
 export class TmcApiError extends Error {
@@ -111,8 +112,9 @@ const seconds = (value: unknown): number | undefined => {
 /** The error of a failed response: by the code in its body, else by its status (a gateway has no body of ours). */
 function errorOf(status: number, body: unknown, retryAfterHeader: string | null | undefined): TmcApiError {
   const error = record(record(body)?.error);
-  const named = typeof error?.code === "string" && CODES.has(error.code) ? (error.code as TmcErrorCode) : undefined;
-  const code = named ?? STATUS_CODES[status] ?? "server";
+  // A code of ours decides, also one we do not know yet; only without any the status does.
+  const stated = typeof error?.code === "string" ? (CODES.has(error.code) ? (error.code as TmcErrorCode) : "server") : undefined;
+  const code = stated ?? STATUS_CODES[status] ?? "server";
   const message = typeof error?.message === "string" ? error.message : undefined;
   return new TmcApiError(code, message, seconds(error?.retryAfterSeconds) ?? seconds(retryAfterHeader));
 }
@@ -158,7 +160,12 @@ export function createTmcApi({ client, fetch, config }: TmcApiOptions): TmcApi {
     try {
       response = await fetch(endpoint, {
         method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}`, apikey: config.anonKey },
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+          apikey: config.anonKey,
+          "x-client-info": CLIENT_INFO,
+        },
         body: JSON.stringify(request),
       });
     } catch (err) {

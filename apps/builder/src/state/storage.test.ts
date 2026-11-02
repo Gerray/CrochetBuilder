@@ -203,15 +203,20 @@ describe("storage — the TellmeCrochet project", () => {
     expect(result.kind === "ok" && result.state).not.toHaveProperty("builderKey");
   });
 
+  it("a project that is gone keeps its key and stores no upload", async () => {
+    await saveState({ doc: demoDocument(), pinned: [], uploadLink: { builderKey: "key-1", lastUpload: null } });
+    const record = JSON.parse(localStorage.getItem(LS_KEY)!) as Record<string, unknown>;
+    expect(record.builderKey).toBe("key-1");
+    expect(record).not.toHaveProperty("lastUpload");
+    const result = await loadState();
+    expect(result.kind === "ok" && storedUploadLink(result.state)).toEqual({ builderKey: "key-1", lastUpload: null });
+  });
+
   it.each([
-    ["key without an upload", { builderKey: "k" }],
     ["upload without a key", { lastUpload: { patternId: "p", at: 1, origin: "imported" } }],
     ["key of the wrong type", { builderKey: 7, lastUpload: { patternId: "p", at: 1, origin: "imported" } }],
     ["empty key", { builderKey: "", lastUpload: { patternId: "p", at: 1, origin: "imported" } }],
-    ["no project id", { builderKey: "k", lastUpload: { at: 1, origin: "imported" } }],
-    ["no time", { builderKey: "k", lastUpload: { patternId: "p", origin: "imported" } }],
-    ["unknown origin", { builderKey: "k", lastUpload: { patternId: "p", at: 1, origin: "bought" } }],
-  ])("something unreadable reads as no project, and the document still loads: %s", async (_name, fields) => {
+  ])("without a readable key there is no project, and the document still loads: %s", async (_name, fields) => {
     const doc = demoDocument();
     localStorage.setItem(LS_KEY, JSON.stringify({ doc, pinned: [], savedAt: 3, ...fields }));
     const result = await loadState();
@@ -220,6 +225,21 @@ describe("storage — the TellmeCrochet project", () => {
       expect(storedUploadLink(result.state)).toBeNull();
       expect(result.state.doc).toEqual(doc);
       expect(result.state).not.toHaveProperty("builderKey");
+      expect(result.state).not.toHaveProperty("lastUpload");
     }
+  });
+
+  it.each([
+    ["no upload", {}],
+    ["upload of the wrong type", { lastUpload: "gestern" }],
+    ["no project id", { lastUpload: { at: 1, origin: "imported" } }],
+    ["no time", { lastUpload: { patternId: "p", origin: "imported" } }],
+    ["unknown origin", { lastUpload: { patternId: "p", at: 1, origin: "bought" } }],
+  ])("an unreadable upload costs only the upload: %s", async (_name, fields) => {
+    const doc = demoDocument();
+    localStorage.setItem(LS_KEY, JSON.stringify({ doc, pinned: [], savedAt: 3, builderKey: "k", ...fields }));
+    const result = await loadState();
+    expect(result.kind === "ok" && storedUploadLink(result.state)).toEqual({ builderKey: "k", lastUpload: null });
+    expect(result.kind === "ok" && result.state.doc).toEqual(doc);
   });
 });

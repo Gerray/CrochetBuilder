@@ -44,7 +44,13 @@ describe("the builder-upload client", () => {
     expect(url).toBe(`https://tmc.test${BUILDER_UPLOAD_PATH}`);
     expect(url).toBe("https://tmc.test/functions/v1/builder-upload");
     expect(init.method).toBe("POST");
-    expect(init.headers).toEqual({ "Content-Type": "application/json", Authorization: "Bearer session-token", apikey: "public-key" });
+    // Exactly what the endpoint's CORS allows.
+    expect(init.headers).toEqual({
+      "Content-Type": "application/json",
+      Authorization: "Bearer session-token",
+      apikey: "public-key",
+      "x-client-info": "crochetbuilder",
+    });
   });
 
   it("list", async () => {
@@ -116,6 +122,12 @@ describe("errors of the client", () => {
     expect((await failure(make(429, { error: { code: "rate-limited", retryAfterSeconds: 90 } }).api.share("p"))).retryAfterSeconds).toBe(90);
     expect((await failure(make(429, null, { header: "120" }).api.share("p"))).retryAfterSeconds).toBe(120);
     expect((await failure(make(429, { error: { code: "rate-limited" } }).api.share("p"))).retryAfterSeconds).toBeUndefined();
+  });
+
+  it("„internal“ and any code we do not know mean: try later, whatever the status", async () => {
+    expect((await failure(make(500, { error: { code: "internal" } }).api.share("p"))).code).toBe("server");
+    expect((await failure(make(400, { error: { code: "something-new" } }).api.share("p"))).code).toBe("server");
+    expect((await failure(make(409, { error: { code: "something-new" } }).api.update("p", "t", payload))).code).toBe("server");
   });
 
   it("an answer without our body goes by its status (a gateway in front of the endpoint)", async () => {

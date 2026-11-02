@@ -42,14 +42,14 @@ describe("wording", () => {
   it("what an update costs, in correct singular and plural", () => {
     expect(impactLines({ progressMoved: 0, markersDropped: 0, partsDropped: 0 })).toEqual([]);
     expect(impactLines({ progressMoved: 1, markersDropped: 1, partsDropped: 1 })).toEqual([
-      "1 Fortschritt wird verschoben",
+      "1 Fortschrittsposition wird verschoben oder gekürzt",
       "1 Markierung entfällt",
-      "1 Teil entfällt",
+      "Bei 1 Teil geht der Fortschritt verloren",
     ]);
     expect(impactLines({ progressMoved: 2, markersDropped: 3, partsDropped: 4 })).toEqual([
-      "2 Fortschritte werden verschoben",
+      "2 Fortschrittspositionen werden verschoben oder gekürzt",
       "3 Markierungen entfallen",
-      "4 Teile entfallen",
+      "Bei 4 Teilen geht der Fortschritt verloren",
     ]);
   });
 

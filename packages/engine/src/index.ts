@@ -320,6 +320,7 @@ export {
   TmcOriginHintSchema,
   TMC_ASSEMBLY_PART_NAME,
   TMC_ASSEMBLY_PART_KEY,
+  TMC_PART_KEY_MAX,
   toTellmeCrochetDraft,
   toTmcEnvelope,
   tmcPartKeys,

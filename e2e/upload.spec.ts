@@ -60,6 +60,16 @@ async function fakeBackend(page: Page, options: { createdAt?: string } = {}): Pr
     const body = route.request().postDataJSON() as Record<string, unknown>;
     backend.requests.push(body);
     expect(route.request().headers().authorization).toBe(`Bearer ${FAKE_JWT}`);
+    expect(route.request().headers().apikey).toBe("e2e-placeholder");
+    // The endpoint is strict about its fields.
+    const payload = ["envelope", "partKeys"];
+    const fields: Record<string, string[]> = {
+      list: ["action"],
+      check: ["action", "patternId", ...payload],
+      create: ["action", "builderKey", "origin", ...payload],
+      update: ["action", "patternId", "baseToken", ...payload],
+    };
+    expect(Object.keys(body).sort()).toEqual([...(fields[String(body.action)] ?? [])].sort());
     switch (body.action) {
       case "list":
         return json(route, 200, { projects: [] });

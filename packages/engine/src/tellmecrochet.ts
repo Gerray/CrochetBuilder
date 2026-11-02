@@ -229,6 +229,9 @@ export const TMC_ASSEMBLY_PART_NAME = "Zusammensetzen";
 /** Key of the generated part "Zusammensetzen" (see `tmcPartKeys`). */
 export const TMC_ASSEMBLY_PART_KEY = "assembly";
 
+/** A part key is at most this long. */
+export const TMC_PART_KEY_MAX = 200;
+
 // ---------------------------------------------------------------------------
 // German wording
 // ---------------------------------------------------------------------------
@@ -858,12 +861,14 @@ export function toTmcEnvelope(draft: TmcDraft, originHint: TmcOriginHint): TmcEn
  * A part without an id (files of format version 1, parts nobody referred to yet) has no identity
  * of its own: it gets `teil-<n>` from its position, which holds for repeated exports but not when
  * parts are moved or get an id later. Whoever uploads gives every part an id first. Repeated ids
- * stay unique: the first keeps it, later ones get the next free `-2`, `-3`, …
+ * stay unique: the first keeps it, later ones get the next free `-2`, `-3`, … An id beyond
+ * `TMC_PART_KEY_MAX` characters is cut, with room for that suffix.
  */
 export function tmcPartKeys(doc: BuilderExport): string[] {
   // Own ids are taken before any position-based key, so they never have to give way to one.
   const pool = new IdPool([TMC_ASSEMBLY_PART_KEY]);
-  const keys = doc.parts.map((p) => (p.id === undefined ? undefined : pool.fresh(p.id)));
+  const fitted = (id: string) => (id.length > TMC_PART_KEY_MAX ? id.slice(0, TMC_PART_KEY_MAX - 10) : id);
+  const keys = doc.parts.map((p) => (p.id?.trim() ? pool.fresh(fitted(p.id)) : undefined));
   const out = keys.map((key, i) => key ?? pool.fresh(`teil-${i + 1}`));
   if (assemblySteps(doc, planOf(doc)).placements.length > 0) out.push(TMC_ASSEMBLY_PART_KEY);
   // Same placeholder part as `toTellmeCrochetDraft`, for an export without parts.

@@ -594,7 +594,8 @@ The envelope gets there in one of two ways; there is no link and no web page in 
   plain pretty-printed JSON, which the app can open.
 - **Into the account:** "Zu TellmeCrochet hochladen" signs in with the person's TellmeCrochet
   account and uploads the envelope with its [part keys](#part-keys). Uploading the same document
-  again updates that project. The builder offers this only when the build is configured for it.
+  again updates that project. An upload leaves out a title or material list that is empty, so the
+  project keeps its own. The builder offers this only when the build is configured for it.
 
 ### Envelope
 
@@ -653,8 +654,8 @@ or imports it for the first time, without anything preselected.
 
 Next to an uploaded envelope go its part keys (`tmcPartKeys`): one string per entry of
 `draft.parts`, in the same order, so the receiver can follow a part from one upload to the next.
-A part's key is its `id`; the generated part `Zusammensetzen` is always `assembly`, which no other
-part takes (a part with that id becomes `assembly-2`). The builder gives every part an `id` at its
+A part's key is its `id`, at most 200 characters; the generated part `Zusammensetzen` is always
+`assembly`, which no other part takes (a part with that id becomes `assembly-2`). Keys are unique. The builder gives every part an `id` at its
 first upload, so moving or renaming a part keeps the key. In an export without ids, as from a
 version-1 file, `tmcPartKeys` falls back on the position: `teil-1`, `teil-2`, …
 

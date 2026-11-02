@@ -2,7 +2,7 @@ import { useId, useRef, useState, type FormEvent } from "react";
 import type { TmcAuth } from "./useTmcAuth.js";
 import type { TmcAuthClient, TmcAuthError } from "./client.js";
 import { clearRedirectMark, markRedirect, redirectTarget, type UploadResume } from "./redirect.js";
-import { APP_STORE_URL, CODE_HINT, CODE_REJECTED_LINE, EXPIRED_LINE, GOOGLE_FAILED_LINE, NO_ACCOUNT_LINE } from "./texts.js";
+import { APP_STORE_URL, CODE_HINT, CODE_REJECTED_LINE, EXPIRED_LINE, GOOGLE_FAILED_LINE, IMPRINT_URL, NO_ACCOUNT_LINE, PRIVACY_URL } from "./texts.js";
 
 const CODE_LENGTH = 6;
 
@@ -195,6 +195,14 @@ export function SignInStep({ client, auth, resume, now, href = globalThis.locati
           {error}
         </p>
       )}
+      <p className="upload-legal small">
+        <a href={PRIVACY_URL} target="_blank" rel="noopener noreferrer">
+          Datenschutz
+        </a>
+        <a href={IMPRINT_URL} target="_blank" rel="noopener noreferrer">
+          Impressum
+        </a>
+      </p>
     </div>
   );
 }

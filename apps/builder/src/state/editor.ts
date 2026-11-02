@@ -182,8 +182,11 @@ export type EditorAction =
   | { type: "hydrate"; doc: BuilderDoc; pinned?: readonly string[]; part?: number; imported?: boolean; uploadLink?: UploadLink | null }
   /** An upload went through: the project is remembered and every part has its id from now on. */
   | { type: "tmcUploaded"; link: UploadLink }
-  /** The project is gone from the account: the document has no project any more. */
-  | { type: "tmcForget" }
+  /**
+   * The project is out of reach: the document has none any more. `keepKey` (it was deleted): a new
+   * project may take the same key. Otherwise it is someone else's and the key goes as well.
+   */
+  | { type: "tmcForget"; keepKey?: boolean }
   | { type: "undo" }
   | { type: "redo" }
   /** Typing in a field ended (blur): the next edit starts a new undo step. */
@@ -1141,7 +1144,8 @@ export function editorReducer(state: EditorState, action: EditorAction): EditorS
     return { ...state, doc, past: state.past.map(stamp), future: state.future.map(stamp), uploadLink: action.link };
   }
   if (action.type === "tmcForget") {
-    return state.uploadLink === null ? state : { ...state, uploadLink: null };
+    if (state.uploadLink === null) return state;
+    return { ...state, uploadLink: action.keepKey ? { builderKey: state.uploadLink.builderKey, lastUpload: null } : null };
   }
   if (action.type === "endTyping") {
     return state.lastKey === undefined ? state : { ...state, lastKey: undefined };

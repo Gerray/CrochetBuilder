@@ -59,6 +59,13 @@ describe("the document's project in the editor", () => {
     expect(state.uploadLink).toBeNull();
     expect(state.past).toHaveLength(0);
   });
+
+  it("a deleted project leaves the key for a new one, and the upload goes", () => {
+    const state = run(start(), { type: "tmcForget", keepKey: true });
+    expect(state.uploadLink).toEqual({ builderKey: "key-1", lastUpload: null });
+    expect(state.past).toHaveLength(0);
+    expect(run(start(demoDocument(ids(), "ball"), null), { type: "tmcForget", keepKey: true }).uploadLink).toBeNull();
+  });
 });
 
 describe("part ids at the upload", () => {
