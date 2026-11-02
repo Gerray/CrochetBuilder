@@ -5,15 +5,12 @@ import type { Gauge } from "./gauge.js";
 import { renderRow } from "./notation.js";
 import { createRandom } from "./random.js";
 import type { GroupOp, Op, Row, StitchCode } from "./schema.js";
-import { encodeShare, MAX_SHARE_CHARS, ShareDecodeError } from "./share.js";
 import {
-  buildTmcImportUrl,
-  decodeTmcPayload,
   describePlacement,
-  encodeTmcPayload,
   gaugeText,
   summarizeTmcLosses,
-  TMC_IMPORT_URL,
+  TMC_ASSEMBLY_PART_KEY,
+  tmcPartKeys,
   TmcDraftSchema,
   TmcEnvelopeSchema,
   toTellmeCrochetDraft,
@@ -21,8 +18,9 @@ import {
   type TmcDraft,
   type TmcRow,
 } from "./tellmecrochet.js";
+import { pumpkinDoc } from "./test/join-fixtures.js";
 
-const st = (code: StitchCode, count: number, extra: Partial<Extract<Op, { kind: "stitch" }>> = {}): Extract<Op, { kind: "stitch" }> => ({
+const st =(code: StitchCode, count: number, extra: Partial<Extract<Op, { kind: "stitch" }>> = {}): Extract<Op, { kind: "stitch" }> => ({
   kind: "stitch",
   code,
   count,
@@ -538,30 +536,89 @@ describe("German wording", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Payload
+// Part keys and repeated exports
 // ---------------------------------------------------------------------------
 
-describe("encodeTmcPayload / decodeTmcPayload / buildTmcImportUrl", () => {
-  it("round-trips the envelope under the prefix tmc1.", async () => {
-    const env = toTmcEnvelope(toTellmeCrochetDraft(doc([part(SPHERE)], { title: "Kugel „ä“ 🧶" })).draft, "imported");
-    const payload = await encodeTmcPayload(env);
-    expect(payload).toMatch(/^tmc1\.[A-Za-z0-9_-]+$/);
-    expect(await decodeTmcPayload(payload)).toEqual(env);
-    expect(await encodeTmcPayload(structuredClone(env))).toBe(payload);
-    expect(buildTmcImportUrl(payload)).toBe(`${TMC_IMPORT_URL}#data=${payload}`);
-    expect(TMC_IMPORT_URL).toBe("https://tellmecrochet.de/import");
+describe("tmcPartKeys", () => {
+  const placement = (id: string, target: string, row: string): Placement => ({ id, kind: "eyes", target, row, angle: 0 });
+
+  it("are the part ids, aligned with draft.parts", () => {
+    const exp = doc([part(SPHERE, { id: "kopf" }), part(SPHERE, { id: "ohr", name: "Ohr" })]);
+    expect(tmcPartKeys(exp)).toEqual(["kopf", "ohr"]);
+    expect(toTellmeCrochetDraft(exp).draft.parts.map((p) => p.name)).toEqual(["Kugel", "Ohr"]);
   });
 
-  it("refuses share payloads and invalid envelopes", async () => {
-    const share = await encodeShare(doc([part(SPHERE)]));
-    await expect(decodeTmcPayload(share)).rejects.toMatchObject({ code: "malformed" });
-    await expect(decodeTmcPayload("tmc2.abc")).rejects.toBeInstanceOf(ShareDecodeError);
-    await expect(decodeTmcPayload("x".repeat(MAX_SHARE_CHARS + 1))).rejects.toMatchObject({ code: "too-large" });
-    // A BuilderExport packed under the tmc1 prefix is not an envelope.
-    const wrong = "tmc1." + share.slice(3);
-    await expect(decodeTmcPayload(wrong)).rejects.toMatchObject({ code: "invalid" });
-    expect(() => buildTmcImportUrl(share)).toThrow(TypeError);
-    await expect(encodeTmcPayload({ format: "tmc-draft" } as never)).rejects.toThrow();
+  it("the generated assembly part is „assembly“, last, and only when it exists", () => {
+    const withAssembly = doc([part(SPHERE, { id: "kopf" })], { assembly: [placement("augen", "kopf", "r2")] });
+    expect(TMC_ASSEMBLY_PART_KEY).toBe("assembly");
+    expect(tmcPartKeys(withAssembly)).toEqual(["kopf", "assembly"]);
+    expect(toTellmeCrochetDraft(withAssembly).draft.parts.map((p) => p.name)).toEqual(["Kugel", "Zusammensetzen"]);
+    expect(tmcPartKeys(doc([part(SPHERE, { id: "kopf" })], { assembly: [] }))).toEqual(["kopf"]);
+  });
+
+  it("no part takes the generated part's key, whether it exists yet or not", () => {
+    const own = part(SPHERE, { id: "assembly" });
+    expect(tmcPartKeys(doc([own]))).toEqual(["assembly-2"]);
+    expect(tmcPartKeys(doc([own], { assembly: [placement("augen", "assembly", "r2")] }))).toEqual(["assembly-2", "assembly"]);
+  });
+
+  it("parts without an id (a version-1 file) get position-based keys, repeated ids stay unique", () => {
+    const v1: BuilderPart = { name: "Kugel", quantity: 1, content: { schemaVersion: 1, rows: SPHERE } };
+    expect(tmcPartKeys(doc([v1, v1]))).toEqual(["teil-1", "teil-2"]);
+    expect(tmcPartKeys(doc([part(SPHERE), part(SPHERE, { id: "teil-1" })]))).toEqual(["teil-1-2", "teil-1"]);
+    expect(tmcPartKeys(doc([part(SPHERE, { id: "ohr" }), part(SPHERE, { id: "ohr" })]))).toEqual(["ohr", "ohr-2"]);
+  });
+
+  it("an export without parts has the key of the draft's placeholder part", () => {
+    const empty = doc([]);
+    expect(tmcPartKeys(empty)).toHaveLength(toTellmeCrochetDraft(empty).draft.parts.length);
+  });
+
+  it("a placement a join overrides makes no step and no key", () => {
+    const attach: Placement = { id: "stiel-dran", kind: "attach", part: "stem", target: "pumpkin", row: "ptop", angle: 0 };
+    const exp: BuilderExport = { ...pumpkinDoc(), assembly: [attach] };
+    expect(tmcPartKeys(exp)).toEqual(["pumpkin", "stem"]);
+    expect(toTellmeCrochetDraft(exp).draft.parts).toHaveLength(2);
+  });
+});
+
+describe("repeated exports of the same document", () => {
+  it("give the same draft, with the same ids for the steps the conversion adds", () => {
+    const rows = [
+      round("a", [st("MR", 1), sc(6)], 6),
+      // Repeated source id and a colour change: both ids come from the pool.
+      round("a", [inc(6)], 12, { color: "rosa" }),
+      round("a-farbe", [sc(12)], 12),
+      round("b", [rep(6, [sc(1), inc(1)])], 18),
+    ];
+    const palette: PaletteColor[] = [
+      { id: "weiss", name: "Weiß", hex: "#ffffff" },
+      { id: "rosa", name: "Rosa", hex: "#f2aec3" },
+    ];
+    const make = () =>
+      doc([part(rows, { id: "kopf", finish: "gather", stuffing: "firm" }), part(SPHERE, { id: "ohr", name: "Ohr" })], {
+        overview: { notes: "Hinweis", gauge: { hookMm: 3 }, colors: palette },
+        assembly: [{ id: "augen", kind: "eyes", target: "kopf", row: "b", angle: 0 }],
+      });
+    const first = toTellmeCrochetDraft(make()).draft;
+    // The expected ids spell out the rule; nothing random or running in them.
+    expect(first.parts[0]!.content.rows.map((r) => r.id)).toEqual([
+      "tmc-hinweise",
+      "tmc-maschenprobe",
+      "a-farbe-2",
+      "a",
+      "a-farbe-3",
+      "a-2",
+      "a-farbe",
+      "b",
+      "tmc-fuellung",
+      "tmc-abschluss",
+    ]);
+    expect(first.parts[2]!.content.rows.map((r) => r.id)).toEqual(["montage-augen"]);
+    expect(toTellmeCrochetDraft(make()).draft).toEqual(first);
+    // A saved and reopened copy converts to the same ids as well.
+    expect(toTellmeCrochetDraft(BuilderExportSchema.parse(JSON.parse(JSON.stringify(make())))).draft).toEqual(first);
+    expect(tmcPartKeys(make())).toEqual(["kopf", "ohr", "assembly"]);
   });
 });
 
@@ -768,11 +825,10 @@ describe("toTellmeCrochetDraft — property (seeded)", () => {
       for (const c of palette) if (c.name.trim()) expect(names.has(c.name.trim()), ctx).toBe(true);
       if (exp.assembly?.length) expect(draft.parts.at(-1)!.content.rows).toHaveLength(exp.assembly.length);
 
-      // The envelope packs and unpacks.
-      if (seed % 10 === 0) {
-        const env = toTmcEnvelope(draft, seed % 20 === 0 ? "imported" : "self_created");
-        expect(await decodeTmcPayload(await encodeTmcPayload(env)), ctx).toEqual(env);
-      }
+      // One key per draft part, none twice.
+      const keys = tmcPartKeys(exp);
+      expect(keys, ctx).toHaveLength(draft.parts.length);
+      expect(new Set(keys).size, ctx).toBe(keys.length);
     }
   });
 });

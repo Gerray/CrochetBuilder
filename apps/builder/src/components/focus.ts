@@ -15,3 +15,25 @@ export function focusLater(...ids: string[]): void {
     }
   }, 0);
 }
+
+const FOCUSABLE = "button:not([disabled]), input:not([disabled]), textarea, select, summary, a[href]";
+
+/** Keep Tab inside a modal: from its last element to the first and back, and into it from outside. */
+export function trapTab(e: { key: string; shiftKey: boolean; preventDefault: () => void }, root: HTMLElement): void {
+  if (e.key !== "Tab") return;
+  const items = Array.from(root.querySelectorAll<HTMLElement>(FOCUSABLE));
+  const first = items[0];
+  const last = items[items.length - 1];
+  if (!first || !last) return;
+  const active = document.activeElement;
+  if (!active || active === root || !root.contains(active)) {
+    e.preventDefault();
+    (e.shiftKey ? last : first).focus();
+  } else if (e.shiftKey && active === first) {
+    e.preventDefault();
+    last.focus();
+  } else if (!e.shiftKey && active === last) {
+    e.preventDefault();
+    first.focus();
+  }
+}

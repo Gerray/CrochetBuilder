@@ -32,4 +32,26 @@ describe("production build", () => {
       expect(file).not.toMatch(/["'`]\/assets\//);
     }
   }, 60_000);
+
+  it("keeps the sign-in library in a chunk of its own, loaded only on demand", () => {
+    const assets = readdirSync(join(outDir, "assets")).filter((f) => f.endsWith(".js"));
+    const source = (file: string) => readFileSync(join(outDir, "assets", file), "utf8");
+    const withLibrary = assets.filter((f) => source(f).includes("X-Supabase-Api-Version"));
+    expect(withLibrary).toHaveLength(1);
+    const lazy = withLibrary[0]!;
+    // Neither page loads it up front, directly or through what it preloads.
+    for (const page of ["index.html", join("viewer", "index.html")]) {
+      const html = readFileSync(join(outDir, page), "utf8");
+      const upFront = [...html.matchAll(/assets\/([\w.-]+\.js)/g)].map((m) => m[1]!);
+      expect(upFront.length).toBeGreaterThan(0);
+      expect(upFront).not.toContain(lazy);
+    }
+    // No worker has it, and nothing imports it statically (`import … from "./lazy"`).
+    for (const file of assets) {
+      if (file !== lazy) expect(source(file), file).not.toMatch(new RegExp(`from\\s*["']\\./${lazy.replace(/[.]/g, "\\.")}["']`));
+      if (/worker/.test(file)) expect(source(file), file).not.toContain(lazy);
+    }
+    // The viewer's own code never refers to it.
+    expect(assets.filter((f) => f.startsWith("viewer-")).every((f) => !source(f).includes(lazy))).toBe(true);
+  });
 });

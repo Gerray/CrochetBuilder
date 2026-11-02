@@ -27,6 +27,7 @@ import { MAX_PART_QUANTITY } from "../state/editor.js";
 import { localeName } from "../state/import-messages.js";
 import { isMacPlatform } from "../state/shortcuts.js";
 import { NumberField } from "./fields.js";
+import { trapTab } from "./focus.js";
 import "./paste.css";
 
 /** Lines shown in the preview at most (the rest is imported all the same). */
@@ -55,8 +56,6 @@ export interface PasteDialogProps {
   /** Tests: parser and debounce. */
   previewOptions?: PastePreviewOptions;
 }
-
-const FOCUSABLE = "button:not([disabled]), input:not([disabled]), textarea, select, summary, a[href]";
 
 /** "Strg+V", or "⌘V" on a Mac. */
 export function pasteShortcut(): string {
@@ -199,22 +198,7 @@ export function PasteDialog({ initialText, doc, onImport, onClose, previewOption
       close();
       return;
     }
-    if (e.key !== "Tab" || !dialog.current) return;
-    const items = Array.from(dialog.current.querySelectorAll<HTMLElement>(FOCUSABLE));
-    const first = items[0];
-    const last = items[items.length - 1];
-    if (!first || !last) return;
-    const active = document.activeElement;
-    if (!active || !dialog.current.contains(active)) {
-      e.preventDefault();
-      (e.shiftKey ? last : first).focus();
-    } else if (e.shiftKey && active === first) {
-      e.preventDefault();
-      last.focus();
-    } else if (!e.shiftKey && active === last) {
-      e.preventDefault();
-      first.focus();
-    }
+    if (dialog.current) trapTab(e, dialog.current);
   };
 
   const lineCount = text === "" ? 0 : text.split("\n").length;

@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import {
   BuilderExportSchema,
   decodeShare,
-  decodeTmcPayload,
   ShareDecodeError,
   readShareFragment,
   renderedRows,
@@ -21,7 +20,7 @@ import {
 } from "./import.js";
 import { exportFileName, ExportValidationError, isDocumentEmpty, prepareExport, renderedLines } from "./prepare.js";
 import { builderBaseUrl, embedSnippet, shareLinks, viewerBaseUrl } from "./share.js";
-import { documentTmcLink, tmcFileName, tmcHandoff, tmcLinkErrorMessage } from "./tmc.js";
+import { tmcFileName, tmcHandoff, tmcUpload } from "./tmc.js";
 
 function ids(prefix = "row") {
   let n = 0;
@@ -187,24 +186,21 @@ describe("share links", () => {
     expect(tmcFileName("")).toBe("anleitung.tellmecrochet.json");
   });
 
-  it("the TellmeCrochet link carries the draft envelope with the provenance it is given (E25)", async () => {
-    const doc = ball();
+  it("what an upload sends: the envelope, with the provenance it is given, and one key per part", () => {
+    const doc = demoDocument(ids(), "bunny");
     for (const hint of ["self_created", "imported"] as const) {
-      const link = await documentTmcLink(doc, hint);
-      expect(link.url).toMatch(/^https:\/\/tellmecrochet\.de\/import#data=tmc1\.[\w-]+$/);
-      const env = await decodeTmcPayload(readShareFragment(new URL(link.url).hash)!);
-      expect(env.originHint).toBe(hint);
-      expect(env.draft.title).toBe(prepareExport(doc).title);
-      expect(link.summary.length).toBeGreaterThan(0);
+      const upload = tmcUpload(doc, hint);
+      expect(upload.envelope.originHint).toBe(hint);
+      expect(upload.partKeys).toHaveLength(upload.envelope.draft.parts.length);
+      expect(new Set(upload.partKeys).size).toBe(upload.partKeys.length);
+      expect(upload.summary.length).toBeGreaterThan(0);
     }
-  });
-
-  it("a failing TellmeCrochet conversion leaves the share links alone, with a German reason", async () => {
-    expect(tmcLinkErrorMessage(new RangeError("too big"))).toMatch(/^Die Anleitung ist zu groß für einen Link zu TellmeCrochet/);
-    expect(tmcLinkErrorMessage(new Error("x"))).toMatch(/^Der Link zu TellmeCrochet konnte nicht erstellt werden/);
-    // Share links do not touch the conversion at all.
-    const links = await shareLinks(ball(), "http://localhost:5190/");
-    expect(Object.keys(links).sort()).toEqual(["embed", "payload", "viewer"]);
+    // Parts without an id count with the id they get at the upload: their name, not their place.
+    const moved = { ...ball(), parts: [ball().parts[0]!, { ...ball().parts[0]!, name: "Ohr" }] };
+    expect(moved.parts.every((p) => p.id === undefined)).toBe(true);
+    const keys = tmcUpload(moved, "imported").partKeys;
+    expect(keys).toEqual(["ball", "ohr"]);
+    expect(tmcUpload({ ...moved, parts: [...moved.parts].reverse() }, "imported").partKeys).toEqual(["ohr", "ball"]);
   });
 
   it("the ball demo's link stays far below the length warning", async () => {

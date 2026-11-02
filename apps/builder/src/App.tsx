@@ -29,6 +29,9 @@ import { partFindings, partName } from "./state/parts.js";
 import type { RoundSpec } from "./state/rounds.js";
 import { isMacPlatform, shortcutFor } from "./state/shortcuts.js";
 import { usePersistence } from "./state/usePersistence.js";
+import { defaultTmcServices, type TmcServices } from "./tmc/services.js";
+import { UploadDialog } from "./tmc/UploadDialog.js";
+import { useTmcAuth } from "./tmc/useTmcAuth.js";
 
 const NO_COLORS: readonly PaletteColor[] = [];
 
@@ -59,6 +62,8 @@ export interface AppProps {
   pastePreviewOptions?: PastePreviewOptions;
   /** "Montage" computation options (tests: a main-thread client). */
   assemblySceneOptions?: AssemblySceneOptions;
+  /** The upload to TellmeCrochet; default from the build's configuration, null: not offered. */
+  tmc?: TmcServices | null;
 }
 
 /** The notice after a pasted pattern was imported (German). */
@@ -73,7 +78,7 @@ export function pasteNotice({ mode, parts, unread }: Pick<PasteImport, "mode" | 
 }
 
 /** The builder: top bar, row editor (left) and preview (right). */
-export function App({ exportActions, pastePreviewOptions, assemblySceneOptions }: AppProps = {}) {
+export function App({ exportActions, pastePreviewOptions, assemblySceneOptions, tmc }: AppProps = {}) {
   const [state, dispatch] = useReducer(editorReducer, undefined, () => initEditorState(emptyDocument()));
   const persistence = usePersistence(state, dispatch);
   const [selectedRowId, setSelectedRowId] = useState<string | null>(null);
@@ -101,6 +106,27 @@ export function App({ exportActions, pastePreviewOptions, assemblySceneOptions }
     setSelectedRowId(null);
     setFocusRequest(null);
   }
+
+  // "Zu TellmeCrochet hochladen". The library behind it loads only for people who sign in.
+  const tmcServices = useMemo(() => (tmc === undefined ? defaultTmcServices() : tmc), [tmc]);
+  const tmcAuth = useTmcAuth(tmcServices);
+  const [uploadOpen, setUploadOpen] = useState(false);
+  const modalOpen = paste !== null || uploadOpen;
+  const openUpload = useCallback(() => {
+    if (!commitPendingEdits()) return;
+    tmcAuth.ensure();
+    setUploadOpen(true);
+  }, [tmcAuth.ensure]);
+  const closeUpload = useCallback(() => {
+    setUploadOpen(false);
+    tmcAuth.clearReturn();
+  }, [tmcAuth.clearReturn]);
+  // Back from signing in with Google: the document is restored, the dialog opens where it was.
+  const documentRestored = persistence.status !== "loading";
+  const uploadResumed = tmcAuth.resume !== null;
+  useEffect(() => {
+    if (uploadResumed && documentRestored) setUploadOpen(true);
+  }, [uploadResumed, documentRestored]);
 
   // A document from a file or a link: its author is unknown (provenance "foreign", E25).
   const replaceDocument = useCallback((doc: BuilderDoc, pinned: string[]) => {
@@ -284,20 +310,20 @@ export function App({ exportActions, pastePreviewOptions, assemblySceneOptions }
   // the page usually does nothing; the button and the offer in an empty pattern still work.
   useEffect(() => {
     const onPaste = (e: ClipboardEvent) => {
-      if (paste !== null || isEditable(e.target) || isEditable(document.activeElement) || overlayOpen()) return;
+      if (modalOpen || isEditable(e.target) || isEditable(document.activeElement) || overlayOpen()) return;
       const text = e.clipboardData?.getData("text/plain") ?? "";
       if (!looksLikePattern(text)) return;
       if (openPaste(text)) e.preventDefault();
     };
     document.addEventListener("paste", onPaste);
     return () => document.removeEventListener("paste", onPaste);
-  }, [paste, openPaste]);
+  }, [modalOpen, openPaste]);
 
   // Global shortcuts (by produced character, see shortcuts.ts).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      // The paste dialog owns the keyboard (undo there must not change the pattern behind it).
-      if (paste !== null) return;
+      // A modal dialog owns the keyboard (undo there must not change the pattern behind it).
+      if (modalOpen) return;
       const shortcut = shortcutFor(e);
       if (shortcut === "addRow") {
         e.preventDefault();
@@ -323,15 +349,24 @@ export function App({ exportActions, pastePreviewOptions, assemblySceneOptions }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [rows, selectionEnd, addRowAfter, selectPart, state.doc.parts.length, state.part, paste]);
+  }, [rows, selectionEnd, addRowAfter, selectPart, state.doc.parts.length, state.part, modalOpen]);
 
   const appRoot = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const root = appRoot.current;
     if (!root) return;
-    if (paste !== null) root.setAttribute("inert", "");
+    if (modalOpen) root.setAttribute("inert", "");
     else root.removeAttribute("inert");
-  }, [paste]);
+  }, [modalOpen]);
+  // The focus returns only now: an inert element cannot take it, and the export menu that opened
+  // the upload has closed. Its button is what stays.
+  const uploadWasOpen = useRef(false);
+  useEffect(() => {
+    if (uploadWasOpen.current && !uploadOpen) {
+      appRoot.current?.querySelector<HTMLElement>("[data-focus-id='export-toggle']")?.focus();
+    }
+    uploadWasOpen.current = uploadOpen;
+  }, [uploadOpen]);
 
   useEffect(() => {
     document.title = state.doc.title.trim() ? `${state.doc.title.trim()} – CrochetBuilder` : "CrochetBuilder";
@@ -390,6 +425,9 @@ export function App({ exportActions, pastePreviewOptions, assemblySceneOptions }
           onDemo={(kind) => dispatch(loadDemo(kind))}
           onReplace={replaceDocument}
           imported={state.imported}
+          onUpload={tmcServices ? openUpload : undefined}
+          lastUploadAt={state.uploadLink?.lastUpload.at}
+          account={tmcAuth.status === "signedIn" ? { email: tmcAuth.email, onSignOut: () => void tmcAuth.signOut() } : undefined}
           {...(exportActions ? { exportActions } : {})}
         />
         <main className="workspace">
@@ -468,7 +506,22 @@ export function App({ exportActions, pastePreviewOptions, assemblySceneOptions }
           />
         </main>
       </div>
-      {/* Outside the app root, which is inert while the dialog is open. */}
+      {/* Outside the app root, which is inert while a dialog is open. */}
+      {uploadOpen &&
+        tmcServices &&
+        createPortal(
+          <UploadDialog
+            doc={state.doc}
+            originHint={state.imported ? "imported" : "self_created"}
+            link={state.uploadLink}
+            services={tmcServices}
+            auth={tmcAuth}
+            onUploaded={(link) => dispatch({ type: "tmcUploaded", link })}
+            onForget={() => dispatch({ type: "tmcForget" })}
+            onClose={closeUpload}
+          />,
+          document.body,
+        )}
       {paste !== null &&
         createPortal(
           <PasteDialog

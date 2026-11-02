@@ -1,0 +1,187 @@
+/* "Zu TellmeCrochet hochladen": a small modal, one column, works down to phone width.
+ * Uses only tokens from tokens.css. */
+
+.upload-dialog {
+  width: min(34rem, 100%);
+  max-height: 100%;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  border: var(--bd-default);
+  border-radius: var(--r-card);
+  background: var(--c-surface);
+  box-shadow: var(--el-popover);
+  overflow: hidden;
+}
+.upload-dialog:focus {
+  outline: none;
+}
+
+.upload-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-4);
+  padding: var(--sp-3) var(--sp-5);
+  border-bottom: var(--bd-hairline);
+}
+.upload-head .paste-title {
+  margin: 0;
+}
+
+.upload-body {
+  display: grid;
+  align-content: start;
+  gap: var(--sp-3);
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--sp-4) var(--sp-5);
+}
+.upload-body p {
+  margin: 0;
+}
+.upload-body a {
+  color: var(--c-accent-text);
+}
+
+.upload-foot {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-5);
+  border-top: var(--bd-hairline);
+}
+
+.upload-group {
+  display: grid;
+  gap: var(--sp-2);
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.upload-group legend {
+  padding: 0;
+  margin-bottom: var(--sp-2);
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+}
+.upload-projects {
+  max-height: 14rem;
+  overflow-y: auto;
+}
+.upload-option {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-2);
+  cursor: pointer;
+}
+.upload-option input {
+  flex: none;
+  margin-top: 0.2em;
+}
+.upload-sub {
+  display: block;
+}
+
+.upload-notice,
+.upload-warning,
+.upload-error,
+.upload-success {
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--r-input);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-sm);
+}
+.upload-notice {
+  background: var(--c-surface-2);
+  color: var(--c-text-2);
+}
+.upload-warning,
+.upload-error {
+  background: var(--c-warn-bg);
+  color: var(--c-warn-text);
+}
+.upload-success {
+  background: var(--c-ok-bg);
+  color: var(--c-ok-text);
+}
+
+.upload-list {
+  margin: 0;
+  padding-left: var(--sp-4);
+  display: grid;
+  gap: var(--sp-1);
+}
+.upload-summary {
+  display: grid;
+  gap: var(--sp-1);
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--r-input);
+  background: var(--c-surface-2);
+}
+.upload-summary-title {
+  font-weight: var(--fw-semibold);
+}
+
+.upload-signin {
+  display: grid;
+  gap: var(--sp-3);
+}
+.upload-google {
+  width: 100%;
+  min-height: var(--h-control-lg);
+}
+.upload-or {
+  text-align: center;
+}
+.upload-form {
+  display: grid;
+  gap: var(--sp-2);
+}
+.upload-form-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+.upload-form-row input {
+  flex: 1 1 12rem;
+  min-width: 0;
+}
+.upload-code {
+  letter-spacing: 0.3em;
+  font-family: var(--font-mono);
+}
+.upload-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+
+@media (max-width: 480px) {
+  .upload-backdrop {
+    padding: var(--sp-2);
+  }
+  .upload-head,
+  .upload-body,
+  .upload-foot {
+    padding-left: var(--sp-3);
+    padding-right: var(--sp-3);
+  }
+}
+
+/* "Angemeldet als …" in the top bar. */
+.account {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 0;
+  font-size: var(--fs-xs);
+  color: var(--c-text-2);
+}
+.account-mail {
+  max-width: 16rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

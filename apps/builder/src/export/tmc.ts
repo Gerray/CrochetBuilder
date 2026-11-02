@@ -1,20 +1,19 @@
 /**
  * Hand-off to TellmeCrochet: the export as a TellmeCrochet draft in an envelope (engine,
- * `toTellmeCrochetDraft`), as a link (`#data=tmc1.…`) or as a file to save, plus the short
- * German notice of what arrives differently (`summary`).
+ * `toTellmeCrochetDraft`), as a file to save or as what the upload sends, plus the short German
+ * notice of what arrives differently (`summary`).
  */
 
 import {
-  buildTmcImportUrl,
-  encodeTmcPayload,
-  ShareDecodeError,
   summarizeTmcLosses,
+  tmcPartKeys,
   toTellmeCrochetDraft,
   toTmcEnvelope,
   type BuilderExport,
   type TmcEnvelope,
   type TmcOriginHint,
 } from "@crochetbuilder/engine";
+import { withAllPartIds } from "../state/assembly.js";
 import type { BuilderDoc } from "../state/document.js";
 import { downloadBlob, exportFileName, prepareExport } from "./prepare.js";
 
@@ -24,10 +23,9 @@ export interface TmcHandoff {
   summary: string[];
 }
 
-export interface TmcLink extends TmcHandoff {
-  payload: string;
-  /** `https://tellmecrochet.de/import#data=tmc1.…` */
-  url: string;
+export interface TmcUpload extends TmcHandoff {
+  /** One stable key per entry of `envelope.draft.parts`. */
+  partKeys: string[];
 }
 
 /** The envelope of a (validated) export and the notice of what changes on the way. */
@@ -36,27 +34,13 @@ export function tmcHandoff(exp: BuilderExport, originHint: TmcOriginHint): TmcHa
   return { envelope: toTmcEnvelope(draft, originHint), summary: summarizeTmcLosses(losses) };
 }
 
-/** The hand-off as a link. Throws like `encodeShare` (too large, no compression). */
-export async function tmcLink(exp: BuilderExport, originHint: TmcOriginHint): Promise<TmcLink> {
-  const handoff = tmcHandoff(exp, originHint);
-  const payload = await encodeTmcPayload(handoff.envelope);
-  return { ...handoff, payload, url: buildTmcImportUrl(payload) };
-}
-
-/** The hand-off link of the current document (validated export). Rejects like `tmcLink`. */
-export async function documentTmcLink(doc: BuilderDoc, originHint: TmcOriginHint): Promise<TmcLink> {
-  return tmcLink(prepareExport(doc), originHint);
-}
-
-/** Why no TellmeCrochet link could be made (German); the share links are not affected. */
-export function tmcLinkErrorMessage(err: unknown): string {
-  if (err instanceof ShareDecodeError && err.code === "unsupported") {
-    return "Dein Browser ist zu alt für den Link zu TellmeCrochet. Speichere die Anleitung mit „Für TellmeCrochet speichern (.json)“.";
-  }
-  if (err instanceof RangeError) {
-    return "Die Anleitung ist zu groß für einen Link zu TellmeCrochet. Speichere sie mit „Für TellmeCrochet speichern (.json)“.";
-  }
-  return "Der Link zu TellmeCrochet konnte nicht erstellt werden. Speichere die Anleitung mit „Für TellmeCrochet speichern (.json)“.";
+/**
+ * What an upload of `doc` sends. Parts count with the ids they get at their first upload, so the
+ * keys are the same now and later, however they are moved or renamed. Throws like `prepareExport`.
+ */
+export function tmcUpload(doc: BuilderDoc, originHint: TmcOriginHint): TmcUpload {
+  const exp = prepareExport(withAllPartIds(doc));
+  return { ...tmcHandoff(exp, originHint), partKeys: tmcPartKeys(exp) };
 }
 
 /** File name of the saved hand-off: "amigurumi-kugel.tellmecrochet.json". */

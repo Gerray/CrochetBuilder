@@ -1,7 +1,6 @@
 /**
  * Share and embed links of the current document. They carry the export in the URL fragment
- * (`#data=v1.…`), which never reaches a server. The TellmeCrochet link is made on its own
- * (`tmc.ts`), so a failing hand-off never takes the share links with it.
+ * (`#data=v1.…`), which never reaches a server.
  */
 
 import { buildViewerUrl, encodeShare } from "@crochetbuilder/engine";

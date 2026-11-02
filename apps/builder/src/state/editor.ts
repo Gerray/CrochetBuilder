@@ -31,12 +31,13 @@ import {
   type StitchOp,
   type Stuffing,
 } from "@crochetbuilder/engine";
-import { applyAssemblyAction, assemblyCoalesceKey, withoutPlacementsOf, type AssemblyAction } from "./assembly.js";
+import { applyAssemblyAction, assemblyCoalesceKey, withAllPartIds, withoutPlacementsOf, type AssemblyAction } from "./assembly.js";
 import { emptyRow, instructionRow, type BuilderDoc } from "./document.js";
 import * as tree from "./op-tree.js";
 import type { OpPath } from "./op-tree.js";
 import { colorNameProblem, replaceColorInRow } from "./palette.js";
 import { joinRefOf, withJoinIds, withoutJoinsTo, type JoinDraft } from "./joins.js";
+import type { UploadLink } from "./uploadLink.js";
 
 export const HISTORY_LIMIT = 200;
 
@@ -62,6 +63,12 @@ export interface EditorState {
    * (the pasted text was in the pattern). App-local, never part of the export.
    */
   imported: boolean;
+  /**
+   * The TellmeCrochet project of this document (see `uploadLink.ts`), null until its first upload.
+   * Undo and redo leave it alone, because an upload cannot be undone here. Only stepping back or
+   * forward over a replaced document brings along the link of the document that comes back.
+   */
+  uploadLink: UploadLink | null;
 }
 
 interface Snapshot {
@@ -71,6 +78,8 @@ interface Snapshot {
   imported: boolean;
   /** The step was a paste: undoing it keeps `imported` set. */
   pasted?: boolean;
+  /** The step replaced the whole document: `uploadLink` is the link that belongs to `doc`. */
+  replaced?: { uploadLink: UploadLink | null };
   /** Part to show after undoing this step (undefined: keep the current one). */
   undoPart: number | undefined;
   /** Part to show after redoing it. */
@@ -170,14 +179,45 @@ export type EditorAction =
   // document
   /** `source`: where the new document comes from (provenance, E25). */
   | { type: "replaceDocument"; doc: BuilderDoc; pinned?: readonly string[]; source?: DocumentSource }
-  | { type: "hydrate"; doc: BuilderDoc; pinned?: readonly string[]; part?: number; imported?: boolean }
+  | { type: "hydrate"; doc: BuilderDoc; pinned?: readonly string[]; part?: number; imported?: boolean; uploadLink?: UploadLink | null }
+  /** An upload went through: the project is remembered and every part has its id from now on. */
+  | { type: "tmcUploaded"; link: UploadLink }
+  /** The project is gone from the account: the document has no project any more. */
+  | { type: "tmcForget" }
   | { type: "undo" }
   | { type: "redo" }
   /** Typing in a field ended (blur): the next edit starts a new undo step. */
   | { type: "endTyping" };
 
-export function initEditorState(doc: BuilderDoc, pinned: readonly string[] = [], part = 0, imported = false): EditorState {
-  return { doc, pinned, part: clampPart(doc, part), past: [], future: [], lastKey: undefined, imported };
+export function initEditorState(
+  doc: BuilderDoc,
+  pinned: readonly string[] = [],
+  part = 0,
+  imported = false,
+  uploadLink: UploadLink | null = null,
+): EditorState {
+  return { doc, pinned, part: clampPart(doc, part), past: [], future: [], lastKey: undefined, imported, uploadLink };
+}
+
+/**
+ * `doc` with the ids `next` gave its parts, for parts that still go by the same name. An older
+ * state in the history must not hand out a new key for a part after undo and a rename.
+ */
+function withIdsOf(doc: BuilderDoc, next: BuilderDoc): BuilderDoc {
+  const used = new Set(doc.parts.flatMap((p) => (p.id === undefined ? [] : [p.id])));
+  // Parts of the same name take their ids in order.
+  const free = new Map<string, string[]>();
+  for (const { name, id } of next.parts) {
+    if (id !== undefined && !used.has(id)) free.set(name, [...(free.get(name) ?? []), id]);
+  }
+  let changed = false;
+  const parts = doc.parts.map((part) => {
+    const id = part.id === undefined ? free.get(part.name)?.shift() : undefined;
+    if (id === undefined) return part;
+    changed = true;
+    return { ...part, id };
+  });
+  return changed ? { ...doc, parts } : doc;
 }
 
 /** Provenance after `action` (see `EditorState.imported`). */
@@ -729,6 +769,8 @@ function applyEdit(state: EditorState, action: EditorAction): DocResult {
     case "undo":
     case "redo":
     case "endTyping":
+    case "tmcUploaded":
+    case "tmcForget":
       return same;
 
     case "batch":
@@ -841,7 +883,7 @@ export const MAX_RUN_LENGTH = 999;
 
 type AssistAction = Extract<EditorAction, { type: "batch" | "insertRows" | "setRunLength" | "unpinTarget" }>;
 
-const NOT_BATCHABLE: ReadonlySet<EditorAction["type"]> = new Set(["undo", "redo", "hydrate", "endTyping", "selectPart"]);
+const NOT_BATCHABLE: ReadonlySet<EditorAction["type"]> = new Set(["undo", "redo", "hydrate", "endTyping", "selectPart", "tmcUploaded", "tmcForget"]);
 
 /** An empty stitch row (being written, no note): snippets replace it instead of following it. */
 function isBlankRow(row: Row | undefined): boolean {
@@ -1046,10 +1088,20 @@ export function editorReducer(state: EditorState, action: EditorAction): EditorS
       pinned: previous.pinned,
       part: clampPart(previous.doc, previous.undoPart ?? state.part),
       past: state.past.slice(0, -1),
-      future: [{ ...previous, doc: state.doc, pinned: state.pinned, imported: state.imported }, ...state.future],
+      future: [
+        {
+          ...previous,
+          doc: state.doc,
+          pinned: state.pinned,
+          imported: state.imported,
+          ...(previous.replaced ? { replaced: { uploadLink: state.uploadLink } } : {}),
+        },
+        ...state.future,
+      ],
       lastKey: undefined,
       // Undoing a paste keeps the mark: the pasted text was in the pattern (E25).
       imported: previous.pasted === true || previous.imported,
+      uploadLink: previous.replaced ? previous.replaced.uploadLink : state.uploadLink,
     };
   }
   if (action.type === "redo") {
@@ -1059,15 +1111,37 @@ export function editorReducer(state: EditorState, action: EditorAction): EditorS
       doc: next.doc,
       pinned: next.pinned,
       part: clampPart(next.doc, next.redoPart ?? state.part),
-      past: [...state.past, { ...next, doc: state.doc, pinned: state.pinned, imported: state.imported }],
+      past: [
+        ...state.past,
+        {
+          ...next,
+          doc: state.doc,
+          pinned: state.pinned,
+          imported: state.imported,
+          ...(next.replaced ? { replaced: { uploadLink: state.uploadLink } } : {}),
+        },
+      ],
       future: state.future.slice(1),
       lastKey: undefined,
       imported: next.imported,
+      uploadLink: next.replaced ? next.replaced.uploadLink : state.uploadLink,
     };
   }
   if (action.type === "hydrate") {
     const loaded = withAutoTargets(action.doc, action.pinned ?? []);
-    return initEditorState(loaded.doc, loaded.pinned, action.part ?? 0, action.imported === true);
+    return initEditorState(loaded.doc, loaded.pinned, action.part ?? 0, action.imported === true, action.uploadLink ?? null);
+  }
+  if (action.type === "tmcUploaded") {
+    // No undo step: nothing the person edited, and no way to take the upload back from here.
+    const doc = withAllPartIds(state.doc);
+    const stamp = (snapshot: Snapshot): Snapshot => {
+      const stamped = withIdsOf(snapshot.doc, doc);
+      return stamped === snapshot.doc ? snapshot : { ...snapshot, doc: stamped };
+    };
+    return { ...state, doc, past: state.past.map(stamp), future: state.future.map(stamp), uploadLink: action.link };
+  }
+  if (action.type === "tmcForget") {
+    return state.uploadLink === null ? state : { ...state, uploadLink: null };
   }
   if (action.type === "endTyping") {
     return state.lastKey === undefined ? state : { ...state, lastKey: undefined };
@@ -1088,12 +1162,23 @@ export function editorReducer(state: EditorState, action: EditorAction): EditorS
     pinned: state.pinned,
     imported: state.imported,
     ...(isPaste(action) ? { pasted: true } : {}),
+    ...(action.type === "replaceDocument" ? { replaced: { uploadLink: state.uploadLink } } : {}),
     undoPart: result.scope,
     redoPart: result.select ?? result.scope,
   };
   const past = coalesce ? state.past : [...state.past, entry].slice(-HISTORY_LIMIT);
   const part = clampPart(result.doc, result.select ?? state.part);
-  return { doc: result.doc, pinned: result.pinned, part, past, future: [], lastKey: key, imported: importedAfter(state, action) };
+  return {
+    doc: result.doc,
+    pinned: result.pinned,
+    part,
+    past,
+    future: [],
+    lastKey: key,
+    imported: importedAfter(state, action),
+    // A new document, an opened file and a pasted pattern have no project until they are uploaded.
+    uploadLink: action.type === "replaceDocument" ? null : state.uploadLink,
+  };
 }
 
 export const canUndo = (state: EditorState): boolean => state.past.length > 0;

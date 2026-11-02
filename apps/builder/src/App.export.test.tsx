@@ -1,17 +1,10 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import {
-  decodeTmcPayload,
-  encodeShare,
-  readShareFragment,
-  TmcEnvelopeSchema,
-  type BuilderExport,
-  type TmcOriginHint,
-} from "@crochetbuilder/engine";
+import { encodeShare, type BuilderExport, type TmcOriginHint } from "@crochetbuilder/engine";
 import { App } from "./App.js";
 import type { ExportActions } from "./components/ExportMenu.js";
-import { REPLACE_FROM_FILE_QUESTION, TMC_PENDING_NOTE } from "./components/ExportMenu.js";
+import { REPLACE_FROM_FILE_QUESTION } from "./components/ExportMenu.js";
 import { prepareExport } from "./export/prepare.js";
 import { REPLACE_FROM_LINK_QUESTION } from "./export/useFragmentImport.js";
 import { demoDocument, type BuilderDoc } from "./state/document.js";
@@ -73,7 +66,7 @@ async function loadBall() {
 async function openExport() {
   fireEvent.click(screen.getByRole("button", { name: /Exportieren/ }));
   const panel = screen.getByRole("dialog", { name: "Exportieren" });
-  await within(panel).findByRole("link", { name: "In TellmeCrochet öffnen" });
+  await waitFor(() => expect((within(panel).getByRole("button", { name: "Link teilen" }) as HTMLButtonElement).disabled).toBe(false));
   return panel;
 }
 
@@ -87,75 +80,14 @@ beforeEach(() => {
 afterEach(() => cleanup());
 
 describe("Export menu", () => {
-  it("„In TellmeCrochet öffnen“ is a link carrying a TellmeCrochet draft, with the interim note", async () => {
+  it("offers no link to TellmeCrochet any more, and without configuration no upload either", async () => {
     await renderApp(fakeActions().actions);
     await loadBall();
     const panel = await openExport();
-    const link = within(panel).getByRole("link", { name: "In TellmeCrochet öffnen" }) as HTMLAnchorElement;
-    expect(link.target).toBe("_blank");
-    expect(link.rel).toContain("noopener");
-    expect(link.href).toMatch(/^https:\/\/tellmecrochet\.de\/import#data=tmc1\./);
-    const env = await decodeTmcPayload(readShareFragment(new URL(link.href).hash)!);
-    expect(TmcEnvelopeSchema.safeParse(env).success).toBe(true);
-    expect(env).toMatchObject({ format: "tmc-draft", version: 1, sourceNotation: "de", originHint: "self_created" });
-    expect(env.draft.title).toBe("Amigurumi-Ball");
-    expect(env.draft.parts[0]!.content.rows.filter((r) => r.ops.length > 0)).toHaveLength(11);
-    expect(within(panel).getByText(TMC_PENDING_NOTE)).toBeTruthy();
-  });
-
-  it("what arrives differently is shown before opening; one more click continues", async () => {
-    await renderApp(fakeActions().actions);
-    await loadBall();
-    const panel = await openExport();
-    const link = within(panel).getByRole("link", { name: "In TellmeCrochet öffnen" }) as HTMLAnchorElement;
-    // The ball has notes and a gauge: they become a step at the start of the first part.
-    expect(fireEvent.click(link)).toBe(false); // default prevented: the notice comes first
-    const notice = within(panel).getByRole("note", { name: "Hinweis zu TellmeCrochet" });
-    expect(within(notice).getByText(/stehen als Schritt am Anfang des ersten Teils/)).toBeTruthy();
-    const next = within(notice).getByRole("link", { name: "Weiter zu TellmeCrochet" }) as HTMLAnchorElement;
-    expect(next.href).toBe(link.href);
-    expect(next.target).toBe("_blank");
-    expect(fireEvent.click(next)).toBe(true); // opens
-    expect(within(panel).queryByRole("note", { name: "Hinweis zu TellmeCrochet" })).toBeNull();
-    // "Abbrechen" closes the notice without opening anything; the focus goes back to the link.
-    fireEvent.click(link);
-    fireEvent.click(within(panel).getByRole("button", { name: "Abbrechen" }));
-    expect(within(panel).queryByRole("note", { name: "Hinweis zu TellmeCrochet" })).toBeNull();
-    expect(document.activeElement).toBe(link);
-  });
-
-  it("the notice takes the focus on „Weiter“; Escape closes only the notice, a click elsewhere too", async () => {
-    await renderApp(fakeActions().actions);
-    await loadBall();
-    const panel = await openExport();
-    const link = within(panel).getByRole("link", { name: "In TellmeCrochet öffnen" });
-    const noticeOf = () => within(panel).queryByRole("note", { name: "Hinweis zu TellmeCrochet" });
-    fireEvent.click(link);
-    expect(document.activeElement).toBe(within(noticeOf()!).getByRole("link", { name: "Weiter zu TellmeCrochet" }));
-    fireEvent.keyDown(document.activeElement!, { key: "Escape" });
-    expect(noticeOf()).toBeNull();
-    expect(screen.getByRole("dialog", { name: "Exportieren" })).toBeTruthy(); // the menu stays open
-    expect(document.activeElement).toBe(link);
-    fireEvent.click(link);
-    fireEvent.pointerDown(within(panel).getByRole("button", { name: "Als PDF speichern" }));
-    expect(noticeOf()).toBeNull();
-  });
-
-  it("a failing TellmeCrochet link only disables that link, with a message; share links still work", async () => {
-    const { actions, rec } = fakeActions();
-    actions.tmcLink = () => Promise.reject(new RangeError("too big"));
-    await renderApp(actions);
-    await loadBall();
-    fireEvent.click(screen.getByRole("button", { name: /Exportieren/ }));
-    const panel = screen.getByRole("dialog", { name: "Exportieren" });
-    const alert = await within(panel).findByRole("alert");
-    expect(alert.textContent).toMatch(/^Die Anleitung ist zu groß für einen Link zu TellmeCrochet/);
-    expect((within(panel).getByRole("button", { name: "In TellmeCrochet öffnen" }) as HTMLButtonElement).disabled).toBe(true);
-    const share = within(panel).getByRole("button", { name: "Link teilen" }) as HTMLButtonElement;
-    expect(share.disabled).toBe(false);
-    fireEvent.click(share);
-    await within(panel).findByText("Link kopiert.");
-    expect(rec.copied[0]).toMatch(/\/viewer\/#data=v1\./);
+    expect(within(panel).queryByRole("link", { name: /TellmeCrochet/ })).toBeNull();
+    expect(within(panel).queryByRole("button", { name: "Zu TellmeCrochet hochladen" })).toBeNull();
+    expect(within(panel).getByRole("button", { name: "Für TellmeCrochet speichern (.json)" })).toBeTruthy();
+    expect(within(panel).queryByText(/Zuletzt hochgeladen/)).toBeNull();
   });
 
   it("„Für TellmeCrochet speichern (.json)“ hands the document and its provenance to the action", async () => {
@@ -223,11 +155,8 @@ describe("Export menu", () => {
     try {
       fireEvent.click(screen.getByRole("button", { name: /Exportieren/ }));
       const panel = screen.getByRole("dialog", { name: "Exportieren" });
-      // One message for the share links, one for the TellmeCrochet link.
-      await waitFor(() => expect(within(panel).getAllByRole("alert")).toHaveLength(2));
-      const texts = within(panel).getAllByRole("alert").map((a) => a.textContent);
-      expect(texts).toContainEqual(expect.stringMatching(/^Dein Browser ist zu alt für Teilen-Links/));
-      expect(texts).toContainEqual(expect.stringMatching(/^Dein Browser ist zu alt für den Link zu TellmeCrochet/));
+      const alert = await within(panel).findByRole("alert");
+      expect(alert.textContent).toMatch(/^Dein Browser ist zu alt für Teilen-Links/);
     } finally {
       vi.unstubAllGlobals();
     }
@@ -302,10 +231,6 @@ describe("JSON öffnen…", () => {
     await within(panel).findByText("„ball.json“ geöffnet.");
     fireEvent.click(within(panel).getByRole("button", { name: "Für TellmeCrochet speichern (.json)" }));
     expect(rec.tmc.at(-1)?.originHint).toBe("imported");
-    const link = (await within(panel).findByRole("link", { name: "In TellmeCrochet öffnen" })) as HTMLAnchorElement;
-    await waitFor(async () =>
-      expect((await decodeTmcPayload(readShareFragment(new URL(link.href).hash)!)).originHint).toBe("imported"),
-    );
 
     fireEvent.click(screen.getByRole("button", { name: /Exportieren/ })); // close
     fireEvent.click(screen.getByRole("button", { name: /^Neu$/ }));

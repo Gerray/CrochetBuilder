@@ -4,7 +4,8 @@ import { IDBFactory } from "fake-indexeddb";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { demoDocument, emptyDocument } from "./document.js";
 import { MAX_PART_QUANTITY, MAX_PARTS } from "./editor.js";
-import { BACKUP_KEY, LS_KEY, PART_KEY, loadShownPart, loadState, resetStorageConnection, saveShownPart, saveState } from "./storage.js";
+import { BACKUP_KEY, LS_KEY, PART_KEY, loadShownPart, loadState, resetStorageConnection, saveShownPart, saveState, storedUploadLink } from "./storage.js";
+import type { UploadLink } from "./uploadLink.js";
 
 const realIndexedDB = globalThis.indexedDB;
 
@@ -170,5 +171,55 @@ describe("storage — provenance (E25)", () => {
     expect(JSON.parse(localStorage.getItem(LS_KEY)!)).not.toHaveProperty("imported");
     const result = await loadState();
     expect(result.kind === "ok" && result.state.imported).toBeUndefined();
+  });
+});
+
+describe("storage — the TellmeCrochet project", () => {
+  const link: UploadLink = { builderKey: "key-1", lastUpload: { patternId: "p1", at: 1234, origin: "imported" } };
+
+  it("keeps key and last upload next to the document, in both copies, never inside it", async () => {
+    const doc = demoDocument();
+    await saveState({ doc, pinned: [], uploadLink: link });
+    const record = JSON.parse(localStorage.getItem(LS_KEY)!) as Record<string, unknown> & { doc: Record<string, unknown> };
+    expect(record.builderKey).toBe("key-1");
+    expect(record.lastUpload).toEqual(link.lastUpload);
+    expect(record.doc).not.toHaveProperty("builderKey");
+    expect(record.doc).not.toHaveProperty("lastUpload");
+
+    const fromLs = await loadState();
+    expect(fromLs.kind === "ok" && storedUploadLink(fromLs.state)).toEqual(link);
+    localStorage.clear(); // the IndexedDB copy carries it too
+    const fromIdb = await loadState();
+    expect(fromIdb.kind === "ok" && storedUploadLink(fromIdb.state)).toEqual(link);
+  });
+
+  it("a document without a project stores nothing; old saves read as having none", async () => {
+    await saveState({ doc: demoDocument(), pinned: [], uploadLink: null });
+    const record = JSON.parse(localStorage.getItem(LS_KEY)!) as Record<string, unknown>;
+    expect(record).not.toHaveProperty("builderKey");
+    expect(record).not.toHaveProperty("lastUpload");
+    const result = await loadState();
+    expect(result.kind === "ok" && storedUploadLink(result.state)).toBeNull();
+    expect(result.kind === "ok" && result.state).not.toHaveProperty("builderKey");
+  });
+
+  it.each([
+    ["key without an upload", { builderKey: "k" }],
+    ["upload without a key", { lastUpload: { patternId: "p", at: 1, origin: "imported" } }],
+    ["key of the wrong type", { builderKey: 7, lastUpload: { patternId: "p", at: 1, origin: "imported" } }],
+    ["empty key", { builderKey: "", lastUpload: { patternId: "p", at: 1, origin: "imported" } }],
+    ["no project id", { builderKey: "k", lastUpload: { at: 1, origin: "imported" } }],
+    ["no time", { builderKey: "k", lastUpload: { patternId: "p", origin: "imported" } }],
+    ["unknown origin", { builderKey: "k", lastUpload: { patternId: "p", at: 1, origin: "bought" } }],
+  ])("something unreadable reads as no project, and the document still loads: %s", async (_name, fields) => {
+    const doc = demoDocument();
+    localStorage.setItem(LS_KEY, JSON.stringify({ doc, pinned: [], savedAt: 3, ...fields }));
+    const result = await loadState();
+    expect(result.kind).toBe("ok");
+    if (result.kind === "ok") {
+      expect(storedUploadLink(result.state)).toBeNull();
+      expect(result.state.doc).toEqual(doc);
+      expect(result.state).not.toHaveProperty("builderKey");
+    }
   });
 });

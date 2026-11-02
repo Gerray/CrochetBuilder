@@ -9,9 +9,8 @@
  * holds the text), which TellmeCrochet's guided mode shows as a step of its own.
  *
  * The draft travels in an envelope (`TmcEnvelope`) that also carries the notation and a hint
- * about the origin of the pattern, packed like a share payload with the prefix `tmc1.` (see
- * docs/FORMAT.md, "Hand-off to TellmeCrochet"). The schemas here are this repository's own
- * description of the documented target shape.
+ * about the origin of the pattern (see docs/FORMAT.md, "Hand-off to TellmeCrochet"). The
+ * schemas here are this repository's own description of the documented target shape.
  *
  * Pure functions, no UI or framework imports.
  */
@@ -25,7 +24,6 @@ import { droppedPlacements, planJoins, rowHasJoin, type JoinPlan } from "./join.
 import type { Gauge, YarnWeight } from "./gauge.js";
 import { renderRow, rowLabel } from "./notation.js";
 import type { Op, Row, StitchCode } from "./schema.js";
-import { packJson, ShareDecodeError, unpackJson } from "./share.js";
 import { checkPart, computeRowStitches } from "./stitch-count.js";
 
 // ---------------------------------------------------------------------------
@@ -126,14 +124,14 @@ export const TmcDraftSchema = z
 
 /**
  * Where the pattern presumably comes from: `imported` once text from elsewhere was pasted into
- * the document, else `self_created`. Only a hint — the receiving app decides (see
- * docs/FORMAT.md, "Hand-off to TellmeCrochet").
+ * the document, else `self_created`. Only a hint, no receiver decides anything by it: the person
+ * says who designed the pattern (see docs/FORMAT.md, "Hand-off to TellmeCrochet").
  */
 export const TmcOriginHintSchema = z.enum(["self_created", "imported"]);
 
 /**
- * What the hand-off link and file carry: the draft plus the two facts TellmeCrochet stores
- * next to it — the notation the text is written in and a hint where the pattern comes from.
+ * What the hand-off file and the upload carry: the draft plus the notation the text is written
+ * in and a hint where the pattern comes from.
  */
 export const TmcEnvelopeSchema = z
   .object({
@@ -227,6 +225,9 @@ export interface TmcDraftOptions {
 }
 
 export const TMC_ASSEMBLY_PART_NAME = "Zusammensetzen";
+
+/** Key of the generated part "Zusammensetzen" (see `tmcPartKeys`). */
+export const TMC_ASSEMBLY_PART_KEY = "assembly";
 
 // ---------------------------------------------------------------------------
 // German wording
@@ -394,7 +395,7 @@ function joinWords(words: readonly string[]): string {
 }
 
 /**
- * The losses of a hand-off in a few short German sentences, for a notice before opening
+ * The losses of a hand-off in a few short German sentences, for a notice before uploading to
  * TellmeCrochet, e.g. "3 Runden mit Noppen werden in TellmeCrochet als Text-Schritt gezeigt."
  * Technical changes (new row ids) are not mentioned.
  */
@@ -614,6 +615,16 @@ function draftMaterials(materials: readonly Material[], palette: readonly Palett
   return out;
 }
 
+function planOf(doc: BuilderExport): JoinPlan | null {
+  return doc.parts.some((p) => p.content.rows.some(rowHasJoin)) ? planJoins(doc) : null;
+}
+
+/** The placements that become steps; placements a join overrides (crocheted on there) do not. */
+function assemblySteps(doc: BuilderExport, plan: JoinPlan | null): { placements: Placement[]; dropped: Set<string> } {
+  const dropped = new Set(plan ? droppedPlacements(doc, plan).map((d) => d.placement.id) : []);
+  return { placements: (doc.assembly ?? []).filter((pl) => !dropped.has(pl.id)), dropped };
+}
+
 /**
  * The builder export `doc` as a TellmeCrochet draft (format version 1), plus what was carried
  * over differently (`losses`):
@@ -643,7 +654,7 @@ export function toTellmeCrochetDraft(doc: BuilderExport, opts: TmcDraftOptions =
   const assemblyName = opts.assemblyPartName?.trim() || TMC_ASSEMBLY_PART_NAME;
   // Joins name the other part as TellmeCrochet shows it ("aus Teil Bein 1 (Runde 5)").
   const joinParts = joinPartsOf(doc);
-  const plan = doc.parts.some((p) => p.content.rows.some(rowHasJoin)) ? planJoins(doc) : null;
+  const plan = planOf(doc);
 
   const parts: TmcDraftPart[] = doc.parts.map((part, partIndex) => {
     const sourceRows = part.content.rows;
@@ -795,12 +806,10 @@ export function toTellmeCrochetDraft(doc: BuilderExport, opts: TmcDraftOptions =
     return finishPart(partDisplayName(part.name, partIndex), part.quantity, rows);
   });
 
-  // Placements the join overrides (the part is crocheted on there) are no step.
-  const dropped = new Set(plan ? droppedPlacements(doc, plan).map((d) => d.placement.id) : []);
+  const { placements, dropped } = assemblySteps(doc, plan);
   for (const id of dropped) {
     losses.push({ code: "assembly", placementId: id, partName: assemblyName, message: `Die Platzierung „${id}“ entfällt: das Teil wird beim Häkeln angesetzt.` });
   }
-  const placements = (doc.assembly ?? []).filter((pl) => !dropped.has(pl.id));
   if (placements.length > 0) {
     const ids = new IdPool();
     const rows = placements.map((pl) => {
@@ -838,42 +847,26 @@ export function toTmcEnvelope(draft: TmcDraft, originHint: TmcOriginHint): TmcEn
 }
 
 // ---------------------------------------------------------------------------
-// Payload and link
+// Part keys
 // ---------------------------------------------------------------------------
 
-/** Prefix of a hand-off payload. */
-export const TMC_PAYLOAD_VERSION = "tmc1";
-
-/** Where TellmeCrochet takes a hand-off (its fragment carries the payload). */
-export const TMC_IMPORT_URL = "https://tellmecrochet.de/import";
-
 /**
- * Pack an envelope into a payload: `tmc1.` + base64url(deflate-raw(UTF-8(JSON))) — the same
- * packing as share links. Validated first; throws like `encodeShare` beyond the limits.
+ * One stable key per entry of `toTellmeCrochetDraft(doc).draft.parts`, in the same order: the
+ * receiver follows a part from one upload to the next by it. A part's key is its `id`; the
+ * generated part "Zusammensetzen" is always `TMC_ASSEMBLY_PART_KEY`, which no other part takes.
+ *
+ * A part without an id (files of format version 1, parts nobody referred to yet) has no identity
+ * of its own: it gets `teil-<n>` from its position, which holds for repeated exports but not when
+ * parts are moved or get an id later. Whoever uploads gives every part an id first. Repeated ids
+ * stay unique: the first keeps it, later ones get the next free `-2`, `-3`, …
  */
-export async function encodeTmcPayload(envelope: TmcEnvelope): Promise<string> {
-  return packJson(TmcEnvelopeSchema.parse(envelope), TMC_PAYLOAD_VERSION, "Draft");
-}
-
-/** Unpack and validate a `tmc1.` payload. Throws `ShareDecodeError` only. */
-export async function decodeTmcPayload(payload: string): Promise<TmcEnvelope> {
-  const data = await unpackJson(payload, TMC_PAYLOAD_VERSION);
-  let parsed: ReturnType<typeof TmcEnvelopeSchema.safeParse>;
-  try {
-    parsed = TmcEnvelopeSchema.safeParse(data);
-  } catch (err) {
-    throw new ShareDecodeError("invalid", "Payload cannot be validated.", { cause: err });
-  }
-  if (!parsed.success) {
-    throw new ShareDecodeError("invalid", "Payload is not a valid TellmeCrochet draft.", { cause: parsed.error });
-  }
-  return parsed.data;
-}
-
-/** "Open in TellmeCrochet": `https://tellmecrochet.de/import#data=tmc1.…`. Only takes hand-off payloads. */
-export function buildTmcImportUrl(payload: string): string {
-  if (!payload.startsWith(`${TMC_PAYLOAD_VERSION}.`)) {
-    throw new TypeError(`A TellmeCrochet link carries a "${TMC_PAYLOAD_VERSION}." payload.`);
-  }
-  return `${TMC_IMPORT_URL}#data=${payload}`;
+export function tmcPartKeys(doc: BuilderExport): string[] {
+  // Own ids are taken before any position-based key, so they never have to give way to one.
+  const pool = new IdPool([TMC_ASSEMBLY_PART_KEY]);
+  const keys = doc.parts.map((p) => (p.id === undefined ? undefined : pool.fresh(p.id)));
+  const out = keys.map((key, i) => key ?? pool.fresh(`teil-${i + 1}`));
+  if (assemblySteps(doc, planOf(doc)).placements.length > 0) out.push(TMC_ASSEMBLY_PART_KEY);
+  // Same placeholder part as `toTellmeCrochetDraft`, for an export without parts.
+  if (out.length === 0) out.push(pool.fresh("teil-1"));
+  return out;
 }
