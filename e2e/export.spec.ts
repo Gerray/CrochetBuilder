@@ -81,29 +81,6 @@ test("PDF export produces a real PDF file", async ({ page }, testInfo) => {
   expect(bytes.length).toBeGreaterThan(10_000);
 });
 
-test("'In TellmeCrochet öffnen' links to the TellmeCrochet import", async ({ page }) => {
-  await openBuilder(page);
-  await loadDemo(page, "Kugel");
-  const panel = await openExportMenu(page);
-  const link = panel.getByRole("link", { name: "In TellmeCrochet öffnen" });
-  const href = await link.getAttribute("href");
-  expect(href).toMatch(/^https:\/\/tellmecrochet\.de\/import#data=tmc1\.[A-Za-z0-9_-]+$/);
-  await expect(link).toHaveAttribute("target", "_blank");
-  await expect(link).toHaveAttribute("rel", /noopener/);
-
-  // The sphere's notes and gauge become a step in TellmeCrochet: the first click says so and
-  // offers to continue, without opening a tab yet.
-  let opened = false;
-  page.context().on("page", () => (opened = true));
-  await link.click();
-  const notice = panel.getByRole("note", { name: "Hinweis zu TellmeCrochet" });
-  await expect(notice).toContainText("am Anfang des ersten Teils");
-  await expect(notice.getByRole("link", { name: "Weiter zu TellmeCrochet" })).toHaveAttribute("href", href!);
-  expect(opened).toBe(false);
-  await notice.getByRole("button", { name: "Abbrechen" }).click();
-  await expect(notice).toHaveCount(0);
-});
-
 test("'Für TellmeCrochet speichern (.json)' saves the hand-off envelope", async ({ page }, testInfo) => {
   await openBuilder(page);
   await loadDemo(page, "Kugel");

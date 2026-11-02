@@ -32,10 +32,7 @@ test("share link opens the viewer, embed mode, and back into the builder", async
   const canvas = viewer.getByRole("region", { name: "3D-Modell" }).locator("canvas");
   await expect(canvas).toBeVisible();
   expect((await canvas.boundingBox())?.width).toBeGreaterThan(50);
-  await expect(viewer.getByRole("link", { name: "In TellmeCrochet öffnen" })).toHaveAttribute(
-    "href",
-    /^https:\/\/tellmecrochet\.de\/import#data=tmc1\./,
-  );
+  await expect(viewer.getByRole("link", { name: /TellmeCrochet/ })).toHaveCount(0);
 
   // Embed: compact layout, no pattern text or edit link.
   const embed = await context.newPage();
@@ -43,7 +40,6 @@ test("share link opens the viewer, embed mode, and back into the builder", async
   await expect(embed.locator("html")).toHaveClass(/is-embed/);
   await expect(embed.locator(".viewer-embed-title")).toHaveText("Amigurumi-Kugel");
   await expect(embed.locator("canvas")).toBeVisible();
-  await expect(embed.getByRole("link", { name: "In TellmeCrochet öffnen" })).toBeVisible();
   await expect(embed.getByRole("heading", { level: 1 })).toHaveCount(0);
   await expect(embed.getByRole("list", { name: "Reihen" })).toHaveCount(0);
   await expect(embed.getByRole("link", { name: "Im Builder bearbeiten" })).toHaveCount(0);
