@@ -574,7 +574,6 @@ The reference decoder reports failures as `ShareDecodeError` with a `code`: `mal
 | Viewer (read-only page with 3D model and rows) | `<builder>/viewer/#data=<payload>` |
 | Embed (compact viewer for an `<iframe>`) | `<builder>/viewer/?embed=1#data=<payload>` |
 | Open in the builder for editing | `<builder>/#data=<payload>` |
-| Open in TellmeCrochet | `https://tellmecrochet.de/import#data=tmc1.…` — a different payload, see [Hand-off to TellmeCrochet](#hand-off-to-tellmecrochet) |
 
 `<builder>` is wherever the builder is deployed, e.g. `https://gerray.github.io/CrochetBuilder`.
 The builder removes the fragment from the address bar after reading it and asks before it
@@ -584,14 +583,18 @@ replaces a document that is not empty.
 
 TellmeCrochet, the companion app for crocheting along a pattern, keeps its own copy of
 **format version 1** and creates new patterns from **drafts**. It does not read
-`BuilderExport`. "In TellmeCrochet öffnen" and "Für TellmeCrochet speichern (.json)" therefore
-convert the export into a draft in TellmeCrochet's structure and wrap it in an **envelope**.
-Source: `packages/engine/src/tellmecrochet.ts` (`toTellmeCrochetDraft`, `toTmcEnvelope`,
-`encodeTmcPayload`, `decodeTmcPayload`, `buildTmcImportUrl`; Zod schemas `TmcDraftSchema`,
+`BuilderExport`, so the builder converts the export into a draft in TellmeCrochet's structure and
+wraps it in an **envelope**. Source: `packages/engine/src/tellmecrochet.ts`
+(`toTellmeCrochetDraft`, `toTmcEnvelope`, `tmcPartKeys`; Zod schemas `TmcDraftSchema`,
 `TmcEnvelopeSchema`).
 
-> Status: the receiving side in TellmeCrochet is not live yet. Until then the builder offers to
-> save the envelope as a file.
+The envelope gets there in one of two ways; there is no link and no web page in between:
+
+- **As a file:** "Für TellmeCrochet speichern (.json)" saves it as `<title>.tellmecrochet.json`,
+  plain pretty-printed JSON, which the app can open.
+- **Into the account:** "Zu TellmeCrochet hochladen" signs in with the person's TellmeCrochet
+  account and uploads the envelope with its [part keys](#part-keys). Uploading the same document
+  again updates that project. The builder offers this only when the build is configured for it.
 
 ### Envelope
 
@@ -638,28 +641,25 @@ per row, in row order: `actual` is the sum of the stitches the row's ops produce
 (`STITCH_PROPERTIES`), `ok` is `actual === expected`. A free instruction (see below) has
 `stitchCountTarget: 0` and checks green.
 
-**`originHint`** says where the pattern presumably comes from. The builder writes `imported`
-as soon as the document has taken in text through "Anleitung einfügen" (pasting a pattern
-text), for a document opened from a file or a link, and from the viewer — in those cases the
-author is unknown. It writes `self_created` only for documents started with "Neu" or from a
-demo. It is a hint only: a receiver records a pattern as the person's own creation only
-after she has confirmed that explicitly, and otherwise as imported. The builder remembers
-this next to the stored document (undo and redo restore it; undoing a paste keeps
-`imported`), not in the format.
+**`originHint`** says where the pattern presumably comes from: the builder writes `imported`
+as soon as the document has taken in text through "Anleitung einfügen" (pasting a pattern text)
+and for a document opened from a file or a link, and `self_created` only for documents started
+with "Neu" or from a demo. The builder remembers this next to the stored document (undo and redo
+restore it; undoing a paste keeps `imported`), not in the format. **No decision is based on it:**
+whether a pattern counts as the person's own creation is what she says herself, when she uploads
+or imports it for the first time, without anything preselected.
 
-### Payload and link
+### Part keys
 
-```
-payload = "tmc1." + base64url( deflate-raw( UTF-8( JSON.stringify(TmcEnvelope) ) ) )
-link    = "https://tellmecrochet.de/import#data=" + payload
-```
+Next to an uploaded envelope go its part keys (`tmcPartKeys`): one string per entry of
+`draft.parts`, in the same order, so the receiver can follow a part from one upload to the next.
+A part's key is its `id`; the generated part `Zusammensetzen` is always `assembly`, which no other
+part takes (a part with that id becomes `assembly-2`). The builder gives every part an `id` at its
+first upload, so moving or renaming a part keeps the key. In an export without ids, as from a
+version-1 file, `tmcPartKeys` falls back on the position: `teil-1`, `teil-2`, …
 
-Packing, limits and decoding are exactly those of [share links](#share-links) — base64url
-without padding, raw DEFLATE ending at the last byte, at most 262,144 encoded characters,
-2 MiB of JSON (enforced while inflating) and 200 nesting levels — with two differences: the
-prefix is **`tmc1.`** (a `v1.` share payload is refused, and the other way round), and the
-JSON is validated against `TmcEnvelope` instead of `BuilderExport`. The saved file
-(`<title>.tellmecrochet.json`) is the same envelope as plain, pretty-printed JSON.
+Row ids in a draft are deterministic as well: repeated exports of the same document give the same
+ids, also for the steps the conversion adds (see the table below).
 
 ### Mapping
 
@@ -685,23 +685,18 @@ JSON is validated against `TmcEnvelope` instead of `BuilderExport`. The saved fi
 A free instruction is a row with `ops: []` and its text in `note`; TellmeCrochet's guided mode
 shows it as a step of its own. Nothing is dropped silently: the converter returns a list of
 everything it carried differently (`losses`, with a German message each), and the builder shows
-a short summary before it opens TellmeCrochet.
+a short summary before it uploads.
 
 ### What a receiver implements
 
-1. A page at `/import` that reads `#data=` from the fragment (the fragment never reaches a
-   server), takes the canonical payload as in [Decoding](#decoding), checks the `tmc1.` prefix,
-   decodes and inflates within the limits and validates against `TmcEnvelope` (strict). Any
-   failure is shown as an error; nothing is partially imported. A received file is validated
-   the same way.
-2. If the person is not signed in, keeps the payload (e.g. in session storage) through sign-in
-   and continues afterwards.
-3. Shows a preview (title, parts, number of rows) and asks whether the pattern is her own
-   creation; `originHint` only preselects the answer. The stored origin is "self-created" only
-   after an explicit confirmation, otherwise "imported".
-4. Creates a draft from `draft` as it is (it already matches the draft structure), with
-   `sourceNotation` as the draft's notation, recomputes `stitchCheck` with its own check rather
-   than trusting the received one, and opens the draft for review.
+1. Validates the envelope against `TmcEnvelope` (strict). Any failure is shown as an error;
+   nothing is partially imported.
+2. Asks whether the pattern is the person's own creation, with nothing preselected; `originHint`
+   plays no part in this. The stored origin is "self-created" only after an explicit
+   confirmation, otherwise "imported".
+3. Creates a draft from `draft` as it is (it already matches the draft structure), with
+   `sourceNotation` as the draft's notation, and recomputes `stitchCheck` with its own check rather
+   than trusting the received one.
 
 ## Example: an amigurumi sphere
 

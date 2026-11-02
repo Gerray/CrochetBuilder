@@ -4,7 +4,37 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the engine package
 (`@crochetbuilder/engine`) follows [Semantic Versioning](https://semver.org/).
 
-## [Unreleased] — engine 2.0.0, joining parts while crocheting
+## [Unreleased] — engine 3.0.0, upload to TellmeCrochet instead of a link
+
+### Breaking
+
+- **The link to TellmeCrochet is gone.** Removed from the engine's public API:
+  `buildTmcImportUrl`, `TMC_IMPORT_URL`, `encodeTmcPayload`, `decodeTmcPayload` and
+  `TMC_PAYLOAD_VERSION`. The `tmc1.` payload no longer exists; TellmeCrochet has no web page that
+  could take it. `toTellmeCrochetDraft`, `toTmcEnvelope`, `TmcEnvelopeSchema` and the saved file
+  stay as they are. The share links (`v1.`) are unchanged.
+
+### Added
+
+- **`tmcPartKeys(doc)`** and `TMC_ASSEMBLY_PART_KEY`: one stable key per entry of `draft.parts`
+  (the part's `id`; the generated part "Zusammensetzen" is `assembly`), so the receiver can follow
+  a part from one upload to the next. Parts without an id get a position-based key.
+- **Builder: "Zu TellmeCrochet hochladen".** Sign in (Google or a 6-digit e-mail code) and upload
+  the pattern into your own TellmeCrochet account; uploading again updates the same project. The
+  document remembers its project next to the stored copy, never in the export. Only offered when
+  the build is configured for it (see CONTRIBUTING). `@supabase/supabase-js` loads only for people
+  who sign in. "Für TellmeCrochet speichern (.json)" stays.
+
+### Changed
+
+- **Builder:** every part gets a stable `id` at its first upload, so moving or renaming a part
+  keeps its progress in the app.
+- **Viewer:** no TellmeCrochet link any more; "Im Builder bearbeiten" stays. The embed shows the
+  model, its parts and the title.
+- `originHint` in the envelope is no longer used for any decision: the person says who designed
+  the pattern.
+
+## [2.0.0] — joining parts while crocheting
 
 ### Breaking
 

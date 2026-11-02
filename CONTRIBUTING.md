@@ -75,12 +75,34 @@ E2E_SKIP_BUILD=1 npm run e2e      # reuse an existing apps/builder/dist (PowerSh
 E2E_PORT=4279 npm run e2e          # another port, e.g. when several checkouts test at once
 ```
 
+The suite's own build has the upload switched on (see below); a `dist` from a plain `npm run build`
+has not, so `upload.spec.ts` fails against it with `E2E_SKIP_BUILD`.
+
 Use roles, labels and visible German text as selectors (`getByRole`, `getByLabel`), not CSS
 classes or test ids. Assert the 3D view by its reported size in cm and by the canvas being
 there — never by screenshots. Every test fails on a console error or an uncaught exception.
 On failure, traces and screenshots land in `e2e/test-results/`; `npx playwright show-report
 e2e/playwright-report` opens the report. CI runs the suite on every pull request and before
 each deployment.
+
+### Upload to TellmeCrochet
+
+"Zu TellmeCrochet hochladen" is only offered when the build gets both of these:
+
+| Variable | What it is |
+|---|---|
+| `VITE_TMC_SUPABASE_URL` | Address of the TellmeCrochet project |
+| `VITE_TMC_SUPABASE_ANON_KEY` | Its public key, which is meant for browsers (no secret) |
+
+Without them the button does not exist and nothing of the sign-in is loaded; "Für TellmeCrochet
+speichern (.json)" is always there. For GitHub Pages, `.github/workflows/pages.yml` passes them
+from repository **variables** (`vars.…`, not secrets). They are left unset on purpose: setting
+them and deploying is the switch that makes the upload live. Locally they go in
+`apps/builder/.env.local`.
+
+Tests never reach a real server. Unit tests hand `App` fake services (`tmc` prop); the end-to-end
+tests build with a placeholder address (`https://tmc-fake.invalid`) and answer every request to it
+with `page.route`.
 
 ### Where things live
 
@@ -96,6 +118,7 @@ each deployment.
 | `apps/builder/src/components` | Editor UI (React) |
 | `apps/builder/src/state` | Document model, editing actions, saving in the browser (IndexedDB) |
 | `apps/builder/src/preview`, `apps/builder/src/three` | Model building in a web worker, Three.js view |
+| `apps/builder/src/tmc` | Upload to TellmeCrochet: sign-in, API client, dialog |
 | `docs/FORMAT.md` | The pattern format, for people and other software |
 
 ## Scope questions

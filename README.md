@@ -23,16 +23,22 @@ nothing is left hanging.
   thickness in mm and hook size.
 - **Validation while you type** — stitch counts per row and whether every stitch of the
   previous row is worked into exactly as often as the pattern says.
-- **Export** — hand the pattern over to [TellmeCrochet](https://tellmecrochet.de) (the
-  companion app for crocheting stitch by stitch) as a draft in its own structure, or save it
-  as PDF or JSON. What TellmeCrochet cannot show as stitches arrives as text steps
-  ([details](docs/FORMAT.md#hand-off-to-tellmecrochet)).
+- **Export** — save the pattern as PDF or JSON, or hand it over to TellmeCrochet (the companion
+  app for crocheting stitch by stitch) as a file or into your account. What TellmeCrochet cannot
+  show as stitches arrives as text steps ([details](docs/FORMAT.md#hand-off-to-tellmecrochet)).
 - **Share links and an embeddable viewer** — send a link that shows the 3D model and the
   pattern.
-- **Private by design** — everything runs in your browser. No account, no server; a share
-  link carries the pattern in the URL fragment, which is never sent to a web server.
+- **Private by design** — everything runs in your browser. No account needed, no server of its
+  own; a share link carries the pattern in the URL fragment, which is never sent to a web server.
 
 The user interface is in German for now; English is on the roadmap.
+
+## Privacy
+
+Everything stays on your device unless you decide otherwise: the pattern is stored in your
+browser and nothing is sent anywhere while you work. Only if you sign in with a TellmeCrochet
+account and upload a pattern does it go to that account, together with what the sign-in needs
+(your e-mail address or Google account). Signing out removes the session from this browser.
 
 ## How it works
 
@@ -151,12 +157,10 @@ Working today:
 - Editor: structured and free-text row input, German and English stitch notation; patterns
   with several parts (head, body, arms ×2 …), each with its own rows and quantity
 - Live 3D preview in real size
-- Export to TellmeCrochet, PDF and JSON; share links and embeddable viewer
+- Export as PDF, JSON and a file for TellmeCrochet; share links and embeddable viewer
 
 Next:
 
-- TellmeCrochet accepting the hand-off (its import page; until then the builder saves the
-  hand-off as a file)
 - Feedback round with pattern designers
 
 Later:
