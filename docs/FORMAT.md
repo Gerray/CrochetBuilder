@@ -681,6 +681,7 @@ ids, also for the steps the conversion adds (see the table below).
 | `overview.materials` | trimmed; entries with an empty label are left out, empty colours and amounts dropped |
 | part without rows | one instruction `Für dieses Teil sind noch keine Reihen angegeben.` |
 | row ids | kept. Ids of added steps (`<row>-farbe`, `tmc-hinweise`, `tmc-fuellung` …) never take a row's id, and a repeated id in a part, from its second occurrence on, get the next free `-2`, `-3`, … |
+| text | NUL characters are left out and a lone surrogate becomes U+FFFD, in every string |
 | `rendered`, part `id`s | not carried |
 
 A free instruction is a row with `ops: []` and its text in `note`; TellmeCrochet's guided mode

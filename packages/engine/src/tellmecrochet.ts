@@ -232,6 +232,10 @@ export const TMC_ASSEMBLY_PART_KEY = "assembly";
 /** A part key is at most this long. */
 export const TMC_PART_KEY_MAX = 200;
 
+/** What the receiver takes at most: tap steps of one part, and of a whole pattern (`tmcTapSteps`). */
+export const TMC_MAX_TAP_STEPS_PER_PART = 100_000;
+export const TMC_MAX_TAP_STEPS_PER_PATTERN = 500_000;
+
 // ---------------------------------------------------------------------------
 // German wording
 // ---------------------------------------------------------------------------
@@ -618,6 +622,25 @@ function draftMaterials(materials: readonly Material[], palette: readonly Palett
   return out;
 }
 
+const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g;
+
+/**
+ * `text` as a receiver can store it: without NUL characters, and with U+FFFD for a lone surrogate.
+ * Both slip in through pasted or foreign text and mean nothing to a person reading the pattern.
+ */
+export function cleanTmcText(text: string): string {
+  return text.replace(/\u0000/g, "").replace(LONE_SURROGATE, "\uFFFD");
+}
+
+function withCleanText<T>(value: T): T {
+  if (typeof value === "string") return cleanTmcText(value) as T;
+  if (Array.isArray(value)) return value.map(withCleanText) as T;
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, withCleanText(v)])) as T;
+  }
+  return value;
+}
+
 function planOf(doc: BuilderExport): JoinPlan | null {
   return doc.parts.some((p) => p.content.rows.some(rowHasJoin)) ? planJoins(doc) : null;
 }
@@ -645,10 +668,13 @@ function assemblySteps(doc: BuilderExport, plan: JoinPlan | null): { placements:
  *   - the assembly becomes an extra last part "Zusammensetzen", one instruction per placement;
  *   - the palette becomes colours of the yarn materials; materials without a name are left out;
  *   - a stitch-count target of 0 on a row with stitches ("no number given") becomes the count;
- *   - every part has at least one row.
+ *   - every part has at least one row;
+ *   - text is well-formed (`cleanTmcText`).
  * The result always matches `TmcDraftSchema` (checked; a mismatch would be a bug and throws).
  */
-export function toTellmeCrochetDraft(doc: BuilderExport, opts: TmcDraftOptions = {}): TmcDraftResult {
+export function toTellmeCrochetDraft(source: BuilderExport, opts: TmcDraftOptions = {}): TmcDraftResult {
+  // First of all, so that everything below (names left empty, trimming) sees the text as it goes out.
+  const doc = withCleanText(source);
   const losses: TmcLoss[] = [];
   const palette = doc.overview.colors ?? [];
   const known = new Map(palette.map((c) => [c.id, c.name.trim() || c.id]));
@@ -850,6 +876,23 @@ export function toTmcEnvelope(draft: TmcDraft, originHint: TmcOriginHint): TmcEn
 }
 
 // ---------------------------------------------------------------------------
+// Tap steps
+// ---------------------------------------------------------------------------
+
+function opSteps(ops: readonly TmcOp[]): number {
+  return ops.reduce((sum, op) => sum + (op.kind === "stitch" ? op.count : op.times * opSteps(op.ops)), 0);
+}
+
+/**
+ * How many tap steps a draft has, per part and in total: one per stitch, repeats multiplied out
+ * arithmetically, so this is cheap however large the pattern is.
+ */
+export function tmcTapSteps(draft: TmcDraft): { parts: number[]; total: number } {
+  const parts = draft.parts.map((part) => part.content.rows.reduce((sum, row) => sum + opSteps(row.ops), 0));
+  return { parts, total: parts.reduce((a, b) => a + b, 0) };
+}
+
+// ---------------------------------------------------------------------------
 // Part keys
 // ---------------------------------------------------------------------------
 
@@ -867,8 +910,11 @@ export function toTmcEnvelope(draft: TmcDraft, originHint: TmcOriginHint): TmcEn
 export function tmcPartKeys(doc: BuilderExport): string[] {
   // Own ids are taken before any position-based key, so they never have to give way to one.
   const pool = new IdPool([TMC_ASSEMBLY_PART_KEY]);
-  const fitted = (id: string) => (id.length > TMC_PART_KEY_MAX ? id.slice(0, TMC_PART_KEY_MAX - 10) : id);
-  const keys = doc.parts.map((p) => (p.id?.trim() ? pool.fresh(fitted(p.id)) : undefined));
+  const fitted = (id: string) => (id.length > TMC_PART_KEY_MAX ? cleanTmcText(id.slice(0, TMC_PART_KEY_MAX - 10)) : id);
+  const keys = doc.parts.map((p) => {
+    const id = cleanTmcText(p.id ?? "");
+    return id.trim() ? pool.fresh(fitted(id)) : undefined;
+  });
   const out = keys.map((key, i) => key ?? pool.fresh(`teil-${i + 1}`));
   if (assemblySteps(doc, planOf(doc)).placements.length > 0) out.push(TMC_ASSEMBLY_PART_KEY);
   // Same placeholder part as `toTellmeCrochetDraft`, for an export without parts.

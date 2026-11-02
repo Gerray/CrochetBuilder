@@ -6,12 +6,14 @@ import { renderRow } from "./notation.js";
 import { createRandom } from "./random.js";
 import type { GroupOp, Op, Row, StitchCode } from "./schema.js";
 import {
+  cleanTmcText,
   describePlacement,
   gaugeText,
   summarizeTmcLosses,
   TMC_ASSEMBLY_PART_KEY,
   TMC_PART_KEY_MAX,
   tmcPartKeys,
+  tmcTapSteps,
   TmcDraftSchema,
   TmcEnvelopeSchema,
   toTellmeCrochetDraft,
@@ -593,6 +595,89 @@ describe("tmcPartKeys", () => {
     const exp: BuilderExport = { ...pumpkinDoc(), assembly: [attach] };
     expect(tmcPartKeys(exp)).toEqual(["pumpkin", "stem"]);
     expect(toTellmeCrochetDraft(exp).draft.parts).toHaveLength(2);
+  });
+});
+
+describe("tmcTapSteps", () => {
+  it("counts stitches, repeats multiplied out, nothing for free instructions", () => {
+    const rows = [
+      round("a", [st("MR", 1), sc(6)], 6),
+      round("b", [rep(6, [sc(1), inc(1)])], 18),
+      round("c", [rep(2, [rep(3, [sc(2)]), sc(1)])], 14),
+      { id: "d", type: "round" as const, ops: [], stitchCountTarget: 0, note: "Faden abschneiden" },
+    ];
+    const { draft } = toTellmeCrochetDraft(doc([part(rows), part(SPHERE, { name: "Zweite" })]));
+    const steps = tmcTapSteps(draft);
+    expect(steps.parts).toEqual([7 + 12 + 14, 7 + 6 + 12 + 18]);
+    expect(steps.total).toBe(33 + 43);
+  });
+
+  it("does not expand: an absurd repeat is a number, not a list", () => {
+    const huge: TmcDraft = {
+      schemaVersion: 1,
+      parts: [
+        {
+          name: "x",
+          quantity: 1,
+          stitchCheck: [],
+          content: {
+            schemaVersion: 1,
+            rows: [{ id: "r", type: "round", stitchCountTarget: 0, ops: [{ kind: "repeat", times: 1e6, ops: [{ kind: "repeat", times: 1e6, ops: [{ kind: "stitch", code: "SC", count: 2 }] }] }] }],
+          },
+        },
+      ],
+    };
+    expect(tmcTapSteps(huge).total).toBe(2e12);
+  });
+});
+
+describe("text a receiver cannot store", () => {
+  const dirty = (text: string) => text.includes("\u0000") || /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(text);
+
+  it("loses its NUL characters and has its lone surrogates replaced; everything else stays", () => {
+    expect(cleanTmcText("a\u0000b")).toBe("ab");
+    expect(cleanTmcText("a\uD83Eb")).toBe("a\uFFFDb");
+    expect(cleanTmcText("a\uDDF6b")).toBe("a\uFFFDb");
+    expect(cleanTmcText("Wolle 🧶 äöü – „x“")).toBe("Wolle 🧶 äöü – „x“");
+  });
+
+  it("does not get into a draft or its part keys, wherever it stood", () => {
+    const bad = "\u0000x\uD83E";
+    const palette: PaletteColor[] = [
+      { id: "weiss", name: "Weiß", hex: "#ffffff" },
+      { id: "rosa", name: `Rosa${bad}`, hex: "#f2aec3" },
+    ];
+    const rows = [
+      round("a", [st("MR", 1), sc(6)], 6, { label: `Anfang${bad}`, note: `Notiz${bad}` }),
+      round(`b${bad}`, [inc(6)], 12, { color: "rosa" }),
+      { id: "c", type: "round" as const, ops: [], stitchCountTarget: 0, note: `Faden${bad}` },
+    ];
+    const exp = doc([part(rows, { id: `kopf${bad}`, name: `Kopf${bad}` }), part(SPHERE, { id: "ohr", name: "\u0000" })], {
+      title: `Ball${bad}`,
+      overview: { notes: `Hinweis${bad}`, colors: palette, materials: [{ kind: "yarn", label: `Garn${bad}`, amount: `10 g${bad}`, colors: [`Blau${bad}`] }, { kind: "hook", label: "\u0000" }] },
+    });
+    const { draft } = toTellmeCrochetDraft(exp);
+    expect(TmcDraftSchema.safeParse(draft).success).toBe(true);
+    expect(dirty(JSON.stringify(draft))).toBe(false);
+    // A name of nothing but such text is no name.
+    expect(draft.parts[1]!.name).toBe("Teil 2");
+    expect(draft.materials!.map((m) => m.label)).toEqual(["Garn" + "x\uFFFD"]);
+    expect(draft.title).toBe("Ballx\uFFFD");
+    const keys = tmcPartKeys(exp);
+    expect(keys.some(dirty)).toBe(false);
+    expect(keys).toEqual(["kopfx\uFFFD", "ohr"]);
+  });
+
+  it("a long part key is not cut through a surrogate pair", () => {
+    const id = `${"x".repeat(TMC_PART_KEY_MAX - 11)}🧶${"y".repeat(50)}`;
+    const [key] = tmcPartKeys(doc([part(SPHERE, { id })]));
+    expect(dirty(key!)).toBe(false);
+    expect(key!.length).toBeLessThanOrEqual(TMC_PART_KEY_MAX);
+  });
+
+  it("a clean document converts as it did", () => {
+    const exp = doc([part(SPHERE)]);
+    expect(toTellmeCrochetDraft(exp).draft.parts[0]!.content.rows.map((r) => r.id)).toEqual(SPHERE.map((r) => r.id));
   });
 });
 
