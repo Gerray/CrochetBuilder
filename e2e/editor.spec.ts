@@ -51,13 +51,18 @@ test("typing the amigurumi sphere row by row builds a valid 3D model", async ({ 
   const dims = dimensions(page);
   await expect(dims).toContainText(/B × H × T\s*\d+,\d × \d+,\d × \d+,\d cm/);
   await expect(dims).toContainText(/max\. Ø\s*\d+,\d cm/);
-  const [width, height] = ((await dims.textContent()) ?? "")
-    .match(/(\d+,\d) × (\d+,\d) × \d+,\d cm/)!
-    .slice(1)
-    .map((v) => Number(v.replace(",", ".")));
-  expect(width).toBeGreaterThan(1);
-  expect(height! / width!).toBeGreaterThan(0.6);
-  expect(height! / width!).toBeLessThan(1.6);
+  // Polled: the size of the previous, shorter model stays on screen until the worker is done.
+  const size = async () =>
+    ((await dims.textContent()) ?? "")
+      .match(/(\d+,\d) × (\d+,\d) × \d+,\d cm/)!
+      .slice(1)
+      .map((v) => Number(v.replace(",", ".")));
+  await expect
+    .poll(async () => {
+      const [width, height] = await size();
+      return width! > 1 && height! / width! > 0.6 && height! / width! < 1.6;
+    })
+    .toBe(true);
 
   const preview = page.getByRole("region", { name: "3D-Vorschau" });
   await expect(preview.getByText("3D-Ansicht nicht verfügbar")).toHaveCount(0);

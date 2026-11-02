@@ -37,7 +37,8 @@ Strategiedetails.
 ## Beziehung zu TellmeCrochet
 
 Das Schema in `packages/engine/src/schema.ts` ist die Quelle des Builders. TellmeCrochet hat
-(Stand 2026-10-28) eine eigene Kopie von Format v1 in `@tellmecrochet/shared` und übernimmt
+(Stand 2026-11-02) eine eigene Kopie von Format v1 in `@tellmecrochet/shared` und übernimmt
 Builder-Anleitungen nur über die Übergabe in seiner Entwurfsstruktur (`tellmecrochet.ts`,
-`docs/FORMAT.md` „Hand-off to TellmeCrochet“, Protokoll E24/E25). Jede Änderung am Schema
+`docs/FORMAT.md` „Hand-off to TellmeCrochet“, Protokoll E24/E25/E29): als Upload in den Account
+oder als Datei. Jede Änderung am Schema
 oder an dieser Übergabe: Protokoll-Eintrag, SemVer-Major, Abstimmung mit dem Projektleiter.
