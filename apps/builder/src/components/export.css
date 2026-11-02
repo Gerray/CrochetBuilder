@@ -29,7 +29,7 @@
   border-bottom: var(--bd-hairline);
 }
 
-/* The hand-over to TellmeCrochet: TellmeCrochet's own primary button. */
+/* The upload to TellmeCrochet: the menu's main action. */
 .btn-large {
   min-height: var(--h-control-lg);
   padding: 0 var(--sp-6);

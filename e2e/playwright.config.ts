@@ -7,6 +7,9 @@ import { defineConfig, devices } from "@playwright/test";
  * `npm run e2e` builds the builder app, starts `vite preview` and runs the suite in headless
  * Chromium. Set `E2E_SKIP_BUILD=1` to reuse an existing `apps/builder/dist`, and `E2E_PORT`
  * to serve on another port (several checkouts testing at once must not share a server).
+ *
+ * The build gets a placeholder TellmeCrochet address, so the upload is there to be tested; no
+ * request ever reaches it (`upload.spec.ts` answers them with `page.route`).
  */
 
 const PORT = Number(process.env.E2E_PORT) || 4179;
@@ -47,6 +50,7 @@ export default defineConfig({
   webServer: {
     command: process.env.E2E_SKIP_BUILD ? preview : `npm run build && ${preview}`,
     cwd: "../apps/builder",
+    env: { VITE_TMC_SUPABASE_URL: "https://tmc-fake.invalid", VITE_TMC_SUPABASE_ANON_KEY: "e2e-placeholder" },
     url: `http://localhost:${PORT}${BASE_PATH}`,
     reuseExistingServer: !CI,
     timeout: 240_000,

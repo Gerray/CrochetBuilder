@@ -33,11 +33,32 @@ interface TopBarProps {
   onReplace: (doc: BuilderDoc, pinned: string[]) => void;
   /** The document took in pasted text (provenance for TellmeCrochet, E25). */
   imported?: boolean;
+  /** Open "Zu TellmeCrochet hochladen"; absent when the build offers no upload. */
+  onUpload?: (() => void) | undefined;
+  /** When this document was last uploaded. */
+  lastUploadAt?: number | undefined;
+  /** The account signed in, shown with "Abmelden". */
+  account?: { email: string | null; onSignOut: () => void } | undefined;
   /** Export side effects (tests). */
   exportActions?: Partial<ExportActions>;
 }
 
-export function TopBar({ doc, dispatch, canUndo, canRedo, status, onNew, onPaste, onDemo, onReplace, imported = false, exportActions }: TopBarProps) {
+export function TopBar({
+  doc,
+  dispatch,
+  canUndo,
+  canRedo,
+  status,
+  onNew,
+  onPaste,
+  onDemo,
+  onReplace,
+  imported = false,
+  onUpload,
+  lastUploadAt,
+  account,
+  exportActions,
+}: TopBarProps) {
   const [overviewOpen, setOverviewOpen] = useState(false);
   const materialCount = doc.overview.materials?.length ?? 0;
 
@@ -106,8 +127,20 @@ export function TopBar({ doc, dispatch, canUndo, canRedo, status, onNew, onPaste
             doc={doc}
             onReplace={onReplace}
             originHint={imported ? "imported" : "self_created"}
+            onUpload={onUpload}
+            lastUploadAt={lastUploadAt}
             {...(exportActions ? { actions: exportActions } : {})} />
         </div>
+        {account && (
+          <div className="account">
+            <span className="account-mail" title={account.email ?? undefined}>
+              Angemeldet als {account.email ?? "unbekannt"}
+            </span>
+            <button type="button" className="btn btn-small" onClick={account.onSignOut}>
+              Abmelden
+            </button>
+          </div>
+        )}
       </div>
       {overviewOpen && <OverviewPanel doc={doc} dispatch={dispatch} />}
     </header>

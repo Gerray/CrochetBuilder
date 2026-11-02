@@ -255,7 +255,3 @@ html.is-embed #root {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.viewer-embed-bar a {
-  color: var(--c-accent-text);
-  white-space: nowrap;
-}

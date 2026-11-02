@@ -1,7 +1,6 @@
 /**
  * Share payloads — a `BuilderExport` packed into a URL fragment, so share links and embeds
- * work without any server (the fragment never leaves the browser). The TellmeCrochet hand-off
- * (`tellmecrochet.ts`) uses the same packing with its own prefix and schema.
+ * work without any server (the fragment never leaves the browser).
  *
  *   payload = "v1." + base64url(deflate-raw(UTF-8(JSON)))
  *
@@ -217,23 +216,14 @@ async function hasTrailingBytes(packed: Uint8Array<ArrayBuffer>): Promise<boolea
  * error for an invalid export.
  */
 export async function encodeShare(exp: BuilderExport): Promise<string> {
-  return packJson(BuilderExportSchema.parse(exp), SHARE_VERSION, "Export");
-}
-
-/**
- * `value` as `<prefix>.` + base64url(deflate-raw(JSON)). Shared by the share payload (`v1.`)
- * and the TellmeCrochet hand-off (`tmc1.`). Throws a `RangeError` beyond the limits and a
- * `ShareDecodeError` (`unsupported`) when the runtime cannot compress. Internal.
- */
-export async function packJson(value: unknown, prefix: string, what: string): Promise<string> {
-  const text = JSON.stringify(value);
+  const text = JSON.stringify(BuilderExportSchema.parse(exp));
   const json = new TextEncoder().encode(text);
   if (json.byteLength > MAX_SHARE_JSON_BYTES) {
-    throw new RangeError(`${what} is larger than ${MAX_SHARE_JSON_BYTES} bytes.`);
+    throw new RangeError(`Export is larger than ${MAX_SHARE_JSON_BYTES} bytes.`);
   }
-  if (exceedsJsonDepth(text)) throw new RangeError(`${what} is nested deeper than ${MAX_JSON_DEPTH} levels.`);
+  if (exceedsJsonDepth(text)) throw new RangeError(`Export is nested deeper than ${MAX_JSON_DEPTH} levels.`);
   const packed = await transform(json, deflateStream("CompressionStream"));
-  const payload = `${prefix}.${toBase64Url(packed)}`;
+  const payload = `${SHARE_VERSION}.${toBase64Url(packed)}`;
   if (payload.length > MAX_SHARE_CHARS) {
     throw new RangeError(`Share payload is longer than ${MAX_SHARE_CHARS} characters.`);
   }
@@ -254,7 +244,7 @@ export function canonicalSharePayload(payload: string): string {
  * `invalid` or `unsupported`) — never anything else.
  */
 export async function decodeShare(payload: string): Promise<BuilderExport> {
-  const data = await unpackJson(payload, SHARE_VERSION);
+  const data = await unpackJson(payload);
   let parsed: ReturnType<typeof BuilderExportSchema.safeParse>;
   try {
     parsed = BuilderExportSchema.safeParse(data);
@@ -268,17 +258,14 @@ export async function decodeShare(payload: string): Promise<BuilderExport> {
   return parsed.data;
 }
 
-/**
- * The JSON value of a `<prefix>.` payload (see `packJson`), bounded in size and depth but not
- * yet validated. Throws `ShareDecodeError` only. Internal.
- */
-export async function unpackJson(payload: string, prefix: string): Promise<unknown> {
+/** The JSON value of a payload, bounded in size and depth but not yet validated. Throws `ShareDecodeError` only. */
+async function unpackJson(payload: string): Promise<unknown> {
   if (typeof payload !== "string") throw new ShareDecodeError("malformed", "Payload is not a string.");
   const text = canonicalSharePayload(payload);
   if (text.length > MAX_SHARE_CHARS) throw new ShareDecodeError("too-large", "Payload is too large.");
   const dot = text.indexOf(".");
   const version = dot < 0 ? "" : text.slice(0, dot);
-  if (version !== prefix) {
+  if (version !== SHARE_VERSION) {
     throw new ShareDecodeError(
       "malformed",
       /^[a-z]*\d+$/.test(version) ? `Unsupported payload version "${version}".` : "Missing payload version.",

@@ -1,9 +1,8 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { decodeTmcPayload, encodeShare, readShareFragment, type BuilderExport } from "@crochetbuilder/engine";
+import { encodeShare, type BuilderExport } from "@crochetbuilder/engine";
 import { prepareExport } from "../export/prepare.js";
-import { tmcLink } from "../export/tmc.js";
 import { demoDocument } from "../state/document.js";
 import { fakeViews } from "../test/fakeModelView.js";
 import { isEmbed, loadViewerData } from "./load.js";
@@ -31,10 +30,6 @@ afterEach(() => {
   cleanup();
   document.documentElement.classList.remove("is-embed");
 });
-
-
-/** The TellmeCrochet link the viewer shows for `exp` (a shared link: "imported", E25). */
-const tmcUrl = async (exp: BuilderExport) => (await tmcLink(exp, "imported")).url;
 
 describe("loadViewerData", () => {
   it("missing, broken, invalid and valid fragments", async () => {
@@ -92,7 +87,7 @@ describe("ViewerApp", () => {
     expect(alert.textContent).toMatch(/beschädigt oder unvollständig/);
   });
 
-  it("shows title, model, size, materials and all rows; links to TellmeCrochet and the builder", async () => {
+  it("shows title, model, size, materials and all rows; links to the builder, not to TellmeCrochet", async () => {
     const payload = await encodeShare(ballExport());
     render(<ViewerApp location={at("", `#data=${payload}`)} />);
     expect((await screen.findByRole("heading", { level: 1 })).textContent).toBe("Amigurumi-Ball");
@@ -105,10 +100,8 @@ describe("ViewerApp", () => {
     expect(screen.getByText("Garn: DK (leicht) · Nadel: 3 mm")).toBeTruthy();
     expect(screen.getByText("In Spiralrunden häkeln. Vor Runde 11 fest füllen.")).toBeTruthy();
     expect((await screen.findByLabelText("Maße")).textContent).toMatch(/\d+,\d × \d+,\d × \d+,\d cm \(B × H × T\), max\. Ø/);
-    const tmc = (await screen.findByRole("link", { name: "In TellmeCrochet öffnen" })) as HTMLAnchorElement;
-    // A TellmeCrochet draft; a shared link says nothing about its author: "imported" (E25).
-    expect(tmc.href).toBe(await tmcUrl(ballExport()));
-    expect((await decodeTmcPayload(readShareFragment(new URL(tmc.href).hash)!)).originHint).toBe("imported");
+    expect(screen.queryByRole("link", { name: /TellmeCrochet/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /TellmeCrochet/ })).toBeNull();
     const edit = screen.getByRole("link", { name: "Im Builder bearbeiten" }) as HTMLAnchorElement;
     expect(edit.href).toBe(`https://gerray.github.io/CrochetBuilder/#data=${payload}`);
     expect(document.title).toBe("Amigurumi-Ball – CrochetBuilder");
@@ -116,30 +109,11 @@ describe("ViewerApp", () => {
     expect(localStorage.length).toBe(0);
   });
 
-  it("the TellmeCrochet notice: focus on „Weiter“, closed by Escape or a click elsewhere", async () => {
-    render(<ViewerApp location={at("", `#data=${await encodeShare(ballExport())}`)} />);
-    // Let the page settle (model loaded) so nothing re-renders between the steps.
-    await waitFor(() => expect(fakeViews.last?.mesh?.rowIds).toHaveLength(11));
-    const link = await screen.findByRole("link", { name: "In TellmeCrochet öffnen" });
-    const notice = () => screen.queryByRole("note", { name: "Hinweis zu TellmeCrochet" });
-    expect(fireEvent.click(link)).toBe(false);
-    expect(document.activeElement).toBe(screen.getByRole("link", { name: "Weiter zu TellmeCrochet" }));
-    fireEvent.keyDown(document.activeElement!, { key: "Escape" });
-    expect(notice()).toBeNull();
-    expect(document.activeElement).toBe(link);
-    fireEvent.click(link);
-    expect(notice()).not.toBeNull();
-    fireEvent.pointerDown(screen.getByRole("heading", { level: 1 }));
-    expect(notice()).toBeNull();
-  });
-
   it("forwards the canonical payload: whitespace and padding of the received link are not passed on", async () => {
     const payload = await encodeShare(ballExport());
     const pad = "=".repeat((4 - ((payload.length - 3) % 4)) % 4);
     render(<ViewerApp location={at("", `#data=%20${payload}${pad}%0A`)} />);
     await screen.findByRole("heading", { level: 1 });
-    const tmc = (await screen.findByRole("link", { name: "In TellmeCrochet öffnen" })) as HTMLAnchorElement;
-    expect(tmc.href).toBe(await tmcUrl(ballExport()));
     const edit = screen.getByRole("link", { name: "Im Builder bearbeiten" }) as HTMLAnchorElement;
     expect(edit.href).toBe(`https://gerray.github.io/CrochetBuilder/#data=${payload}`);
   });
@@ -157,13 +131,12 @@ describe("ViewerApp", () => {
     }
   });
 
-  it("embed mode: model, title and a small TellmeCrochet link — no rows, no toolbar", async () => {
+  it("embed mode: model and title — no rows, no toolbar, no links", async () => {
     const payload = await encodeShare(ballExport());
     render(<ViewerApp location={at("?embed=1", `#data=${payload}`)} />);
     await waitFor(() => expect(fakeViews.last?.mesh?.rowIds).toHaveLength(11));
     expect(screen.getByText("Amigurumi-Ball")).toBeTruthy();
-    const tmc = (await screen.findByRole("link", { name: "In TellmeCrochet öffnen" })) as HTMLAnchorElement;
-    expect(tmc.target).toBe("_blank");
+    expect(screen.queryAllByRole("link")).toHaveLength(0);
     expect(screen.queryByRole("list", { name: "Reihen" })).toBeNull();
     expect(screen.queryByRole("radiogroup", { name: "Darstellung" })).toBeNull();
     expect(screen.queryByRole("link", { name: "Im Builder bearbeiten" })).toBeNull();
@@ -225,9 +198,6 @@ describe("ViewerApp", () => {
     // Arrow keys move between the tabs.
     fireEvent.keyDown(within(tablist).getByRole("tab", { name: "Ohr ×2" }), { key: "ArrowRight" });
     expect(within(tablist).getByRole("tab", { name: "Arm ×2" }).getAttribute("aria-selected")).toBe("true");
-
-    const tmc = (await screen.findByRole("link", { name: "In TellmeCrochet öffnen" })) as HTMLAnchorElement;
-    expect(tmc.href).toBe(await tmcUrl(exp));
   });
 
   it("a single part has no part tabs; an embed of several parts gets compact tabs", async () => {

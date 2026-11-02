@@ -31,7 +31,12 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm test
+      # Unset variables build a site without the upload; setting them is the go-live switch
+      # (see CONTRIBUTING.md). They are public values, deliberately not secrets.
       - run: npm run build
+        env:
+          VITE_TMC_SUPABASE_URL: ${{ vars.VITE_TMC_SUPABASE_URL }}
+          VITE_TMC_SUPABASE_ANON_KEY: ${{ vars.VITE_TMC_SUPABASE_ANON_KEY }}
       - uses: actions/configure-pages@v6
       - uses: actions/upload-pages-artifact@v5
         with:

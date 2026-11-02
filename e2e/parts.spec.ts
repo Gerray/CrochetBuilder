@@ -150,8 +150,5 @@ test("the bunny demo: every part has a model; the share link opens the viewer wi
   await expect(viewer.getByRole("region", { name: "3D-Modell" }).locator("canvas")).toBeVisible();
   const size3d = viewer.getByLabel("Maße", { exact: true });
   await expect(size3d).toContainText(/Größe/);
-  await expect(viewer.getByRole("link", { name: "In TellmeCrochet öffnen" })).toHaveAttribute(
-    "href",
-    /^https:\/\/tellmecrochet\.de\/import#data=tmc1\./,
-  );
+  await expect(viewer.getByRole("link", { name: /TellmeCrochet/ })).toHaveCount(0);
 });

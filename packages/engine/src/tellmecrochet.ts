@@ -9,9 +9,8 @@
  * holds the text), which TellmeCrochet's guided mode shows as a step of its own.
  *
  * The draft travels in an envelope (`TmcEnvelope`) that also carries the notation and a hint
- * about the origin of the pattern, packed like a share payload with the prefix `tmc1.` (see
- * docs/FORMAT.md, "Hand-off to TellmeCrochet"). The schemas here are this repository's own
- * description of the documented target shape.
+ * about the origin of the pattern (see docs/FORMAT.md, "Hand-off to TellmeCrochet"). The
+ * schemas here are this repository's own description of the documented target shape.
  *
  * Pure functions, no UI or framework imports.
  */
@@ -25,7 +24,6 @@ import { droppedPlacements, planJoins, rowHasJoin, type JoinPlan } from "./join.
 import type { Gauge, YarnWeight } from "./gauge.js";
 import { renderRow, rowLabel } from "./notation.js";
 import type { Op, Row, StitchCode } from "./schema.js";
-import { packJson, ShareDecodeError, unpackJson } from "./share.js";
 import { checkPart, computeRowStitches } from "./stitch-count.js";
 
 // ---------------------------------------------------------------------------
@@ -126,14 +124,14 @@ export const TmcDraftSchema = z
 
 /**
  * Where the pattern presumably comes from: `imported` once text from elsewhere was pasted into
- * the document, else `self_created`. Only a hint — the receiving app decides (see
- * docs/FORMAT.md, "Hand-off to TellmeCrochet").
+ * the document, else `self_created`. Only a hint, no receiver decides anything by it: the person
+ * says who designed the pattern (see docs/FORMAT.md, "Hand-off to TellmeCrochet").
  */
 export const TmcOriginHintSchema = z.enum(["self_created", "imported"]);
 
 /**
- * What the hand-off link and file carry: the draft plus the two facts TellmeCrochet stores
- * next to it — the notation the text is written in and a hint where the pattern comes from.
+ * What the hand-off file and the upload carry: the draft plus the notation the text is written
+ * in and a hint where the pattern comes from.
  */
 export const TmcEnvelopeSchema = z
   .object({
@@ -227,6 +225,16 @@ export interface TmcDraftOptions {
 }
 
 export const TMC_ASSEMBLY_PART_NAME = "Zusammensetzen";
+
+/** Key of the generated part "Zusammensetzen" (see `tmcPartKeys`). */
+export const TMC_ASSEMBLY_PART_KEY = "assembly";
+
+/** A part key is at most this long. */
+export const TMC_PART_KEY_MAX = 200;
+
+/** What the receiver takes at most: tap steps of one part, and of a whole pattern (`tmcTapSteps`). */
+export const TMC_MAX_TAP_STEPS_PER_PART = 100_000;
+export const TMC_MAX_TAP_STEPS_PER_PATTERN = 500_000;
 
 // ---------------------------------------------------------------------------
 // German wording
@@ -394,7 +402,7 @@ function joinWords(words: readonly string[]): string {
 }
 
 /**
- * The losses of a hand-off in a few short German sentences, for a notice before opening
+ * The losses of a hand-off in a few short German sentences, for a notice before uploading to
  * TellmeCrochet, e.g. "3 Runden mit Noppen werden in TellmeCrochet als Text-Schritt gezeigt."
  * Technical changes (new row ids) are not mentioned.
  */
@@ -614,6 +622,35 @@ function draftMaterials(materials: readonly Material[], palette: readonly Palett
   return out;
 }
 
+const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g;
+
+/**
+ * `text` as a receiver can store it: without NUL characters, and with U+FFFD for a lone surrogate.
+ * Both slip in through pasted or foreign text and mean nothing to a person reading the pattern.
+ */
+export function cleanTmcText(text: string): string {
+  return text.replace(/\u0000/g, "").replace(LONE_SURROGATE, "\uFFFD");
+}
+
+function withCleanText<T>(value: T): T {
+  if (typeof value === "string") return cleanTmcText(value) as T;
+  if (Array.isArray(value)) return value.map(withCleanText) as T;
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, withCleanText(v)])) as T;
+  }
+  return value;
+}
+
+function planOf(doc: BuilderExport): JoinPlan | null {
+  return doc.parts.some((p) => p.content.rows.some(rowHasJoin)) ? planJoins(doc) : null;
+}
+
+/** The placements that become steps; placements a join overrides (crocheted on there) do not. */
+function assemblySteps(doc: BuilderExport, plan: JoinPlan | null): { placements: Placement[]; dropped: Set<string> } {
+  const dropped = new Set(plan ? droppedPlacements(doc, plan).map((d) => d.placement.id) : []);
+  return { placements: (doc.assembly ?? []).filter((pl) => !dropped.has(pl.id)), dropped };
+}
+
 /**
  * The builder export `doc` as a TellmeCrochet draft (format version 1), plus what was carried
  * over differently (`losses`):
@@ -631,10 +668,13 @@ function draftMaterials(materials: readonly Material[], palette: readonly Palett
  *   - the assembly becomes an extra last part "Zusammensetzen", one instruction per placement;
  *   - the palette becomes colours of the yarn materials; materials without a name are left out;
  *   - a stitch-count target of 0 on a row with stitches ("no number given") becomes the count;
- *   - every part has at least one row.
+ *   - every part has at least one row;
+ *   - text is well-formed (`cleanTmcText`).
  * The result always matches `TmcDraftSchema` (checked; a mismatch would be a bug and throws).
  */
-export function toTellmeCrochetDraft(doc: BuilderExport, opts: TmcDraftOptions = {}): TmcDraftResult {
+export function toTellmeCrochetDraft(source: BuilderExport, opts: TmcDraftOptions = {}): TmcDraftResult {
+  // First of all, so that everything below (names left empty, trimming) sees the text as it goes out.
+  const doc = withCleanText(source);
   const losses: TmcLoss[] = [];
   const palette = doc.overview.colors ?? [];
   const known = new Map(palette.map((c) => [c.id, c.name.trim() || c.id]));
@@ -643,7 +683,7 @@ export function toTellmeCrochetDraft(doc: BuilderExport, opts: TmcDraftOptions =
   const assemblyName = opts.assemblyPartName?.trim() || TMC_ASSEMBLY_PART_NAME;
   // Joins name the other part as TellmeCrochet shows it ("aus Teil Bein 1 (Runde 5)").
   const joinParts = joinPartsOf(doc);
-  const plan = doc.parts.some((p) => p.content.rows.some(rowHasJoin)) ? planJoins(doc) : null;
+  const plan = planOf(doc);
 
   const parts: TmcDraftPart[] = doc.parts.map((part, partIndex) => {
     const sourceRows = part.content.rows;
@@ -795,12 +835,10 @@ export function toTellmeCrochetDraft(doc: BuilderExport, opts: TmcDraftOptions =
     return finishPart(partDisplayName(part.name, partIndex), part.quantity, rows);
   });
 
-  // Placements the join overrides (the part is crocheted on there) are no step.
-  const dropped = new Set(plan ? droppedPlacements(doc, plan).map((d) => d.placement.id) : []);
+  const { placements, dropped } = assemblySteps(doc, plan);
   for (const id of dropped) {
     losses.push({ code: "assembly", placementId: id, partName: assemblyName, message: `Die Platzierung „${id}“ entfällt: das Teil wird beim Häkeln angesetzt.` });
   }
-  const placements = (doc.assembly ?? []).filter((pl) => !dropped.has(pl.id));
   if (placements.length > 0) {
     const ids = new IdPool();
     const rows = placements.map((pl) => {
@@ -838,42 +876,48 @@ export function toTmcEnvelope(draft: TmcDraft, originHint: TmcOriginHint): TmcEn
 }
 
 // ---------------------------------------------------------------------------
-// Payload and link
+// Tap steps
 // ---------------------------------------------------------------------------
 
-/** Prefix of a hand-off payload. */
-export const TMC_PAYLOAD_VERSION = "tmc1";
-
-/** Where TellmeCrochet takes a hand-off (its fragment carries the payload). */
-export const TMC_IMPORT_URL = "https://tellmecrochet.de/import";
+function opSteps(ops: readonly TmcOp[]): number {
+  return ops.reduce((sum, op) => sum + (op.kind === "stitch" ? op.count : op.times * opSteps(op.ops)), 0);
+}
 
 /**
- * Pack an envelope into a payload: `tmc1.` + base64url(deflate-raw(UTF-8(JSON))) — the same
- * packing as share links. Validated first; throws like `encodeShare` beyond the limits.
+ * How many tap steps a draft has, per part and in total: one per stitch, repeats multiplied out
+ * arithmetically, so this is cheap however large the pattern is.
  */
-export async function encodeTmcPayload(envelope: TmcEnvelope): Promise<string> {
-  return packJson(TmcEnvelopeSchema.parse(envelope), TMC_PAYLOAD_VERSION, "Draft");
+export function tmcTapSteps(draft: TmcDraft): { parts: number[]; total: number } {
+  const parts = draft.parts.map((part) => part.content.rows.reduce((sum, row) => sum + opSteps(row.ops), 0));
+  return { parts, total: parts.reduce((a, b) => a + b, 0) };
 }
 
-/** Unpack and validate a `tmc1.` payload. Throws `ShareDecodeError` only. */
-export async function decodeTmcPayload(payload: string): Promise<TmcEnvelope> {
-  const data = await unpackJson(payload, TMC_PAYLOAD_VERSION);
-  let parsed: ReturnType<typeof TmcEnvelopeSchema.safeParse>;
-  try {
-    parsed = TmcEnvelopeSchema.safeParse(data);
-  } catch (err) {
-    throw new ShareDecodeError("invalid", "Payload cannot be validated.", { cause: err });
-  }
-  if (!parsed.success) {
-    throw new ShareDecodeError("invalid", "Payload is not a valid TellmeCrochet draft.", { cause: parsed.error });
-  }
-  return parsed.data;
-}
+// ---------------------------------------------------------------------------
+// Part keys
+// ---------------------------------------------------------------------------
 
-/** "Open in TellmeCrochet": `https://tellmecrochet.de/import#data=tmc1.…`. Only takes hand-off payloads. */
-export function buildTmcImportUrl(payload: string): string {
-  if (!payload.startsWith(`${TMC_PAYLOAD_VERSION}.`)) {
-    throw new TypeError(`A TellmeCrochet link carries a "${TMC_PAYLOAD_VERSION}." payload.`);
-  }
-  return `${TMC_IMPORT_URL}#data=${payload}`;
+/**
+ * One stable key per entry of `toTellmeCrochetDraft(doc).draft.parts`, in the same order: the
+ * receiver follows a part from one upload to the next by it. A part's key is its `id`; the
+ * generated part "Zusammensetzen" is always `TMC_ASSEMBLY_PART_KEY`, which no other part takes.
+ *
+ * A part without an id (files of format version 1, parts nobody referred to yet) has no identity
+ * of its own: it gets `teil-<n>` from its position, which holds for repeated exports but not when
+ * parts are moved or get an id later. Whoever uploads gives every part an id first. Repeated ids
+ * stay unique: the first keeps it, later ones get the next free `-2`, `-3`, … An id beyond
+ * `TMC_PART_KEY_MAX` characters is cut, with room for that suffix.
+ */
+export function tmcPartKeys(doc: BuilderExport): string[] {
+  // Own ids are taken before any position-based key, so they never have to give way to one.
+  const pool = new IdPool([TMC_ASSEMBLY_PART_KEY]);
+  const fitted = (id: string) => (id.length > TMC_PART_KEY_MAX ? cleanTmcText(id.slice(0, TMC_PART_KEY_MAX - 10)) : id);
+  const keys = doc.parts.map((p) => {
+    const id = cleanTmcText(p.id ?? "");
+    return id.trim() ? pool.fresh(fitted(id)) : undefined;
+  });
+  const out = keys.map((key, i) => key ?? pool.fresh(`teil-${i + 1}`));
+  if (assemblySteps(doc, planOf(doc)).placements.length > 0) out.push(TMC_ASSEMBLY_PART_KEY);
+  // Same placeholder part as `toTellmeCrochetDraft`, for an export without parts.
+  if (out.length === 0) out.push(pool.fresh("teil-1"));
+  return out;
 }

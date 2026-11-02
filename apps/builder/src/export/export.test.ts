@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import {
   BuilderExportSchema,
   decodeShare,
-  decodeTmcPayload,
   ShareDecodeError,
   readShareFragment,
   renderedRows,
@@ -21,7 +20,7 @@ import {
 } from "./import.js";
 import { exportFileName, ExportValidationError, isDocumentEmpty, prepareExport, renderedLines } from "./prepare.js";
 import { builderBaseUrl, embedSnippet, shareLinks, viewerBaseUrl } from "./share.js";
-import { documentTmcLink, tmcFileName, tmcHandoff, tmcLinkErrorMessage } from "./tmc.js";
+import { EMPTY_PATTERN_LINE, tmcFileName, tmcHandoff, tmcUpload, uploadBlocker, uploadTooLong } from "./tmc.js";
 
 function ids(prefix = "row") {
   let n = 0;
@@ -187,24 +186,81 @@ describe("share links", () => {
     expect(tmcFileName("")).toBe("anleitung.tellmecrochet.json");
   });
 
-  it("the TellmeCrochet link carries the draft envelope with the provenance it is given (E25)", async () => {
-    const doc = ball();
+  it("what an upload sends: the envelope, with the provenance it is given, and one key per part", () => {
+    const doc = demoDocument(ids(), "bunny");
     for (const hint of ["self_created", "imported"] as const) {
-      const link = await documentTmcLink(doc, hint);
-      expect(link.url).toMatch(/^https:\/\/tellmecrochet\.de\/import#data=tmc1\.[\w-]+$/);
-      const env = await decodeTmcPayload(readShareFragment(new URL(link.url).hash)!);
-      expect(env.originHint).toBe(hint);
-      expect(env.draft.title).toBe(prepareExport(doc).title);
-      expect(link.summary.length).toBeGreaterThan(0);
+      const upload = tmcUpload(doc, hint);
+      expect(upload.envelope.originHint).toBe(hint);
+      expect(upload.partKeys).toHaveLength(upload.envelope.draft.parts.length);
+      expect(new Set(upload.partKeys).size).toBe(upload.partKeys.length);
+      expect(upload.summary.length).toBeGreaterThan(0);
     }
+    // Parts without an id count with the id they get at the upload: their name, not their place.
+    const moved = { ...ball(), parts: [ball().parts[0]!, { ...ball().parts[0]!, name: "Ohr" }] };
+    expect(moved.parts.every((p) => p.id === undefined)).toBe(true);
+    const keys = tmcUpload(moved, "imported").partKeys;
+    expect(keys).toEqual(["ball", "ohr"]);
+    expect(tmcUpload({ ...moved, parts: [...moved.parts].reverse() }, "imported").partKeys).toEqual(["ohr", "ball"]);
   });
 
-  it("a failing TellmeCrochet conversion leaves the share links alone, with a German reason", async () => {
-    expect(tmcLinkErrorMessage(new RangeError("too big"))).toMatch(/^Die Anleitung ist zu groß für einen Link zu TellmeCrochet/);
-    expect(tmcLinkErrorMessage(new Error("x"))).toMatch(/^Der Link zu TellmeCrochet konnte nicht erstellt werden/);
-    // Share links do not touch the conversion at all.
-    const links = await shareLinks(ball(), "http://localhost:5190/");
-    expect(Object.keys(links).sort()).toEqual(["embed", "payload", "viewer"]);
+  it("an upload never carries a blank part name, and empty materials stay out of it", () => {
+    const doc = ball();
+    doc.parts[0]!.name = "   ";
+    doc.overview.materials = [];
+    delete doc.overview.colors;
+    const { envelope } = tmcUpload(doc, "imported");
+    expect(envelope.draft.parts[0]!.name).toBe("Teil 1");
+    expect(envelope.draft).not.toHaveProperty("materials");
+    expect(TmcEnvelopeSchema.safeParse(envelope).success).toBe(true);
+    // A list with something in it goes along.
+    expect(tmcUpload(ball(), "imported").envelope.draft.materials?.length).toBeGreaterThan(0);
+  });
+
+  it("a pattern without any row cannot be uploaded; a row with stitches or text is enough", () => {
+    const empty = emptyDocument("a");
+    expect(uploadBlocker(empty)).toBe(EMPTY_PATTERN_LINE);
+    empty.title = "Nur ein Titel";
+    empty.overview.notes = "Nur Hinweise";
+    expect(uploadBlocker(empty)).toBe(EMPTY_PATTERN_LINE);
+    expect(uploadBlocker(ball())).toBeNull();
+    const text = emptyDocument("b");
+    text.parts[0]!.content.rows[0]!.note = "Faden abschneiden";
+    expect(uploadBlocker(text)).toBeNull();
+  });
+
+  describe("what the receiver takes at most", () => {
+    const round = (id: string, count: number) => ({ id, type: "round" as const, ops: [{ kind: "stitch" as const, code: "SC" as const, count }], stitchCountTarget: count });
+    const manyRows = (prefix: string, rows: number, count: number) => Array.from({ length: rows }, (_, i) => round(`${prefix}-${i}`, count));
+    const withParts = (...parts: BuilderDoc["parts"][number]["content"]["rows"][]) => {
+      const doc = emptyDocument("a");
+      doc.parts = parts.map((rows, i) => ({ name: `Teil ${i + 1}`, quantity: 1, content: { schemaVersion: 2, rows } }));
+      return doc;
+    };
+
+    it("100.000 tap steps in a part are fine, one more is too many, and the message names the part", () => {
+      expect(uploadTooLong(tmcUpload(withParts(manyRows("a", 10, 10_000)), "imported"))).toBeNull();
+      const line = uploadTooLong(tmcUpload(withParts(manyRows("a", 10, 10_000), [round("b", 1)], [...manyRows("c", 10, 10_000), round("d", 1)]), "imported"));
+      expect(line).toBe("Zu lang zum Hochladen: „Teil 3“ hat 100.001 Maschen, TellmeCrochet nimmt höchstens 100.000 je Teil.");
+    });
+
+    it("500.000 in a pattern are fine, one more is too many", () => {
+      const five = [1, 2, 3, 4, 5].map((n) => manyRows(`p${n}`, 10, 10_000));
+      expect(uploadTooLong(tmcUpload(withParts(...five), "imported"))).toBeNull();
+      const line = uploadTooLong(tmcUpload(withParts(...five, [round("x", 1)]), "imported"));
+      expect(line).toBe("Zu lang zum Hochladen: Die Anleitung hat 500.001 Maschen, TellmeCrochet nimmt höchstens 500.000.");
+    });
+  });
+
+  it("text the receiver cannot store is cleaned on the way, the document stays as it is", () => {
+    const doc = ball();
+    doc.title = "Ball\u0000 \uD83E";
+    doc.overview.notes = "Hinweis\uDDF6";
+    const { envelope } = tmcUpload(doc, "imported");
+    const sent = JSON.stringify(envelope);
+    expect(sent).not.toMatch(/\u0000|\\u0000/);
+    expect(envelope.draft.title).toBe("Ball \uFFFD");
+    expect(envelope.draft.parts[0]!.content.rows[0]!.note).toBe("Hinweise: Hinweis\uFFFD");
+    expect(doc.title).toBe("Ball\u0000 \uD83E");
   });
 
   it("the ball demo's link stays far below the length warning", async () => {

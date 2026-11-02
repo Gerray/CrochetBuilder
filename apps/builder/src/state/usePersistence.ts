@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type Dispatch } from "react";
 import type { EditorAction, EditorState } from "./editor.js";
-import { loadShownPart, loadState, saveShownPart, saveState } from "./storage.js";
+import { loadShownPart, loadState, saveShownPart, saveState, storedUploadLink } from "./storage.js";
 
 export type SaveStatus = "loading" | "idle" | "saving" | "saved" | "error" | "suspended";
 
@@ -18,6 +18,8 @@ interface Pending {
   doc: EditorState["doc"];
   pinned: EditorState["pinned"];
   imported: EditorState["imported"];
+  openedFile: EditorState["openedFile"];
+  uploadLink: EditorState["uploadLink"];
 }
 
 /**
@@ -61,6 +63,8 @@ export function usePersistence(state: EditorState, dispatch: Dispatch<EditorActi
             pinned: result.state.pinned,
             part: loadShownPart(),
             imported: result.state.imported === true,
+            openedFile: result.state.openedFile === true,
+            uploadLink: storedUploadLink(result.state),
           });
         }
         if (result.kind === "invalid") {
@@ -82,14 +86,14 @@ export function usePersistence(state: EditorState, dispatch: Dispatch<EditorActi
     };
   }, [dispatch]);
 
-  const { doc, pinned, part, imported } = state;
+  const { doc, pinned, part, imported, openedFile, uploadLink } = state;
   useEffect(() => {
     if (!ready.current) return;
-    pending.current = { doc, pinned, imported };
+    pending.current = { doc, pinned, imported, openedFile, uploadLink };
     setStatus("saving");
     clearTimeout(timer.current);
     timer.current = setTimeout(flush, SAVE_DELAY_MS);
-  }, [doc, pinned, imported, resumed, flush]);
+  }, [doc, pinned, imported, openedFile, uploadLink, resumed, flush]);
 
   // The part shown is remembered on its own: switching parts is no document save.
   useEffect(() => {

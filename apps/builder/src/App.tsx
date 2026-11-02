@@ -28,7 +28,12 @@ import { paletteCss } from "./state/palette.js";
 import { partFindings, partName } from "./state/parts.js";
 import type { RoundSpec } from "./state/rounds.js";
 import { isMacPlatform, shortcutFor } from "./state/shortcuts.js";
+import { documentIdentity } from "./state/uploadLink.js";
 import { usePersistence } from "./state/usePersistence.js";
+import { defaultTmcServices, type TmcServices } from "./tmc/services.js";
+import { NEW_ACCOUNT_LINE } from "./tmc/texts.js";
+import { UploadDialog } from "./tmc/UploadDialog.js";
+import { useTmcAuth } from "./tmc/useTmcAuth.js";
 
 const NO_COLORS: readonly PaletteColor[] = [];
 
@@ -59,6 +64,8 @@ export interface AppProps {
   pastePreviewOptions?: PastePreviewOptions;
   /** "Montage" computation options (tests: a main-thread client). */
   assemblySceneOptions?: AssemblySceneOptions;
+  /** The upload to TellmeCrochet; default from the build's configuration, null: not offered. */
+  tmc?: TmcServices | null;
 }
 
 /** The notice after a pasted pattern was imported (German). */
@@ -73,7 +80,7 @@ export function pasteNotice({ mode, parts, unread }: Pick<PasteImport, "mode" | 
 }
 
 /** The builder: top bar, row editor (left) and preview (right). */
-export function App({ exportActions, pastePreviewOptions, assemblySceneOptions }: AppProps = {}) {
+export function App({ exportActions, pastePreviewOptions, assemblySceneOptions, tmc }: AppProps = {}) {
   const [state, dispatch] = useReducer(editorReducer, undefined, () => initEditorState(emptyDocument()));
   const persistence = usePersistence(state, dispatch);
   const [selectedRowId, setSelectedRowId] = useState<string | null>(null);
@@ -102,11 +109,46 @@ export function App({ exportActions, pastePreviewOptions, assemblySceneOptions }
     setFocusRequest(null);
   }
 
-  // A document from a file or a link: its author is unknown (provenance "foreign", E25).
-  const replaceDocument = useCallback((doc: BuilderDoc, pinned: string[]) => {
-    dispatch({ type: "replaceDocument", doc, pinned, source: "foreign" });
+  // "Zu TellmeCrochet hochladen". The library behind it loads only for people who sign in.
+  const tmcServices = useMemo(() => (tmc === undefined ? defaultTmcServices() : tmc), [tmc]);
+  const tmcAuth = useTmcAuth(tmcServices);
+  // The document the dialog was opened for (`generation`): no other document ever sees that dialog.
+  const [uploadFor, setUploadFor] = useState<number | null>(null);
+  const uploadOpen = uploadFor !== null && uploadFor === state.generation;
+  const modalOpen = paste !== null || uploadOpen;
+  const generation = state.generation;
+  const openUpload = useCallback(() => {
+    if (!commitPendingEdits()) return;
+    tmcAuth.ensure();
+    setUploadFor(generation);
+  }, [tmcAuth.ensure, generation]);
+  const closeUpload = useCallback(() => {
+    setUploadFor(null);
+    tmcAuth.clearReturn();
+  }, [tmcAuth.clearReturn]);
+  // Another document took over (a share link, say): the dialog ended with the old one.
+  const uploadOutdated = uploadFor !== null && !uploadOpen;
+  useEffect(() => {
+    if (uploadOutdated) closeUpload();
+  }, [uploadOutdated, closeUpload]);
+  // Back from signing in with Google: the document is restored, the dialog opens where it was.
+  const documentRestored = persistence.status !== "loading";
+  const uploadResumed = tmcAuth.resume !== null;
+  useEffect(() => {
+    if (uploadResumed && documentRestored) setUploadFor(generation);
+    // Only for that moment; `generation` has come with the restored document by then.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [uploadResumed, documentRestored]);
+  // All tabs share the autosave: what was chosen before leaving counts only if the same document came back.
+  const uploadResume =
+    tmcAuth.resume && tmcAuth.resume.document === documentIdentity(state.doc, state.uploadLink) ? tmcAuth.resume : null;
+
+  // A document from a file or a link: its author is unknown (provenance, E25).
+  const replaceDocument = useCallback((doc: BuilderDoc, pinned: string[], source: "file" | "foreign") => {
+    dispatch({ type: "replaceDocument", doc, pinned, source });
     setSelectedRowId(null);
   }, []);
+  const openFile = useCallback((doc: BuilderDoc, pinned: string[]) => replaceDocument(doc, pinned, "file"), [replaceDocument]);
 
   // A document handed over in the URL (#data=…), once the stored one has been restored.
   useFragmentImport({
@@ -115,7 +157,7 @@ export function App({ exportActions, pastePreviewOptions, assemblySceneOptions }
     onImport: (doc, pinned, notice) => {
       setLinkError(null);
       setLinkNotice(notice ?? null);
-      replaceDocument(doc, pinned);
+      replaceDocument(doc, pinned, "foreign");
     },
     onError: (message) => {
       setLinkNotice(null);
@@ -284,20 +326,20 @@ export function App({ exportActions, pastePreviewOptions, assemblySceneOptions }
   // the page usually does nothing; the button and the offer in an empty pattern still work.
   useEffect(() => {
     const onPaste = (e: ClipboardEvent) => {
-      if (paste !== null || isEditable(e.target) || isEditable(document.activeElement) || overlayOpen()) return;
+      if (modalOpen || isEditable(e.target) || isEditable(document.activeElement) || overlayOpen()) return;
       const text = e.clipboardData?.getData("text/plain") ?? "";
       if (!looksLikePattern(text)) return;
       if (openPaste(text)) e.preventDefault();
     };
     document.addEventListener("paste", onPaste);
     return () => document.removeEventListener("paste", onPaste);
-  }, [paste, openPaste]);
+  }, [modalOpen, openPaste]);
 
   // Global shortcuts (by produced character, see shortcuts.ts).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      // The paste dialog owns the keyboard (undo there must not change the pattern behind it).
-      if (paste !== null) return;
+      // A modal dialog owns the keyboard (undo there must not change the pattern behind it).
+      if (modalOpen) return;
       const shortcut = shortcutFor(e);
       if (shortcut === "addRow") {
         e.preventDefault();
@@ -323,15 +365,24 @@ export function App({ exportActions, pastePreviewOptions, assemblySceneOptions }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [rows, selectionEnd, addRowAfter, selectPart, state.doc.parts.length, state.part, paste]);
+  }, [rows, selectionEnd, addRowAfter, selectPart, state.doc.parts.length, state.part, modalOpen]);
 
   const appRoot = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const root = appRoot.current;
     if (!root) return;
-    if (paste !== null) root.setAttribute("inert", "");
+    if (modalOpen) root.setAttribute("inert", "");
     else root.removeAttribute("inert");
-  }, [paste]);
+  }, [modalOpen]);
+  // The focus returns only now: an inert element cannot take it, and the export menu that opened
+  // the upload has closed. Its button is what stays.
+  const uploadWasOpen = useRef(false);
+  useEffect(() => {
+    if (uploadWasOpen.current && !uploadOpen) {
+      appRoot.current?.querySelector<HTMLElement>("[data-focus-id='export-toggle']")?.focus();
+    }
+    uploadWasOpen.current = uploadOpen;
+  }, [uploadOpen]);
 
   useEffect(() => {
     document.title = state.doc.title.trim() ? `${state.doc.title.trim()} – CrochetBuilder` : "CrochetBuilder";
@@ -379,6 +430,22 @@ export function App({ exportActions, pastePreviewOptions, assemblySceneOptions }
             </button>
           </div>
         )}
+        {!uploadOpen && tmcAuth.resume === null && tmcAuth.redirectError !== null && (
+          <div className="link-notice" role="alert">
+            <span>{tmcAuth.redirectError}</span>
+            <button type="button" className="btn btn-small" onClick={tmcAuth.clearReturn}>
+              Schließen
+            </button>
+          </div>
+        )}
+        {!uploadOpen && tmcAuth.newAccount && (
+          <div className="link-notice link-notice-info" role="status">
+            <span>{NEW_ACCOUNT_LINE}</span>
+            <button type="button" className="btn btn-small" onClick={tmcAuth.clearReturn}>
+              Schließen
+            </button>
+          </div>
+        )}
         <TopBar
           doc={state.doc}
           dispatch={dispatch}
@@ -388,8 +455,11 @@ export function App({ exportActions, pastePreviewOptions, assemblySceneOptions }
           onNew={() => dispatch(newDocument())}
           onPaste={() => openPaste()}
           onDemo={(kind) => dispatch(loadDemo(kind))}
-          onReplace={replaceDocument}
+          onReplace={openFile}
           imported={state.imported}
+          onUpload={tmcServices ? openUpload : undefined}
+          lastUploadAt={state.uploadLink?.lastUpload?.at}
+          account={tmcAuth.status === "signedIn" ? { email: tmcAuth.email, onSignOut: () => void tmcAuth.signOut() } : undefined}
           {...(exportActions ? { exportActions } : {})}
         />
         <main className="workspace">
@@ -468,7 +538,26 @@ export function App({ exportActions, pastePreviewOptions, assemblySceneOptions }
           />
         </main>
       </div>
-      {/* Outside the app root, which is inert while the dialog is open. */}
+      {/* Outside the app root, which is inert while a dialog is open. */}
+      {uploadOpen &&
+        uploadFor !== null &&
+        tmcServices &&
+        createPortal(
+          <UploadDialog
+            doc={state.doc}
+            originHint={state.imported ? "imported" : "self_created"}
+            link={state.uploadLink}
+            fromFile={state.openedFile}
+            resume={uploadResume}
+            services={tmcServices}
+            auth={tmcAuth}
+            onUploaded={(link) => dispatch({ type: "tmcUploaded", link, generation: uploadFor })}
+            onKeyReserved={(key) => dispatch({ type: "tmcKeyReserved", key, generation: uploadFor })}
+            onForget={(keepKey) => dispatch({ type: "tmcForget", keepKey, generation: uploadFor })}
+            onClose={closeUpload}
+          />,
+          document.body,
+        )}
       {paste !== null &&
         createPortal(
           <PasteDialog

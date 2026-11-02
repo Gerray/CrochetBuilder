@@ -15,6 +15,11 @@ export class ExportValidationError extends Error {
   }
 }
 
+/** What the export menu and the upload say when an export fails (German, with the reason). */
+export function exportFailureText(err: unknown): string {
+  return `Das hat nicht geklappt: ${err instanceof Error ? err.message : String(err)}`;
+}
+
 /**
  * Text lines of all parts; with several parts each starts with a heading line like the PDF
  * and the viewer ("Ohr ×2:", an unnamed part "Teil n:").

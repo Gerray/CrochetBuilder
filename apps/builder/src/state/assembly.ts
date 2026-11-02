@@ -84,6 +84,11 @@ export function withPartId(doc: BuilderDoc, index: number): BuilderDoc {
   return { ...doc, parts };
 }
 
+/** The document with an id on every part: part ids stay what they are once given (rename, move). */
+export function withAllPartIds(doc: BuilderDoc): BuilderDoc {
+  return doc.parts.reduce((next, _part, index) => withPartId(next, index), doc);
+}
+
 /** A fresh placement id for the document: "ohr", "augen", "ohr-2" … */
 export function nextPlacementId(doc: BuilderDoc, base: string): string {
   return uniqueId(slug(base) || "platzierung", new Set((doc.assembly ?? []).map((p) => p.id)));

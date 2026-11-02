@@ -1,8 +1,6 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useState, type KeyboardEvent, type ReactNode } from "react";
 import { renderedRows, type BuilderExport, type MeshStyle, type PaletteColor } from "@crochetbuilder/engine";
 import { loadModelCanvas, usePaletteColors, ViewBoundary, ViewError, type ViewLoader } from "../components/PreviewPane.js";
-import { TmcLink } from "../components/TmcLink.js";
-import { tmcLink, tmcLinkErrorMessage, type TmcLink as TmcLinkData } from "../export/tmc.js";
 import { estimateNote, gaugeLine, materialLine, paletteEntries, partHeading, sizeLine } from "../export/labels.js";
 import { partsTotal, totalText } from "../state/parts.js";
 import { builderBaseUrl } from "../export/share.js";
@@ -67,8 +65,6 @@ export function ViewerApp({
       cancelled = true;
     };
   }, [hash]);
-
-  const tmc = useTmcLink(data.status === "ready" ? data.exp : null);
 
   useEffect(() => {
     document.documentElement.classList.toggle("is-embed", embed);
@@ -139,7 +135,6 @@ export function ViewerApp({
           <span className="viewer-embed-title" title={title}>
             {title}
           </span>
-          <TmcLink href={tmc.link?.url ?? null} summary={tmc.link?.summary ?? []} error={tmc.error} placement="above" />
         </div>
       </div>
     );
@@ -153,14 +148,7 @@ export function ViewerApp({
         </a>
         <h1>{title}</h1>
         <div className="viewer-actions">
-          <TmcLink
-            className="btn btn-primary"
-            href={tmc.link?.url ?? null}
-            summary={tmc.link?.summary ?? []}
-            error={tmc.error}
-            placement="below"
-          />
-          <a className="btn" href={editUrl}>
+          <a className="btn btn-primary" href={editUrl}>
             Im Builder bearbeiten
           </a>
         </div>
@@ -181,33 +169,6 @@ export function ViewerApp({
 }
 
 // ---------------------------------------------------------------------------
-
-/**
- * The TellmeCrochet link of a shown export, made in the background (null until ready or when
- * it cannot be made). A shared link says nothing about who wrote the pattern, so the viewer
- * reports it as "imported" (E25); TellmeCrochet asks the person.
- */
-function useTmcLink(exp: BuilderExport | null): { link: TmcLinkData | null; error: string | null } {
-  const [state, setState] = useState<{ link: TmcLinkData | null; error: string | null }>({ link: null, error: null });
-  useEffect(() => {
-    setState({ link: null, error: null });
-    if (!exp) return;
-    let cancelled = false;
-    tmcLink(exp, "imported").then(
-      (link) => {
-        if (!cancelled) setState({ link, error: null });
-      },
-      (err: unknown) => {
-        console.error(err);
-        if (!cancelled) setState({ link: null, error: tmcLinkErrorMessage(err) });
-      },
-    );
-    return () => {
-      cancelled = true;
-    };
-  }, [exp]);
-  return state;
-}
 
 /** Ids of the part tabs, of the panel they control (the 3D model) and of each part's rows. */
 const VIEWER_PART_TAB = (index: number) => `viewer-part-${index}`;

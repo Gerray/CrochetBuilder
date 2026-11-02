@@ -76,7 +76,7 @@ export function dimensions(page: Page): Locator {
 export async function openExportMenu(page: Page): Promise<Locator> {
   await page.getByRole("button", { name: "Exportieren ▾" }).click();
   const panel = page.getByRole("dialog", { name: "Exportieren" });
-  await expect(panel.getByRole("link", { name: "In TellmeCrochet öffnen" })).toBeVisible();
+  await expect(panel.getByRole("button", { name: "Link teilen" })).toBeEnabled();
   return panel;
 }
 

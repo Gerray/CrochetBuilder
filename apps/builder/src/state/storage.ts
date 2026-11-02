@@ -19,6 +19,7 @@ import {
 } from "@crochetbuilder/engine";
 import type { BuilderDoc } from "./document.js";
 import { MAX_PART_QUANTITY, MAX_PARTS } from "./editor.js";
+import { parseUploadLink, type LastUpload, type UploadLink } from "./uploadLink.js";
 
 export interface StoredState {
   doc: BuilderDoc;
@@ -28,8 +29,27 @@ export interface StoredState {
    * stored next to the document, never in the export. Absent means false.
    */
   imported?: boolean;
+  /**
+   * The document's TellmeCrochet project (see `uploadLink.ts`). App-local like `imported`; absent
+   * until the first upload. Something unreadable here never costs the document: it reads as absent.
+   */
+  builderKey?: string;
+  lastUpload?: LastUpload;
+  /** The document came from an opened file (see `EditorState.openedFile`). Absent means false. */
+  openedFile?: boolean;
   /** Milliseconds since epoch of the save. */
   savedAt: number;
+}
+
+/** The fields a stored state keeps its project link in, when it has one. */
+function linkFields(link: UploadLink | null | undefined): Pick<StoredState, "builderKey" | "lastUpload"> {
+  if (!link) return {};
+  return { builderKey: link.builderKey, ...(link.lastUpload ? { lastUpload: link.lastUpload } : {}) };
+}
+
+/** The project link of a stored state. */
+export function storedUploadLink(state: Pick<StoredState, "builderKey" | "lastUpload">): UploadLink | null {
+  return parseUploadLink(state);
 }
 
 export type LoadResult =
@@ -59,7 +79,14 @@ function savedAtOf(value: unknown): number {
  */
 export function parseStored(value: unknown): StoredState | null {
   if (!value || typeof value !== "object") return null;
-  const record = value as { doc?: unknown; pinned?: unknown; imported?: unknown };
+  const record = value as {
+    doc?: unknown;
+    pinned?: unknown;
+    imported?: unknown;
+    openedFile?: unknown;
+    builderKey?: unknown;
+    lastUpload?: unknown;
+  };
   const parsed = BuilderExportSchema.safeParse(record.doc);
   if (!parsed.success || parsed.data.parts.length === 0 || parsed.data.parts.length > MAX_PARTS) return null;
   const withinLimits = parsed.data.parts.every(
@@ -69,7 +96,14 @@ export function parseStored(value: unknown): StoredState | null {
   );
   if (!withinLimits) return null;
   const pinned = Array.isArray(record.pinned) ? record.pinned.filter((x): x is string => typeof x === "string") : [];
-  return { doc: parsed.data, pinned, ...(record.imported === true ? { imported: true } : {}), savedAt: savedAtOf(value) };
+  return {
+    doc: parsed.data,
+    pinned,
+    ...(record.imported === true ? { imported: true } : {}),
+    ...(record.openedFile === true ? { openedFile: true } : {}),
+    ...linkFields(parseUploadLink(record)),
+    savedAt: savedAtOf(value),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -177,13 +211,21 @@ export async function loadState(): Promise<LoadResult> {
  * first `await`, so a save started on `pagehide` survives the tab closing. Rejects only if
  * neither store took the write.
  */
-export async function saveState(state: { doc: BuilderDoc; pinned: readonly string[]; imported?: boolean }): Promise<void> {
+export async function saveState(state: {
+  doc: BuilderDoc;
+  pinned: readonly string[];
+  imported?: boolean;
+  openedFile?: boolean;
+  uploadLink?: UploadLink | null;
+}): Promise<void> {
   // Stamped with the current format version, so a document opened as version 1 and then given
   // a version-2 feature still loads.
   const record: StoredState = {
     doc: withCurrentVersion(state.doc),
     pinned: [...state.pinned],
     ...(state.imported ? { imported: true } : {}),
+    ...(state.openedFile ? { openedFile: true } : {}),
+    ...linkFields(state.uploadLink),
     savedAt: Date.now(),
   };
   const lsOk = lsPut(LS_KEY, record);
