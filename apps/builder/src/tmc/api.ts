@@ -10,6 +10,8 @@ import type { TmcAuthClient } from "./client.js";
 import type { TmcConfig } from "./config.js";
 
 export const BUILDER_UPLOAD_PATH = "/functions/v1/builder-upload";
+/** A request without an answer by then counts as no connection, and frees the dialog. */
+export const TMC_REQUEST_TIMEOUT_MS = 60_000;
 const CLIENT_INFO = "crochetbuilder";
 
 export interface TmcTarget {
@@ -69,14 +71,14 @@ export class TmcApiError extends Error {
 
 export type FetchLike = (
   url: string,
-  init: { method: "POST"; headers: Record<string, string>; body: string },
+  init: { method: "POST"; headers: Record<string, string>; body: string; signal: AbortSignal },
 ) => Promise<{ ok: boolean; status: number; json(): Promise<unknown>; headers?: { get(name: string): string | null } }>;
 
 export interface TmcApi {
   list(): Promise<{ projects: TmcTarget[] }>;
   check(patternId: string, payload: UploadPayload): Promise<TmcCheck>;
   create(builderKey: string, origin: TmcOrigin, payload: UploadPayload): Promise<{ target: TmcTarget }>;
-  update(patternId: string, baseToken: string, payload: UploadPayload): Promise<{ target: TmcTarget }>;
+  update(patternId: string, baseToken: string, payload: UploadPayload): Promise<{ target: TmcTarget; materialsKept: boolean }>;
   share(patternId: string): Promise<{ target: TmcTarget; version: number }>;
 }
 
@@ -91,11 +93,13 @@ const CODES: ReadonlySet<string> = new Set<TmcErrorCode>([
   "rate-limited",
 ]);
 
+/**
+ * What a bare status says, without a code of ours in the body. 403 and 404 are missing on purpose:
+ * from a gateway or a proxy they say nothing about the project, and a verdict on it costs the key.
+ */
 const STATUS_CODES: Readonly<Record<number, TmcErrorCode>> = {
   400: "invalid",
   401: "unauthorized",
-  403: "forbidden",
-  404: "not-found",
   409: "conflict",
   413: "too-large",
   429: "rate-limited",
@@ -152,10 +156,19 @@ export interface TmcApiOptions {
 export function createTmcApi({ client, fetch, config }: TmcApiOptions): TmcApi {
   const endpoint = `${config.url}${BUILDER_UPLOAD_PATH}`;
 
-  const call = async (request: Record<string, unknown>): Promise<Record<string, unknown>> => {
-    const { data } = await client.auth.getSession();
-    const token = data.session?.access_token;
-    if (!token) throw new TmcApiError("unauthorized", "No session.");
+  const send = async (request: Record<string, unknown>, signal: AbortSignal): Promise<Record<string, unknown>> => {
+    let session: Awaited<ReturnType<TmcAuthClient["auth"]["getSession"]>>;
+    try {
+      session = await client.auth.getSession();
+    } catch (err) {
+      throw new TmcApiError("network", err instanceof Error ? err.message : undefined);
+    }
+    const token = session.data.session?.access_token;
+    if (!token) {
+      // No answer about the session (offline with an expired token) is not an expired session.
+      if (session.error) throw new TmcApiError("network", session.error.message);
+      throw new TmcApiError("unauthorized", "No session.");
+    }
     let response: Awaited<ReturnType<FetchLike>>;
     try {
       response = await fetch(endpoint, {
@@ -167,6 +180,7 @@ export function createTmcApi({ client, fetch, config }: TmcApiOptions): TmcApi {
           "x-client-info": CLIENT_INFO,
         },
         body: JSON.stringify(request),
+        signal,
       });
     } catch (err) {
       throw new TmcApiError("network", err instanceof Error ? err.message : undefined);
@@ -181,6 +195,18 @@ export function createTmcApi({ client, fetch, config }: TmcApiOptions): TmcApi {
     const out = record(body);
     if (!out) throw new TmcApiError("server", "The response is not JSON.");
     return out;
+  };
+
+  const call = (request: Record<string, unknown>): Promise<Record<string, unknown>> => {
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => {
+        controller.abort();
+        reject(new TmcApiError("network", "Timed out."));
+      }, TMC_REQUEST_TIMEOUT_MS);
+    });
+    return Promise.race([send(request, controller.signal), timeout]).finally(() => clearTimeout(timer));
   };
 
   return {
@@ -216,7 +242,8 @@ export function createTmcApi({ client, fetch, config }: TmcApiOptions): TmcApi {
       return { target: target((await call({ action: "create", builderKey, origin, ...payload })).target) };
     },
     async update(patternId, baseToken, payload) {
-      return { target: target((await call({ action: "update", patternId, baseToken, ...payload })).target) };
+      const out = await call({ action: "update", patternId, baseToken, ...payload });
+      return { target: target(out.target), materialsKept: out.materialsKept === true };
     },
     async share(patternId) {
       const out = await call({ action: "share", patternId });

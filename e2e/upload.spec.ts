@@ -8,6 +8,9 @@ import { expect, loadDemo, openBuilder, openExportMenu, test } from "./fixtures.
 
 const BASE = "https://tmc-fake.invalid";
 const MAIL = "anna@example.org";
+const PATTERN = "00000000-0000-4000-8000-000000000001";
+/** Found in the sign-in library's chunk and nowhere else (`apps/builder/src/build.test.ts` says the same). */
+const LIBRARY_MARKER = "X-Supabase-Api-Version";
 
 const json = (route: Route, status: number, body: unknown) =>
   route.fulfill({
@@ -45,7 +48,7 @@ async function fakeBackend(page: Page, options: { createdAt?: string } = {}): Pr
   const createdAt = options.createdAt ?? "2025-01-01T00:00:00.000Z";
   const backend: FakeBackend = { requests: [], authorizeRedirects: [] };
   const target = (extra: Record<string, unknown> = {}) => ({
-    patternId: "pattern-1",
+    patternId: PATTERN,
     builderKey: backend.requests.find((r) => r.action === "create")?.builderKey ?? "key",
     title: "Amigurumi-Kugel",
     origin: "self_created",
@@ -83,7 +86,7 @@ async function fakeBackend(page: Page, options: { createdAt?: string } = {}): Pr
           baseToken: "token-1",
         });
       case "update":
-        return json(route, 200, { target: target() });
+        return json(route, 200, { target: target(), materialsKept: false });
       default:
         return json(route, 400, { error: { code: "invalid" } });
     }
@@ -99,6 +102,23 @@ async function fakeBackend(page: Page, options: { createdAt?: string } = {}): Pr
   });
   // Anything else at that address is a mistake in the code, and fails here.
   return backend;
+}
+
+/** Every script the page loads, with whether it is the sign-in library. */
+function watchScripts(page: Page): { library: () => Promise<string[]>; all: string[] } {
+  const seen: Array<Promise<string | null>> = [];
+  const all: string[] = [];
+  page.on("response", (response) => {
+    if (response.request().resourceType() !== "script") return;
+    all.push(response.url());
+    seen.push(
+      response
+        .text()
+        .then((text) => (text.includes(LIBRARY_MARKER) ? response.url() : null))
+        .catch(() => null),
+    );
+  });
+  return { all, library: async () => (await Promise.all(seen)).filter((url): url is string => url !== null) };
 }
 
 async function openUpload(page: Page) {
@@ -146,7 +166,7 @@ test("sign in with a code, upload as a new project, upload again after a reload"
   await again.getByRole("button", { name: "Speichern" }).click();
   await expect(again.getByText("Ist in deinem TellmeCrochet-Account.")).toBeVisible();
   const update = backend.requests.find((r) => r.action === "update")!;
-  expect(update).toMatchObject({ patternId: "pattern-1", baseToken: "token-1", partKeys: ["kugel"] });
+  expect(update).toMatchObject({ patternId: PATTERN, baseToken: "token-1", partKeys: ["kugel"] });
   await again.getByRole("button", { name: "Fertig" }).click();
 
   await page.getByRole("button", { name: "Abmelden" }).click();
@@ -177,25 +197,26 @@ test("the viewer has nothing of the upload", async ({ page }) => {
   const url = await panel.getByLabel("Link zur 3D-Ansicht").inputValue();
   const requests: string[] = [];
   page.on("request", (request) => requests.push(request.url()));
+  const scripts = watchScripts(page);
   await page.goto(url);
   await expect(page.getByRole("heading", { level: 1 })).toHaveText("Amigurumi-Kugel");
   await expect(page.getByRole("button", { name: /TellmeCrochet/ })).toHaveCount(0);
   await expect(page.getByRole("link", { name: /TellmeCrochet/ })).toHaveCount(0);
   await expect(page.getByRole("link", { name: "Im Builder bearbeiten" })).toBeVisible();
   expect(requests.filter((r) => r.includes("tmc-fake"))).toEqual([]);
+  // It loaded its scripts, and the sign-in library is not among them.
+  expect(scripts.all.length).toBeGreaterThan(0);
+  expect(await scripts.library()).toEqual([]);
 });
 
 test("nobody signed in: nothing of the sign-in is downloaded until the dialog opens", async ({ page }) => {
-  const scripts: string[] = [];
-  page.on("request", (request) => {
-    if (request.resourceType() === "script") scripts.push(request.url());
-  });
+  const scripts = watchScripts(page);
   await openBuilder(page);
   await loadDemo(page, "Kugel");
   const panel = await openExportMenu(page);
   await expect(panel.getByRole("button", { name: "Für TellmeCrochet speichern (.json)" })).toBeVisible();
-  const before = scripts.length;
+  expect(await scripts.library()).toEqual([]);
   await panel.getByRole("button", { name: "Zu TellmeCrochet hochladen" }).click();
   await expect(page.getByRole("button", { name: "Mit Google anmelden" })).toBeVisible();
-  expect(scripts.length).toBeGreaterThan(before);
+  expect(await scripts.library()).toHaveLength(1);
 });

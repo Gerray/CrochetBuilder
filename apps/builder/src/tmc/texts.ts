@@ -11,16 +11,16 @@ export const SELF_CREATED_LABEL = "Ich habe diese Anleitung selbst entworfen";
 export const IMPORTED_LABEL = "Nicht selbst entworfen, aber ich darf sie so verwenden";
 export const IMPORTED_HINT = "Bleibt privat und kann nicht verkauft werden";
 
-export const SHARED_LINE = "Geteilt oder verkauft: Käufer behalten ihre Version, bis du teilst und sie selbst aktualisieren.";
-/** Says only what the check knows: it compares rows. Parts renamed or moved in the app do not show here. */
-export const CHANGED_IN_APP_LINE = "Seit deinem letzten Upload wurden in der App Reihen geändert.";
-export const UPDATE_SOURCE_LINE = "Name und Teile des Projekts kommen dabei aus dem Builder, auch wenn sie in der App umbenannt oder verschoben wurden.";
+export const SHARED_LINE =
+  "Geteilt oder verkauft: Käufer behalten ihre Version, bis du teilst und sie selbst aktualisieren. Das Material änderst du dort in der App.";
+export const CHANGED_IN_APP_LINE = "Seit deinem letzten Upload wurde sie in der App geändert.";
 export const CHANGES_LOST_LINE = "Die Änderungen aus der App gehen dabei verloren";
 export const SHARED_VERSION_KEPT_LINE = "Die zuletzt geteilte Version bleibt erhalten";
 
 export const PRIVACY_LINE = "Die Anleitung wird in deinen TellmeCrochet-Account übertragen.";
 export const SUMMARY_TITLE = "So kommt die Anleitung in TellmeCrochet an:";
 export const SUCCESS_LINE = "Ist in deinem TellmeCrochet-Account. Öffne die App, dort steht sie unter deinen Projekten.";
+export const MATERIALS_KEPT_LINE = "Das Material bleibt unverändert.";
 export const SHARE_QUESTION =
   "Das ist eine geteilte Anleitung. Möchtest du die Bearbeitung jetzt teilen? Danach kannst du nicht mehr zur ursprünglichen Version zurückkehren.";
 
@@ -29,6 +29,7 @@ export const NEW_ACCOUNT_LINE = "Mit dieser Google-Adresse gab es noch kein Kont
 export const NO_ACCOUNT_LINE = "Für diese Adresse gibt es noch kein TellmeCrochet-Konto. Installiere zuerst die App und lege dort dein Konto an.";
 export const EXPIRED_LINE = "Deine Anmeldung ist abgelaufen. Bitte melde dich neu an.";
 export const GOOGLE_FAILED_LINE = "Die Anmeldung mit Google hat nicht geklappt. Versuche es noch einmal oder melde dich mit einem Code an.";
+export const STALE_CODE_LINE = "Diese Anmeldung lässt sich hier nicht mehr abschließen. Bitte melde dich neu an.";
 export const CODE_HINT = "Falls die Mail auch einen Link enthält, brauchst du ihn hier nicht: Gib nur den Code ein.";
 export const CODE_REJECTED_LINE = "Der Code stimmt nicht oder ist abgelaufen. Prüfe ihn oder fordere einen neuen an.";
 export const LIBRARY_FAILED_LINE = "Die Anmeldung konnte nicht geladen werden. Prüfe deine Internetverbindung und versuche es noch einmal.";
@@ -61,7 +62,7 @@ export function errorLine(code: TmcErrorCode, retryAfterSeconds?: number): strin
     case "unauthorized":
       return EXPIRED_LINE;
     case "forbidden":
-      return "Dieses Projekt gehört nicht zu deinem Account.";
+      return "TellmeCrochet erlaubt das für dieses Projekt nicht.";
     case "not-found":
       return "Dieses Projekt gibt es in deinem Account nicht mehr. Du kannst die Anleitung als neues Projekt anlegen.";
     case "conflict":

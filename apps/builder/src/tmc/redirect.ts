@@ -1,7 +1,8 @@
 /**
  * Signing in with Google leaves the page and comes back. The document is safe in its autosave;
- * this flag brings the dialog back, with what was already chosen in it, and tells the return from
- * Google apart from any other address with a `?code=`.
+ * this flag brings the dialog back, with what was already chosen in it. The autosave is shared by
+ * all tabs, so another document may be waiting by then: what was chosen counts only for the
+ * document it was chosen for.
  */
 
 import type { TmcOrigin } from "../state/uploadLink.js";
@@ -12,6 +13,8 @@ const MAX_AGE_MS = 30 * 60 * 1000;
 
 /** What the dialog had chosen before it left the page. */
 export interface UploadResume {
+  /** The document this was chosen for (`documentIdentity`). */
+  document?: string;
   /** "new" or a project's id. */
   choice?: string;
   origin?: TmcOrigin;
@@ -44,9 +47,10 @@ export function takeRedirectMark(now: number): UploadResume | null {
   if (!raw) return null;
   clearRedirectMark();
   try {
-    const { choice, origin, at } = JSON.parse(raw) as { choice?: unknown; origin?: unknown; at?: unknown };
+    const { document, choice, origin, at } = JSON.parse(raw) as { document?: unknown; choice?: unknown; origin?: unknown; at?: unknown };
     if (typeof at !== "number" || now - at > MAX_AGE_MS) return null;
     return {
+      ...(typeof document === "string" ? { document } : {}),
       ...(typeof choice === "string" ? { choice } : {}),
       ...(origin === "self_created" || origin === "imported" ? { origin } : {}),
     };

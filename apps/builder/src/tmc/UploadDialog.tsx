@@ -3,9 +3,9 @@ import type { TmcOriginHint } from "@crochetbuilder/engine";
 import { trapTab } from "../components/focus.js";
 import "../components/paste.css";
 import { exportFailureText } from "../export/prepare.js";
-import { tmcUpload, uploadBlocker, type TmcUpload } from "../export/tmc.js";
+import { tmcUpload, uploadBlocker, uploadTooLong, type TmcUpload } from "../export/tmc.js";
 import type { BuilderDoc } from "../state/document.js";
-import type { TmcOrigin, UploadLink } from "../state/uploadLink.js";
+import { documentIdentity, type TmcOrigin, type UploadLink } from "../state/uploadLink.js";
 import { createTmcApi, TmcApiError, type TmcApi, type TmcCheck, type TmcTarget } from "./api.js";
 import type { UploadResume } from "./redirect.js";
 import type { TmcServices } from "./services.js";
@@ -18,6 +18,7 @@ import {
   IMPORTED_LABEL,
   impactLines,
   LIBRARY_FAILED_LINE,
+  MATERIALS_KEPT_LINE,
   NEW_ACCOUNT_LINE,
   PRIVACY_LINE,
   PRIVACY_URL,
@@ -27,7 +28,6 @@ import {
   SHARED_VERSION_KEPT_LINE,
   SUCCESS_LINE,
   SUMMARY_TITLE,
-  UPDATE_SOURCE_LINE,
   uploadedWhen,
   UPLOAD_TITLE,
 } from "./texts.js";
@@ -41,6 +41,8 @@ type Task = "list" | "check" | "upload" | "share";
 interface Done {
   target: TmcTarget;
   shared: boolean;
+  /** The upload left the materials alone (a shared or sold pattern). */
+  materialsKept: boolean;
 }
 
 export interface UploadDialogProps {
@@ -48,9 +50,15 @@ export interface UploadDialogProps {
   originHint: TmcOriginHint;
   /** The project this document already belongs to. */
   link: UploadLink | null;
+  /** The document came from an opened file: only then a project is preselected by its title. */
+  fromFile: boolean;
+  /** What was chosen for this document before leaving for Google, if anything. */
+  resume: UploadResume | null;
   services: TmcServices;
   auth: TmcAuth;
   onUploaded: (link: UploadLink) => void;
+  /** A first upload is about to go out with this key. */
+  onKeyReserved: (key: string) => void;
   /**
    * The project is out of reach: the document has none any more. `keepKey` when it was deleted (a
    * new project may take the key), not when it belongs to another account.
@@ -74,7 +82,19 @@ function sameFindings(a: TmcCheck, b: TmcCheck): boolean {
  * uploads. Steps show only when they apply; a failure keeps everything chosen so far. Modal: the
  * app behind it is made inert by the caller (see App.tsx), Tab stays inside.
  */
-export function UploadDialog({ doc, originHint, link, services, auth, onUploaded, onForget, onClose }: UploadDialogProps) {
+export function UploadDialog({
+  doc,
+  originHint,
+  link,
+  fromFile,
+  resume,
+  services,
+  auth,
+  onUploaded,
+  onKeyReserved,
+  onForget,
+  onClose,
+}: UploadDialogProps) {
   const { client } = auth;
   const api = useMemo<TmcApi | null>(
     () => (client ? createTmcApi({ client, fetch: services.fetch, config: services.config }) : null),
@@ -83,7 +103,10 @@ export function UploadDialog({ doc, originHint, link, services, auth, onUploaded
   const handoff = useMemo<{ upload: TmcUpload } | { blocked: string }>(() => {
     try {
       const blocked = uploadBlocker(doc);
-      return blocked ? { blocked } : { upload: tmcUpload(doc, originHint) };
+      if (blocked) return { blocked };
+      const next = tmcUpload(doc, originHint);
+      const tooLong = uploadTooLong(next);
+      return tooLong ? { blocked: tooLong } : { upload: next };
     } catch (err) {
       console.error(err);
       return { blocked: exportFailureText(err) };
@@ -92,8 +115,8 @@ export function UploadDialog({ doc, originHint, link, services, auth, onUploaded
   const upload = "upload" in handoff ? handoff.upload : null;
 
   // Where the upload goes: NEW, a project's id, or null while that is not known yet.
-  const [choice, setChoice] = useState<string | null>(() => auth.resume?.choice ?? link?.lastUpload?.patternId ?? (link ? NEW : null));
-  const [origin, setOrigin] = useState<TmcOrigin | null>(auth.resume?.origin ?? null);
+  const [choice, setChoice] = useState<string | null>(() => resume?.choice ?? link?.lastUpload?.patternId ?? (link ? NEW : null));
+  const [origin, setOrigin] = useState<TmcOrigin | null>(resume?.origin ?? null);
   const [projects, setProjects] = useState<TmcTarget[] | null>(null);
   const [checked, setChecked] = useState<TmcCheck | null>(null);
   const [task, setTask] = useState<Task | null>(null);
@@ -113,7 +136,16 @@ export function UploadDialog({ doc, originHint, link, services, auth, onUploaded
   // The key of a new project stays the same through retries: a lost answer cannot make two. The
   // key of a project deleted in the app may be used again.
   const pendingKey = useRef<string | null>(link !== null && link.lastUpload === null ? link.builderKey : null);
+  // Gone with the dialog (the document was replaced): an answer still on its way changes nothing.
+  const alive = useRef(true);
 
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+      latestLoad.current++;
+    };
+  }, []);
   useEffect(() => {
     dialog.current?.focus();
   }, []);
@@ -123,6 +155,7 @@ export function UploadDialog({ doc, originHint, link, services, auth, onUploaded
   });
 
   const fail = (err: unknown, again?: () => void) => {
+    if (!alive.current) return;
     const failure = err instanceof TmcApiError ? err : new TmcApiError("server");
     if (!(err instanceof TmcApiError)) console.error(err);
     switch (failure.code) {
@@ -182,7 +215,7 @@ export function UploadDialog({ doc, originHint, link, services, auth, onUploaded
     }
   };
 
-  /** The person's projects; a matching title (or `key`) is chosen for her, else a new project. */
+  /** The person's projects; `key` or, for an opened file, a matching title is chosen for her, else a new project. */
   const runList = async (key: string | null, stayNew = false) => {
     if (!api) return;
     const load = ++latestLoad.current;
@@ -197,7 +230,7 @@ export function UploadDialog({ doc, originHint, link, services, auth, onUploaded
         ? undefined
         : ((key !== null ? result.projects.find((p) => p.builderKey === key) : undefined) ??
           result.projects.find((p) => p.patternId === choice) ??
-          (choice === NEW ? undefined : result.projects.find((p) => doc.title.trim() !== "" && sameTitle(p.title, doc.title))));
+          (choice === NEW || !fromFile ? undefined : result.projects.find((p) => doc.title.trim() !== "" && sameTitle(p.title, doc.title))));
       setChoice(wanted?.patternId ?? NEW);
       if (wanted) await runCheck(wanted.patternId);
     } catch (err) {
@@ -222,6 +255,9 @@ export function UploadDialog({ doc, originHint, link, services, auth, onUploaded
   const isNew = choice === NEW;
   const existing = checked && checked.target.patternId === choice ? checked : null;
   const impact = existing ? impactLines(existing.impact) : [];
+  // Read when a step runs, not when it was set up: "Erneut versuchen" sends what is chosen now.
+  const live = useRef({ isNew, origin, existing, upload, done });
+  live.current = { isNew, origin, existing, upload, done };
 
   /** Run `work` once, whatever else gets clicked while it runs. */
   const once = async (name: Task, work: () => Promise<void>, again: () => void) => {
@@ -239,54 +275,69 @@ export function UploadDialog({ doc, originHint, link, services, auth, onUploaded
       failed = true;
     }
     running.current = false;
+    if (!alive.current) return;
     setTask(null);
     if (failed) fail(failure, again);
   };
 
   const send = () => {
-    if (!api || !upload) return;
-    const payload = { envelope: upload.envelope, partKeys: upload.partKeys };
+    const { upload: current } = live.current;
+    if (!api || !current) return;
+    const payload = { envelope: current.envelope, partKeys: current.partKeys };
     void once(
       "upload",
       async () => {
+        const { isNew: makeNew, origin: rights, existing: project } = live.current;
         let target: TmcTarget;
-        if (isNew) {
-          if (origin === null) return;
+        let materialsKept = false;
+        if (makeNew) {
+          if (rights === null) return;
           pendingKey.current ??= services.newKey();
-          target = (await api.create(pendingKey.current, origin, payload)).target;
+          onKeyReserved(pendingKey.current);
+          target = (await api.create(pendingKey.current, rights, payload)).target;
           pendingKey.current = null;
-        } else if (existing) {
+        } else if (project) {
           // Always a fresh token. What the person has not seen yet comes before overwriting.
-          const fresh = await api.check(existing.target.patternId, payload);
-          if (!sameFindings(fresh, existing)) {
+          const fresh = await api.check(project.target.patternId, payload);
+          if (!alive.current) return;
+          if (!sameFindings(fresh, project)) {
             setChecked(fresh);
             setError(errorLine("conflict"));
             return;
           }
-          target = (await api.update(existing.target.patternId, fresh.baseToken, payload)).target;
+          ({ target, materialsKept } = await api.update(project.target.patternId, fresh.baseToken, payload));
         } else {
           return;
         }
+        // The document was replaced meanwhile: this project is not the new document's.
+        if (!alive.current) return;
         onUploaded({
           builderKey: target.builderKey,
           lastUpload: { patternId: target.patternId, at: services.now(), origin: target.origin },
         });
-        setDone({ target, shared: false });
+        setDone({ target, shared: false, materialsKept });
       },
       send,
     );
   };
 
   const share = () => {
-    if (!api || !done) return;
+    const { done: finished } = live.current;
+    if (!api || !finished) return;
     void once(
       "share",
       async () => {
-        const { target } = await api.share(done.target.patternId);
-        setDone({ target, shared: true });
+        const { target } = await api.share(finished.target.patternId);
+        if (alive.current) setDone({ ...finished, target, shared: true });
       },
       share,
     );
+  };
+
+  /** The rights are final after the upload: nothing may go out with an earlier choice. */
+  const chooseOrigin = (next: TmcOrigin) => {
+    setOrigin(next);
+    setRetry(null);
   };
 
   const choose = (next: string) => {
@@ -378,7 +429,7 @@ export function UploadDialog({ doc, originHint, link, services, auth, onUploaded
             <SignInStep
               client={client}
               auth={auth}
-              resume={{ ...(choice !== null ? { choice } : {}), ...(origin ? { origin } : {}) }}
+              resume={{ document: documentIdentity(doc, link), ...(choice !== null ? { choice } : {}), ...(origin ? { origin } : {}) }}
               now={services.now}
             />
           ) : !signedIn ? (
@@ -388,7 +439,7 @@ export function UploadDialog({ doc, originHint, link, services, auth, onUploaded
           ) : done ? (
             <>
               <p className="upload-success" role="status">
-                {SUCCESS_LINE}
+                {done.materialsKept ? `${SUCCESS_LINE} ${MATERIALS_KEPT_LINE}` : SUCCESS_LINE}
               </p>
               {offerShare && <p>{SHARE_QUESTION}</p>}
               {done.shared && <p role="status">Die Bearbeitung ist jetzt geteilt.</p>}
@@ -440,7 +491,7 @@ export function UploadDialog({ doc, originHint, link, services, auth, onUploaded
                       name={`${groupId}-origin`}
                       checked={origin === "self_created"}
                       disabled={uploading}
-                      onChange={() => setOrigin("self_created")}
+                      onChange={() => chooseOrigin("self_created")}
                     />
                     <span>{SELF_CREATED_LABEL}</span>
                   </label>
@@ -450,7 +501,7 @@ export function UploadDialog({ doc, originHint, link, services, auth, onUploaded
                       name={`${groupId}-origin`}
                       checked={origin === "imported"}
                       disabled={uploading}
-                      onChange={() => setOrigin("imported")}
+                      onChange={() => chooseOrigin("imported")}
                     />
                     <span>
                       {IMPORTED_LABEL}
@@ -469,7 +520,6 @@ export function UploadDialog({ doc, originHint, link, services, auth, onUploaded
                         ? "Rechte: selbst entworfen"
                         : `Rechte: nicht selbst entworfen. ${IMPORTED_HINT}.`}
                     </span>
-                    <span className="upload-sub muted">{UPDATE_SOURCE_LINE}</span>
                   </p>
                   {isShared(existing.target) && <p className="upload-notice">{SHARED_LINE}</p>}
                   {existing.changedInApp && (

@@ -35,6 +35,8 @@ export interface StoredState {
    */
   builderKey?: string;
   lastUpload?: LastUpload;
+  /** The document came from an opened file (see `EditorState.openedFile`). Absent means false. */
+  openedFile?: boolean;
   /** Milliseconds since epoch of the save. */
   savedAt: number;
 }
@@ -77,7 +79,14 @@ function savedAtOf(value: unknown): number {
  */
 export function parseStored(value: unknown): StoredState | null {
   if (!value || typeof value !== "object") return null;
-  const record = value as { doc?: unknown; pinned?: unknown; imported?: unknown; builderKey?: unknown; lastUpload?: unknown };
+  const record = value as {
+    doc?: unknown;
+    pinned?: unknown;
+    imported?: unknown;
+    openedFile?: unknown;
+    builderKey?: unknown;
+    lastUpload?: unknown;
+  };
   const parsed = BuilderExportSchema.safeParse(record.doc);
   if (!parsed.success || parsed.data.parts.length === 0 || parsed.data.parts.length > MAX_PARTS) return null;
   const withinLimits = parsed.data.parts.every(
@@ -91,6 +100,7 @@ export function parseStored(value: unknown): StoredState | null {
     doc: parsed.data,
     pinned,
     ...(record.imported === true ? { imported: true } : {}),
+    ...(record.openedFile === true ? { openedFile: true } : {}),
     ...linkFields(parseUploadLink(record)),
     savedAt: savedAtOf(value),
   };
@@ -205,6 +215,7 @@ export async function saveState(state: {
   doc: BuilderDoc;
   pinned: readonly string[];
   imported?: boolean;
+  openedFile?: boolean;
   uploadLink?: UploadLink | null;
 }): Promise<void> {
   // Stamped with the current format version, so a document opened as version 1 and then given
@@ -213,6 +224,7 @@ export async function saveState(state: {
     doc: withCurrentVersion(state.doc),
     pinned: [...state.pinned],
     ...(state.imported ? { imported: true } : {}),
+    ...(state.openedFile ? { openedFile: true } : {}),
     ...linkFields(state.uploadLink),
     savedAt: Date.now(),
   };

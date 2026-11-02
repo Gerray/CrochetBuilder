@@ -174,6 +174,20 @@ describe("storage — provenance (E25)", () => {
   });
 });
 
+describe("storage — a document from a file", () => {
+  it("is remembered next to the document, in both copies; old saves read as not from a file", async () => {
+    await saveState({ doc: demoDocument(), pinned: [], openedFile: true });
+    const record = JSON.parse(localStorage.getItem(LS_KEY)!) as { openedFile?: boolean; doc: Record<string, unknown> };
+    expect(record.openedFile).toBe(true);
+    expect(record.doc).not.toHaveProperty("openedFile");
+    localStorage.clear();
+    const result = await loadState();
+    expect(result.kind === "ok" && result.state.openedFile).toBe(true);
+    await saveState({ doc: demoDocument(), pinned: [] });
+    expect(JSON.parse(localStorage.getItem(LS_KEY)!)).not.toHaveProperty("openedFile");
+  });
+});
+
 describe("storage — the TellmeCrochet project", () => {
   const link: UploadLink = { builderKey: "key-1", lastUpload: { patternId: "p1", at: 1234, origin: "imported" } };
 

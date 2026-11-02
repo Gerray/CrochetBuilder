@@ -1,6 +1,6 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { toTmcEnvelope, type TmcDraft } from "@crochetbuilder/engine";
-import { BUILDER_UPLOAD_PATH, createTmcApi, TmcApiError, type FetchLike, type TmcErrorCode } from "./api.js";
+import { BUILDER_UPLOAD_PATH, createTmcApi, TMC_REQUEST_TIMEOUT_MS, TmcApiError, type FetchLike, type TmcErrorCode } from "./api.js";
 import { target } from "../test/fakeTmc.js";
 
 const draft: TmcDraft = {
@@ -11,7 +11,7 @@ const draft: TmcDraft = {
 };
 const payload = { envelope: toTmcEnvelope(draft, "imported"), partKeys: ["ball"] };
 
-function make(status: number, body: unknown, options: { token?: string | null; header?: string; rejects?: Error } = {}) {
+function make(status: number, body: unknown, options: { token?: string | null; header?: string; rejects?: Error; sessionError?: string } = {}) {
   const fetch = vi.fn<FetchLike>(async () => {
     if (options.rejects) throw options.rejects;
     return {
@@ -27,7 +27,10 @@ function make(status: number, body: unknown, options: { token?: string | null; h
   const token = options.token === undefined ? "session-token" : options.token;
   const client = {
     auth: {
-      getSession: async () => ({ data: { session: token ? { access_token: token, user: {} } : null }, error: null }),
+      getSession: async () => ({
+        data: { session: token ? { access_token: token, user: {} } : null },
+        error: options.sessionError ? { message: options.sessionError } : null,
+      }),
     },
   } as never;
   const api = createTmcApi({ client, fetch, config: { url: "https://tmc.test", anonKey: "public-key" } });
@@ -78,8 +81,9 @@ describe("the builder-upload client", () => {
   });
 
   it("update", async () => {
-    const { api, fetch } = make(200, { target: target() });
-    expect(await api.update("p1", "token-1", payload)).toEqual({ target: target() });
+    const { api, fetch } = make(200, { target: target(), materialsKept: true });
+    expect(await api.update("p1", "token-1", payload)).toEqual({ target: target(), materialsKept: true });
+    expect((await make(200, { target: target() }).api.update("p1", "t", payload)).materialsKept).toBe(false);
     expect(sent(fetch)).toEqual({ action: "update", patternId: "p1", baseToken: "token-1", envelope: payload.envelope, partKeys: ["ball"] });
   });
 
@@ -132,6 +136,7 @@ describe("errors of the client", () => {
 
   it("an answer without our body goes by its status (a gateway in front of the endpoint)", async () => {
     expect((await failure(make(401, { code: 401, message: "Invalid JWT" }).api.share("p"))).code).toBe("unauthorized");
+    expect((await failure(make(429, undefined).api.share("p"))).code).toBe("rate-limited");
     expect((await failure(make(413, undefined).api.share("p"))).code).toBe("too-large");
     expect((await failure(make(500, undefined).api.share("p"))).code).toBe("server");
     expect((await failure(make(418, { error: { code: "something-new" } }).api.share("p"))).code).toBe("server");
@@ -148,8 +153,55 @@ describe("errors of the client", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it("a missing endpoint is not a missing project", async () => {
-    expect((await failure(make(404, { code: "NOT_FOUND" }).api.list())).code).toBe("server");
+  it("a bare 403 or 404 is no verdict on the project: only a code of ours in the body is", async () => {
+    for (const body of [undefined, { code: "NOT_FOUND" }, { error: "nope" }, { message: "Function not found" }]) {
+      expect((await failure(make(404, body).api.check("p", payload))).code).toBe("server");
+      expect((await failure(make(404, body).api.list())).code).toBe("server");
+      expect((await failure(make(403, body).api.update("p", "t", payload))).code).toBe("server");
+    }
+    expect((await failure(make(404, { error: { code: "not-found" } }).api.check("p", payload))).code).toBe("not-found");
+    expect((await failure(make(403, { error: { code: "forbidden" } }).api.check("p", payload))).code).toBe("forbidden");
+  });
+
+  it("a session that could not be read is no connection, not an expired session", async () => {
+    const { api, fetch } = make(200, {}, { token: null, sessionError: "Failed to fetch" });
+    expect((await failure(api.list())).code).toBe("network");
+    expect(fetch).not.toHaveBeenCalled();
+    const client = { auth: { getSession: () => Promise.reject(new Error("broken")) } } as never;
+    const broken = createTmcApi({ client, fetch: vi.fn(), config: { url: "https://tmc.test", anonKey: "k" } });
+    expect((await failure(broken.list())).code).toBe("network");
+  });
+
+  describe("a request without an answer", () => {
+    afterEach(() => vi.useRealTimers());
+
+    it("is given up after 60 seconds as a network failure, and aborted", async () => {
+      vi.useFakeTimers();
+      let signal: AbortSignal | undefined;
+      const fetch: FetchLike = (_url, init) => {
+        signal = init.signal;
+        return new Promise(() => {});
+      };
+      const client = { auth: { getSession: async () => ({ data: { session: { access_token: "t", user: {} } }, error: null }) } } as never;
+      const api = createTmcApi({ client, fetch, config: { url: "https://tmc.test", anonKey: "k" } });
+      const result = api.list().then(
+        () => null,
+        (e: unknown) => e,
+      );
+      await vi.advanceTimersByTimeAsync(TMC_REQUEST_TIMEOUT_MS - 1);
+      expect(signal!.aborted).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(signal!.aborted).toBe(true);
+      expect(await result).toMatchObject({ code: "network" });
+      expect(TMC_REQUEST_TIMEOUT_MS).toBe(60_000);
+    });
+
+    it("an answer in time leaves no timer behind", async () => {
+      vi.useFakeTimers();
+      const { api } = make(200, { projects: [] });
+      await api.list();
+      expect(vi.getTimerCount()).toBe(0);
+    });
   });
 
   it("an answer outside the contract is reported, not passed on", async () => {

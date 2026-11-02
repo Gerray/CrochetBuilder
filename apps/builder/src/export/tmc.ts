@@ -6,7 +6,10 @@
 
 import {
   summarizeTmcLosses,
+  TMC_MAX_TAP_STEPS_PER_PART,
+  TMC_MAX_TAP_STEPS_PER_PATTERN,
   tmcPartKeys,
+  tmcTapSteps,
   toTellmeCrochetDraft,
   toTmcEnvelope,
   type BuilderExport,
@@ -57,6 +60,22 @@ export function tmcUpload(doc: BuilderDoc, originHint: TmcOriginHint): TmcUpload
   const { materials, ...draft } = handoff.envelope.draft;
   const envelope = materials?.length ? handoff.envelope : { ...handoff.envelope, draft };
   return { ...handoff, envelope, partKeys: tmcPartKeys(exp) };
+}
+
+const count = (n: number) => n.toLocaleString("de-DE");
+
+/** Why what `tmcUpload` made is too long for the receiver (German), or null. */
+export function uploadTooLong({ envelope }: Pick<TmcUpload, "envelope">): string | null {
+  const steps = tmcTapSteps(envelope.draft);
+  const part = steps.parts.findIndex((n) => n > TMC_MAX_TAP_STEPS_PER_PART);
+  if (part >= 0) {
+    const name = envelope.draft.parts[part]!.name;
+    return `Zu lang zum Hochladen: „${name}“ hat ${count(steps.parts[part]!)} Maschen, TellmeCrochet nimmt höchstens ${count(TMC_MAX_TAP_STEPS_PER_PART)} je Teil.`;
+  }
+  if (steps.total > TMC_MAX_TAP_STEPS_PER_PATTERN) {
+    return `Zu lang zum Hochladen: Die Anleitung hat ${count(steps.total)} Maschen, TellmeCrochet nimmt höchstens ${count(TMC_MAX_TAP_STEPS_PER_PATTERN)}.`;
+  }
+  return null;
 }
 
 /** File name of the saved hand-off: "amigurumi-kugel.tellmecrochet.json". */

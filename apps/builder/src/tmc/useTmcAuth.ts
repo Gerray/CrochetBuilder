@@ -4,10 +4,10 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { forgetStoredSession, hasStoredSession, type TmcAuthClient, type TmcSession } from "./client.js";
-import { cleanRedirectParams, readRedirectParams, takeRedirectMark, type UploadResume } from "./redirect.js";
+import { forgetStoredSession, hasCodeVerifier, hasStoredSession, type TmcAuthClient, type TmcSession } from "./client.js";
+import { cleanRedirectParams, clearRedirectMark, readRedirectParams, takeRedirectMark, type UploadResume } from "./redirect.js";
 import type { TmcServices } from "./services.js";
-import { GOOGLE_FAILED_LINE } from "./texts.js";
+import { GOOGLE_FAILED_LINE, STALE_CODE_LINE } from "./texts.js";
 
 /** An account this young was made by the sign-in itself (Google cannot be limited to existing ones). */
 export const NEW_ACCOUNT_WINDOW_MS = 60 * 1000;
@@ -29,9 +29,9 @@ export interface TmcAuth {
   expired: boolean;
   /** The Google sign-in just created an account. */
   newAccount: boolean;
-  /** Why the return from Google did not sign in (German). */
+  /** Why the return from Google did not sign in, or a code could not be used (German). */
   redirectError: string | null;
-  /** Non-null after a return from Google: the dialog opens again with this. */
+  /** Non-null after a return from Google in this tab: the dialog opens again; this is what it had chosen. */
   resume: UploadResume | null;
   /** The dialog closed: what the return from Google had to say is said. */
   clearReturn: () => void;
@@ -67,6 +67,9 @@ export function useTmcAuth(services: TmcServices | null): TmcAuth {
   const clientRef = useRef<TmcAuthClient | null>(null);
   // Signing out on purpose is no expired session.
   const signingOut = useRef(false);
+  // A code waiting to be redeemed. It left the address bar, and stays here until the library is
+  // there, so that "Erneut versuchen" can still use it.
+  const pendingCode = useRef<string | null>(null);
 
   const apply = useCallback((session: TmcSession | null) => {
     setState((s) => {
@@ -79,57 +82,86 @@ export function useTmcAuth(services: TmcServices | null): TmcAuth {
   const refresh = useCallback(async () => {
     const client = clientRef.current;
     if (!client) return;
-    const { data } = await client.auth.getSession();
+    const { data, error } = await client.auth.getSession();
+    if (error && !data.session) {
+      // Not answered, which says nothing about the session (offline, say): no verdict on it.
+      console.warn(error.message);
+      setState((s) => (s.status === "signedIn" ? s : { ...s, status: "signedOut" }));
+      return;
+    }
     apply(data.session);
   }, [apply]);
 
-  /** Load the library once; `first` runs before the session is read (the return from Google). */
-  const start = useCallback(
-    (first?: (client: TmcAuthClient) => Promise<void>) => {
-      if (!services || started.current) return;
-      started.current = true;
-      setState((s) => ({ ...s, status: "loading" }));
-      void services
-        .loadClient()
-        .then(async (client) => {
-          clientRef.current = client;
-          setState((s) => ({ ...s, client }));
-          await first?.(client);
-          client.auth.onAuthStateChange((_event, session) => apply(session));
-          await refresh();
-        })
-        .catch((err: unknown) => {
-          console.warn(err);
-          started.current = false;
-          setState((s) => ({ ...s, status: "unavailable" }));
-        });
+  const redeem = useCallback(
+    async (client: TmcAuthClient, code: string) => {
+      try {
+        const { data, error } = await client.auth.exchangeCodeForSession(code);
+        if (error) {
+          console.warn(error.message);
+          setState((s) => ({ ...s, redirectError: GOOGLE_FAILED_LINE }));
+        } else {
+          const newAccount = isNewAccount(data.session, services?.now() ?? Date.now());
+          setState((s) => ({ ...s, newAccount }));
+        }
+      } catch (err) {
+        console.warn(err);
+        setState((s) => ({ ...s, redirectError: GOOGLE_FAILED_LINE }));
+      }
     },
-    [services, apply, refresh],
+    [services],
   );
+
+  /** Load the library once and read the session; a waiting code is redeemed first. */
+  const start = useCallback(() => {
+    if (!services || started.current) return;
+    started.current = true;
+    setState((s) => ({ ...s, status: "loading" }));
+    void services
+      .loadClient()
+      .then(async (client) => {
+        clientRef.current = client;
+        setState((s) => ({ ...s, client }));
+        const code = pendingCode.current;
+        pendingCode.current = null;
+        if (code) await redeem(client, code);
+        client.auth.onAuthStateChange((_event, session) => apply(session));
+        await refresh();
+      })
+      .catch((err: unknown) => {
+        console.warn(err);
+        started.current = false;
+        setState((s) => ({ ...s, status: "unavailable" }));
+      });
+  }, [services, apply, refresh, redeem]);
 
   useEffect(() => {
     if (!services) return;
-    const resume = takeRedirectMark(services.now());
-    if (!resume) {
-      if (hasStoredSession()) start();
-      return;
-    }
-    // Back from Google. The code is used up by the exchange and leaves the address bar at once.
+    const mark = takeRedirectMark(services.now());
     const { code, failed } = readRedirectParams(globalThis.location.search);
-    cleanRedirectParams();
-    setState((s) => ({ ...s, resume, redirectError: failed ? GOOGLE_FAILED_LINE : null }));
-    start(async (client) => {
-      if (!code) return;
-      const { data, error } = await client.auth.exchangeCodeForSession(code);
-      if (error) {
-        console.warn(error.message);
-        setState((s) => ({ ...s, redirectError: GOOGLE_FAILED_LINE }));
-      } else {
-        const newAccount = isNewAccount(data.session, services.now());
-        setState((s) => ({ ...s, newAccount }));
-      }
-    });
+    const verifier = hasCodeVerifier();
+    // A code is ours whatever the mark says (a late return, a new tab, no session storage); only
+    // the dialog opening again needs the mark. A mark without any return is a sign-in given up.
+    const returned = code !== null || (failed && (mark !== null || verifier));
+    const usable = code !== null && verifier && !failed;
+    if (returned) {
+      // The code is used up by the exchange and leaves the address bar at once.
+      cleanRedirectParams();
+      pendingCode.current = usable ? code : null;
+      const redirectError = failed ? GOOGLE_FAILED_LINE : usable ? null : STALE_CODE_LINE;
+      setState((s) => ({ ...s, resume: mark, redirectError }));
+    }
+    if (usable || (returned && mark !== null) || hasStoredSession()) start();
   }, [services, start]);
+
+  // Back through the browser's history instead of through Google: that sign-in was given up, and
+  // its mark must not be taken for a return later on.
+  useEffect(() => {
+    const onShow = (e: PageTransitionEvent) => {
+      if (e.persisted) clearRedirectMark();
+    };
+    globalThis.addEventListener("pageshow", onShow);
+    return () => globalThis.removeEventListener("pageshow", onShow);
+  }, []);
 
   const ensure = useCallback(() => start(), [start]);
   const clearReturn = useCallback(() => setState((s) => ({ ...s, resume: null, newAccount: false, redirectError: null })), []);

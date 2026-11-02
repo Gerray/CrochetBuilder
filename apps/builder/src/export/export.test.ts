@@ -20,7 +20,7 @@ import {
 } from "./import.js";
 import { exportFileName, ExportValidationError, isDocumentEmpty, prepareExport, renderedLines } from "./prepare.js";
 import { builderBaseUrl, embedSnippet, shareLinks, viewerBaseUrl } from "./share.js";
-import { EMPTY_PATTERN_LINE, tmcFileName, tmcHandoff, tmcUpload, uploadBlocker } from "./tmc.js";
+import { EMPTY_PATTERN_LINE, tmcFileName, tmcHandoff, tmcUpload, uploadBlocker, uploadTooLong } from "./tmc.js";
 
 function ids(prefix = "row") {
   let n = 0;
@@ -226,6 +226,41 @@ describe("share links", () => {
     const text = emptyDocument("b");
     text.parts[0]!.content.rows[0]!.note = "Faden abschneiden";
     expect(uploadBlocker(text)).toBeNull();
+  });
+
+  describe("what the receiver takes at most", () => {
+    const round = (id: string, count: number) => ({ id, type: "round" as const, ops: [{ kind: "stitch" as const, code: "SC" as const, count }], stitchCountTarget: count });
+    const manyRows = (prefix: string, rows: number, count: number) => Array.from({ length: rows }, (_, i) => round(`${prefix}-${i}`, count));
+    const withParts = (...parts: BuilderDoc["parts"][number]["content"]["rows"][]) => {
+      const doc = emptyDocument("a");
+      doc.parts = parts.map((rows, i) => ({ name: `Teil ${i + 1}`, quantity: 1, content: { schemaVersion: 2, rows } }));
+      return doc;
+    };
+
+    it("100.000 tap steps in a part are fine, one more is too many, and the message names the part", () => {
+      expect(uploadTooLong(tmcUpload(withParts(manyRows("a", 10, 10_000)), "imported"))).toBeNull();
+      const line = uploadTooLong(tmcUpload(withParts(manyRows("a", 10, 10_000), [round("b", 1)], [...manyRows("c", 10, 10_000), round("d", 1)]), "imported"));
+      expect(line).toBe("Zu lang zum Hochladen: „Teil 3“ hat 100.001 Maschen, TellmeCrochet nimmt höchstens 100.000 je Teil.");
+    });
+
+    it("500.000 in a pattern are fine, one more is too many", () => {
+      const five = [1, 2, 3, 4, 5].map((n) => manyRows(`p${n}`, 10, 10_000));
+      expect(uploadTooLong(tmcUpload(withParts(...five), "imported"))).toBeNull();
+      const line = uploadTooLong(tmcUpload(withParts(...five, [round("x", 1)]), "imported"));
+      expect(line).toBe("Zu lang zum Hochladen: Die Anleitung hat 500.001 Maschen, TellmeCrochet nimmt höchstens 500.000.");
+    });
+  });
+
+  it("text the receiver cannot store is cleaned on the way, the document stays as it is", () => {
+    const doc = ball();
+    doc.title = "Ball\u0000 \uD83E";
+    doc.overview.notes = "Hinweis\uDDF6";
+    const { envelope } = tmcUpload(doc, "imported");
+    const sent = JSON.stringify(envelope);
+    expect(sent).not.toMatch(/\u0000|\\u0000/);
+    expect(envelope.draft.title).toBe("Ball \uFFFD");
+    expect(envelope.draft.parts[0]!.content.rows[0]!.note).toBe("Hinweise: Hinweis\uFFFD");
+    expect(doc.title).toBe("Ball\u0000 \uD83E");
   });
 
   it("the ball demo's link stays far below the length warning", async () => {

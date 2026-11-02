@@ -4,6 +4,7 @@
  * answer otherwise.
  */
 
+import { TmcEnvelopeSchema } from "@crochetbuilder/engine";
 import { vi } from "vitest";
 import type { FetchLike, TmcTarget } from "../tmc/api.js";
 import type { TmcAuthClient, TmcAuthError, TmcSession } from "../tmc/client.js";
@@ -26,13 +27,20 @@ export interface FakeResponse {
   body: unknown;
 }
 
+export const uuid = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
+export const PATTERN_1 = uuid(1);
+export const KEY_1 = uuid(2);
+/** The key of the first new project, and the id of the first project made. */
+export const NEW_KEY_1 = uuid(101);
+export const PATTERN_NEW = uuid(901);
+
 export const MAIL = "anna@example.org";
 export const NOW = Date.UTC(2026, 10, 2, 13, 32);
 
 export function target(extra: Partial<TmcTarget> = {}): TmcTarget {
   return {
-    patternId: "pattern-1",
-    builderKey: "key-1",
+    patternId: PATTERN_1,
+    builderKey: KEY_1,
     title: "Ball",
     origin: "self_created",
     shared: false,
@@ -66,6 +74,8 @@ export function fakeTmcServices(options: { session?: TmcSession | null; projects
     oauthError: null as TmcAuthError | null,
     exchangeSession: sessionFor() as TmcSession | null,
     exchangeError: null as TmcAuthError | null,
+    /** `getSession` could not tell (offline with an expired token). */
+    sessionError: null as TmcAuthError | null,
     calls: {
       signInWithOAuth: vi.fn(),
       signInWithOtp: vi.fn(),
@@ -78,7 +88,7 @@ export function fakeTmcServices(options: { session?: TmcSession | null; projects
 
   const client: TmcAuthClient = {
     auth: {
-      getSession: async () => ({ data: { session }, error: null }),
+      getSession: async () => (auth.sessionError ? { data: { session: null }, error: auth.sessionError } : { data: { session }, error: null }),
       onAuthStateChange: (callback) => {
         listeners.push(callback);
         return {};
@@ -125,9 +135,17 @@ export function fakeTmcServices(options: { session?: TmcSession | null; projects
     },
     /** What `check` says about a project, until changed again. Each check has its own token. */
     checkResult: { changedInApp: false, impact: { progressMoved: 0, markersDropped: 0, partsDropped: 0 } },
+    /** What `update` says about the materials. */
+    materialsKept: false,
   };
 
-  /** The endpoint is strict: unknown fields and bad part keys are a 400. */
+  const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+  const ILL_FORMED = /\u0000|[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+  const isUuid = (value: unknown) => typeof value === "string" && UUID.test(value);
+  let projectsMade = 0;
+  let lastToken: string | null = null;
+
+  /** The endpoint is as strict as the real one: all of this is a 400. */
   const refused = (req: FakeRequest): boolean => {
     const payload = ["envelope", "partKeys"];
     const fields: Record<Action, string[]> = {
@@ -137,12 +155,20 @@ export function fakeTmcServices(options: { session?: TmcSession | null; projects
       update: ["action", "patternId", "baseToken", ...payload],
       share: ["action", "patternId"],
     };
+    if (!fields[req.action]) return true;
     if (Object.keys(req).sort().join() !== [...fields[req.action]].sort().join()) return true;
-    if (!req.partKeys) return false;
+    if ("patternId" in req && !isUuid(req.patternId)) return true;
+    if (req.action === "create" && (!isUuid(req.builderKey) || (req.origin !== "self_created" && req.origin !== "imported"))) return true;
+    if (req.action === "update" && (typeof req.baseToken !== "string" || req.baseToken === "")) return true;
+    if (!("envelope" in req)) return false;
+    const envelope = TmcEnvelopeSchema.safeParse(req.envelope);
+    if (!envelope.success) return true;
+    const { parts } = envelope.data.draft;
+    if (parts.some((p) => p.name.trim() === "") || parts.every((p) => p.content.rows.length === 0)) return true;
     const keys = req.partKeys;
-    return (
-      keys.length !== req.envelope?.draft.parts.length || new Set(keys).size !== keys.length || keys.some((k) => k === "" || k.length > 200)
-    );
+    if (!Array.isArray(keys) || keys.length !== parts.length || new Set(keys).size !== keys.length) return true;
+    if (keys.some((k) => typeof k !== "string" || k === "" || k.length > 200)) return true;
+    return ILL_FORMED.test(JSON.stringify(req.envelope, (_key, value: unknown) => value)) || keys.some((k) => ILL_FORMED.test(k));
   };
 
   const answer = (req: FakeRequest): FakeResponse => {
@@ -153,23 +179,30 @@ export function fakeTmcServices(options: { session?: TmcSession | null; projects
         return { status: 200, body: { projects } };
       case "check": {
         const found = find(req.patternId);
-        return found
-          ? { status: 200, body: { target: found, ...server.checkResult, baseToken: `token-${server.of("check").length}` } }
-          : ERROR(404, "not-found");
+        if (!found) return ERROR(404, "not-found");
+        lastToken = `token-${server.of("check").length}`;
+        return { status: 200, body: { target: found, ...server.checkResult, baseToken: lastToken } };
       }
-      case "create":
-        return {
-          status: 200,
-          body: { target: target({ patternId: "pattern-new", builderKey: req.builderKey ?? "", origin: req.origin === "imported" ? "imported" : "self_created" }) },
-        };
+      case "create": {
+        if (projects.some((p) => p.builderKey === req.builderKey)) return ERROR(409, "key-in-use");
+        const made = target({ patternId: uuid(900 + ++projectsMade), builderKey: req.builderKey ?? "", origin: req.origin === "imported" ? "imported" : "self_created" });
+        projects.push(made);
+        return { status: 200, body: { target: made } };
+      }
       case "update": {
         const found = find(req.patternId);
-        return found ? { status: 200, body: { target: found } } : ERROR(404, "not-found");
+        if (!found) return ERROR(404, "not-found");
+        if (req.baseToken !== lastToken) return ERROR(409, "conflict");
+        return { status: 200, body: { target: found, materialsKept: server.materialsKept } };
       }
       case "share": {
         const found = find(req.patternId);
-        return found ? { status: 200, body: { target: { ...found, hasUnsharedChanges: false }, version: 2 } } : ERROR(404, "not-found");
+        if (!found) return ERROR(404, "not-found");
+        if (!found.shared) return ERROR(400, "invalid");
+        return { status: 200, body: { target: { ...found, hasUnsharedChanges: false }, version: 2 } };
       }
+      default:
+        return ERROR(400, "invalid");
     }
   };
 
@@ -191,7 +224,7 @@ export function fakeTmcServices(options: { session?: TmcSession | null; projects
     config: { url: "https://tmc.test", anonKey: "public-key" },
     loadClient,
     fetch,
-    newKey: () => `new-key-${++keys}`,
+    newKey: () => uuid(100 + ++keys),
     now: () => NOW,
   };
   return { services, server, auth, client, loadClient };

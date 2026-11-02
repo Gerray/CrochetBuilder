@@ -69,6 +69,10 @@ export interface EditorState {
    * forward over a replaced document brings along the link of the document that comes back.
    */
   uploadLink: UploadLink | null;
+  /** The document came from an opened file; only then a project is preselected by its title. */
+  openedFile: boolean;
+  /** Counts up whenever another document takes over: what was started for the old one ends there. */
+  generation: number;
 }
 
 interface Snapshot {
@@ -76,6 +80,7 @@ interface Snapshot {
   pinned: readonly string[];
   /** Provenance that belongs to `doc` (see `EditorState.imported`). */
   imported: boolean;
+  openedFile: boolean;
   /** The step was a paste: undoing it keeps `imported` set. */
   pasted?: boolean;
   /** The step replaced the whole document: `uploadLink` is the link that belongs to `doc`. */
@@ -87,10 +92,11 @@ interface Snapshot {
 }
 
 /**
- * Where a replacing document comes from (E25): `paste` — "Anleitung einfügen"; `foreign` — a
- * file or a link (author unknown). Without it ("Neu", demos) the document is the author's own.
+ * Where a replacing document comes from (E25): `paste` — "Anleitung einfügen"; `file` — an opened
+ * file, `foreign` — a link (author unknown for both). Without it ("Neu", demos) the document is the
+ * author's own.
  */
-export type DocumentSource = "paste" | "foreign";
+export type DocumentSource = "paste" | "file" | "foreign";
 
 type Part = BuilderDoc["parts"][number];
 
@@ -179,14 +185,29 @@ export type EditorAction =
   // document
   /** `source`: where the new document comes from (provenance, E25). */
   | { type: "replaceDocument"; doc: BuilderDoc; pinned?: readonly string[]; source?: DocumentSource }
-  | { type: "hydrate"; doc: BuilderDoc; pinned?: readonly string[]; part?: number; imported?: boolean; uploadLink?: UploadLink | null }
+  | {
+      type: "hydrate";
+      doc: BuilderDoc;
+      pinned?: readonly string[];
+      part?: number;
+      imported?: boolean;
+      openedFile?: boolean;
+      uploadLink?: UploadLink | null;
+    }
+  // The upload's actions name the document they were started for (`EditorState.generation`) and do
+  // nothing to any other.
   /** An upload went through: the project is remembered and every part has its id from now on. */
-  | { type: "tmcUploaded"; link: UploadLink }
+  | { type: "tmcUploaded"; link: UploadLink; generation: number }
+  /**
+   * A first upload is about to go out with this key. Kept before the answer, so that a lost answer
+   * finds the project again instead of making another. A document with a live project keeps that.
+   */
+  | { type: "tmcKeyReserved"; key: string; generation: number }
   /**
    * The project is out of reach: the document has none any more. `keepKey` (it was deleted): a new
    * project may take the same key. Otherwise it is someone else's and the key goes as well.
    */
-  | { type: "tmcForget"; keepKey?: boolean }
+  | { type: "tmcForget"; keepKey?: boolean; generation: number }
   | { type: "undo" }
   | { type: "redo" }
   /** Typing in a field ended (blur): the next edit starts a new undo step. */
@@ -198,29 +219,43 @@ export function initEditorState(
   part = 0,
   imported = false,
   uploadLink: UploadLink | null = null,
+  openedFile = false,
+  generation = 0,
 ): EditorState {
-  return { doc, pinned, part: clampPart(doc, part), past: [], future: [], lastKey: undefined, imported, uploadLink };
+  return { doc, pinned, part: clampPart(doc, part), past: [], future: [], lastKey: undefined, imported, uploadLink, openedFile, generation };
 }
 
 /**
- * `doc` with the ids `next` gave its parts, for parts that still go by the same name. An older
- * state in the history must not hand out a new key for a part after undo and a rename.
+ * `doc` with the ids `next` gave its parts, found by the rows they share: names change and repeat,
+ * row ids do neither. An older state in the history must not hand out a new key for a part after
+ * undo, or swap the keys of two parts.
  */
 function withIdsOf(doc: BuilderDoc, next: BuilderDoc): BuilderDoc {
-  const used = new Set(doc.parts.flatMap((p) => (p.id === undefined ? [] : [p.id])));
-  // Parts of the same name take their ids in order.
-  const free = new Map<string, string[]>();
-  for (const { name, id } of next.parts) {
-    if (id !== undefined && !used.has(id)) free.set(name, [...(free.get(name) ?? []), id]);
+  const idOfRow = new Map<string, string>();
+  for (const part of next.parts) {
+    if (part.id !== undefined) for (const row of part.content.rows) idOfRow.set(row.id, part.id);
   }
+  const used = new Set(doc.parts.flatMap((p) => (p.id === undefined ? [] : [p.id])));
   let changed = false;
   const parts = doc.parts.map((part) => {
-    const id = part.id === undefined ? free.get(part.name)?.shift() : undefined;
+    if (part.id !== undefined) return part;
+    const id = part.content.rows.map((r) => idOfRow.get(r.id)).find((candidate) => candidate !== undefined && !used.has(candidate));
     if (id === undefined) return part;
+    used.add(id);
     changed = true;
     return { ...part, id };
   });
   return changed ? { ...doc, parts } : doc;
+}
+
+/** Every part with its id for good, in the document and in the states the history can bring back. */
+function withPartIdsForGood(state: EditorState): Pick<EditorState, "doc" | "past" | "future"> {
+  const doc = withAllPartIds(state.doc);
+  const stamp = (snapshot: Snapshot): Snapshot => {
+    const stamped = withIdsOf(snapshot.doc, doc);
+    return stamped === snapshot.doc ? snapshot : { ...snapshot, doc: stamped };
+  };
+  return { doc, past: state.past.map(stamp), future: state.future.map(stamp) };
 }
 
 /** Provenance after `action` (see `EditorState.imported`). */
@@ -773,6 +808,7 @@ function applyEdit(state: EditorState, action: EditorAction): DocResult {
     case "redo":
     case "endTyping":
     case "tmcUploaded":
+    case "tmcKeyReserved":
     case "tmcForget":
       return same;
 
@@ -886,7 +922,7 @@ export const MAX_RUN_LENGTH = 999;
 
 type AssistAction = Extract<EditorAction, { type: "batch" | "insertRows" | "setRunLength" | "unpinTarget" }>;
 
-const NOT_BATCHABLE: ReadonlySet<EditorAction["type"]> = new Set(["undo", "redo", "hydrate", "endTyping", "selectPart", "tmcUploaded", "tmcForget"]);
+const NOT_BATCHABLE: ReadonlySet<EditorAction["type"]> = new Set(["undo", "redo", "hydrate", "endTyping", "selectPart", "tmcUploaded", "tmcKeyReserved", "tmcForget"]);
 
 /** An empty stitch row (being written, no note): snippets replace it instead of following it. */
 function isBlankRow(row: Row | undefined): boolean {
@@ -1097,6 +1133,7 @@ export function editorReducer(state: EditorState, action: EditorAction): EditorS
           doc: state.doc,
           pinned: state.pinned,
           imported: state.imported,
+          openedFile: state.openedFile,
           ...(previous.replaced ? { replaced: { uploadLink: state.uploadLink } } : {}),
         },
         ...state.future,
@@ -1105,6 +1142,8 @@ export function editorReducer(state: EditorState, action: EditorAction): EditorS
       // Undoing a paste keeps the mark: the pasted text was in the pattern (E25).
       imported: previous.pasted === true || previous.imported,
       uploadLink: previous.replaced ? previous.replaced.uploadLink : state.uploadLink,
+      openedFile: previous.openedFile,
+      generation: previous.replaced ? state.generation + 1 : state.generation,
     };
   }
   if (action.type === "redo") {
@@ -1121,6 +1160,7 @@ export function editorReducer(state: EditorState, action: EditorAction): EditorS
           doc: state.doc,
           pinned: state.pinned,
           imported: state.imported,
+          openedFile: state.openedFile,
           ...(next.replaced ? { replaced: { uploadLink: state.uploadLink } } : {}),
         },
       ],
@@ -1128,23 +1168,34 @@ export function editorReducer(state: EditorState, action: EditorAction): EditorS
       lastKey: undefined,
       imported: next.imported,
       uploadLink: next.replaced ? next.replaced.uploadLink : state.uploadLink,
+      openedFile: next.openedFile,
+      generation: next.replaced ? state.generation + 1 : state.generation,
     };
   }
   if (action.type === "hydrate") {
     const loaded = withAutoTargets(action.doc, action.pinned ?? []);
-    return initEditorState(loaded.doc, loaded.pinned, action.part ?? 0, action.imported === true, action.uploadLink ?? null);
+    return initEditorState(
+      loaded.doc,
+      loaded.pinned,
+      action.part ?? 0,
+      action.imported === true,
+      action.uploadLink ?? null,
+      action.openedFile === true,
+      state.generation + 1,
+    );
   }
   if (action.type === "tmcUploaded") {
     // No undo step: nothing the person edited, and no way to take the upload back from here.
-    const doc = withAllPartIds(state.doc);
-    const stamp = (snapshot: Snapshot): Snapshot => {
-      const stamped = withIdsOf(snapshot.doc, doc);
-      return stamped === snapshot.doc ? snapshot : { ...snapshot, doc: stamped };
-    };
-    return { ...state, doc, past: state.past.map(stamp), future: state.future.map(stamp), uploadLink: action.link };
+    if (action.generation !== state.generation) return state;
+    return { ...state, ...withPartIdsForGood(state), uploadLink: action.link };
+  }
+  if (action.type === "tmcKeyReserved") {
+    // The upload may arrive even if its answer does not, so the parts' keys count from here on.
+    if (action.generation !== state.generation || state.uploadLink?.lastUpload) return state;
+    return { ...state, ...withPartIdsForGood(state), uploadLink: { builderKey: action.key, lastUpload: null } };
   }
   if (action.type === "tmcForget") {
-    if (state.uploadLink === null) return state;
+    if (action.generation !== state.generation || state.uploadLink === null) return state;
     return { ...state, uploadLink: action.keepKey ? { builderKey: state.uploadLink.builderKey, lastUpload: null } : null };
   }
   if (action.type === "endTyping") {
@@ -1165,6 +1216,7 @@ export function editorReducer(state: EditorState, action: EditorAction): EditorS
     doc: state.doc,
     pinned: state.pinned,
     imported: state.imported,
+    openedFile: state.openedFile,
     ...(isPaste(action) ? { pasted: true } : {}),
     ...(action.type === "replaceDocument" ? { replaced: { uploadLink: state.uploadLink } } : {}),
     undoPart: result.scope,
@@ -1182,6 +1234,8 @@ export function editorReducer(state: EditorState, action: EditorAction): EditorS
     imported: importedAfter(state, action),
     // A new document, an opened file and a pasted pattern have no project until they are uploaded.
     uploadLink: action.type === "replaceDocument" ? null : state.uploadLink,
+    openedFile: action.type === "replaceDocument" ? action.source === "file" : state.openedFile,
+    generation: action.type === "replaceDocument" ? state.generation + 1 : state.generation,
   };
 }
 

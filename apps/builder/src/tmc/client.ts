@@ -66,6 +66,15 @@ export function hasStoredSession(): boolean {
   }
 }
 
+/** Whether this browser started a sign-in whose code it can still redeem. */
+export function hasCodeVerifier(): boolean {
+  try {
+    return globalThis.localStorage?.getItem(`${TMC_STORAGE_KEY}-code-verifier`) != null;
+  } catch {
+    return false;
+  }
+}
+
 export function forgetStoredSession(): void {
   try {
     globalThis.localStorage?.removeItem(TMC_STORAGE_KEY);
